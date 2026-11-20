@@ -153,11 +153,14 @@ class ChaosTest {
                 }
             }
         });
+        await("node A to lead the housekeeping", Duration.ofSeconds(10), nodeA::leadsHousekeeping);
         push(nodeA, 50);
         assertThat(paused.await(20, TimeUnit.SECONDS)).isTrue();
-        node("node-b", pool("node-b"), Duration.ofSeconds(2), task -> { });
+        TaskEngine nodeB = node("node-b", pool("node-b"), Duration.ofSeconds(2), task -> { });
 
+        // The frozen leader can't renew its lease, so node B takes over and requeues A's batch.
         await("node B to finish everything, including the frozen node's batch", Duration.ofSeconds(60), () -> succeeded() == 50);
+        assertThat(nodeB.leadsHousekeeping()).as("node B took over the housekeeping").isTrue();
         frozen.restore();
         resume.countDown();
         sleep(Duration.ofSeconds(1)); // node A wakes up and tries to complete its stale batch

@@ -284,7 +284,7 @@ public final class TaskEngineBuilder {
         @Override
         public GlobalOptions node(String name) {
             settings = new EngineSettings(name, settings.heartbeat(), settings.expiry(), settings.promoteInterval(), settings.maxInFlightBatches(),
-                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval());
+                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval(), settings.purgeInterval());
             return this;
         }
 
@@ -346,6 +346,12 @@ public final class TaskEngineBuilder {
         @Override
         public HousekeepingOptions snapshotCountsEvery(Duration interval) {
             settings = settings.withSnapshotInterval(interval);
+            return this;
+        }
+
+        @Override
+        public HousekeepingOptions purgeEvery(Duration interval) {
+            settings = settings.withPurgeInterval(interval);
             return this;
         }
     }

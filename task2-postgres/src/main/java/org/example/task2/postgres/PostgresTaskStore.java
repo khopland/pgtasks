@@ -43,6 +43,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
+    private final NamedSql lead, resign;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -238,7 +239,8 @@ public final class PostgresTaskStore implements TaskStore {
             FROM tasks.queue
             WHERE topic_id = :topic::integer
             """);
-        // Materialized for the same reason as promote: otherwise the limit doesn't hold.
+        // Materialized for the same reason as promote: otherwise the limit doesn't hold. One range
+        // of task_completed_idx (topic_id, outcome, completed_at).
         purge = sql("""
             WITH doomed AS MATERIALIZED (
                 SELECT d.id FROM tasks.task d
@@ -269,6 +271,19 @@ public final class PostgresTaskStore implements TaskStore {
                 ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
                 due = excluded.due, next_run_at = excluded.next_run_at
             """);
+        // Takes a lease nobody holds or whose term ran out, or renews this node's own. Two nodes
+        // asking at once serialize on the row; the second sees the first's fresh term and gets nothing.
+        lead = sql("""
+            INSERT INTO tasks.lease AS l (name, node_id, acquired_at, expires_at)
+            VALUES (:name, :node::integer, now(), now() + :term::bigint * interval '1 millisecond')
+            ON CONFLICT (name) DO UPDATE
+            SET node_id = excluded.node_id,
+                acquired_at = CASE WHEN l.node_id = excluded.node_id THEN l.acquired_at ELSE excluded.acquired_at END,
+                expires_at = excluded.expires_at
+            WHERE l.node_id = excluded.node_id OR l.expires_at < now()
+            RETURNING l.expires_at
+            """);
+        resign = sql("DELETE FROM tasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
             SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at
             FROM tasks.topic_count c
@@ -812,77 +827,18 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public Lease lead(String name) throws SQLException {
-        Connection connection = dataSource.getConnection();
-        try {
-            connection.setAutoCommit(true);
-            try (PreparedStatement statement = connection.prepareStatement("SELECT pg_try_advisory_lock(hashtextextended(?, 0))")) {
-                statement.setString(1, "tasks.leader:" + name);
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    resultSet.next();
-                    if (resultSet.getBoolean(1)) {
-                        return new PostgresLease(connection, "tasks.leader:" + name);
-                    }
-                }
-            }
-            connection.close();
-            return PostgresLease.NOT_HELD;
-        } catch (SQLException | RuntimeException e) {
-            connection.close();
-            throw e;
+    public boolean lead(StoreTransaction transaction, String name, int nodeId, Duration term) throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters().set("name", name).set("node", nodeId).set("term", term.toMillis());
+        try (PreparedStatement statement = lead.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next();
         }
     }
 
-    /** A session advisory lock on a connection of its own; the server releases it if the connection dies. */
-    private static final class PostgresLease implements Lease {
-
-        static final Lease NOT_HELD = new Lease() {
-            @Override
-            public boolean held() {
-                return false;
-            }
-
-            @Override
-            public void close() {
-            }
-        };
-
-        private final Connection connection;
-        private final String key;
-        private volatile boolean closed;
-
-        PostgresLease(Connection connection, String key) {
-            this.connection = connection;
-            this.key = key;
-        }
-
-        @Override
-        public boolean held() {
-            try {
-                return !closed && connection.isValid(2);
-            } catch (SQLException e) {
-                return false;
-            }
-        }
-
-        @Override
-        public void close() {
-            if (closed) {
-                return;
-            }
-            closed = true;
-            // The connection may go back to a pool, so release the lock instead of trusting close().
-            try (PreparedStatement statement = connection.prepareStatement("SELECT pg_advisory_unlock(hashtextextended(?, 0))")) {
-                statement.setString(1, key);
-                statement.execute();
-            } catch (SQLException ignored) {
-                // A dead connection has lost the lock already.
-            } finally {
-                try {
-                    connection.close();
-                } catch (SQLException ignored) {
-                }
-            }
+    @Override
+    public void resign(StoreTransaction transaction, String name, int nodeId) throws SQLException {
+        try (PreparedStatement statement = resign.prepare(transaction.connection(), NamedSql.parameters().set("name", name).set("node", nodeId))) {
+            statement.executeUpdate();
         }
     }
 

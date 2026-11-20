@@ -255,6 +255,9 @@ class EngineTest {
             task.push(FIRST, task.identifier(), "from node-a");
             return Decision.success();
         })).with(TopicSettings.defaults().withConcurrency(1)), succeeding(FIRST));
+        // Node C runs the cluster-wide housekeeping. (HousekeepingTest covers a leader that hangs.)
+        TaskEngine nodeC = engines.start("node-c", List.of());
+        EngineFixture.await("node C to lead", Duration.ofSeconds(5), nodeC::leadsHousekeeping);
         // Node A sends no heartbeat after starting, as if it were paused.
         TaskEngine nodeA = engines.start("node-a", stuck, settings -> settings.withHeartbeat(Duration.ofHours(1), Duration.ofHours(2)));
         long id = nodeA.tasks().independently().push(TOPIC, "x", "payload").id();

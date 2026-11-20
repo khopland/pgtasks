@@ -66,8 +66,9 @@ public final class TaskTester {
 
     /**
      * Moves the store's clock forward, then runs every engine's housekeeping at once: the engines
-     * were alive all along, so they heartbeat first; then due tasks are promoted and wake-ups
-     * sent. Needs a store with a {@link ManualClock}.
+     * were alive all along, so they all heartbeat first; then the housekeeping leader requeues
+     * tasks of dead nodes, promotes due tasks, applies retention and snapshots counts. Needs a
+     * store with a {@link ManualClock}.
      */
     public Instant advance(Duration duration) {
         if (!(store.clock() instanceof ManualClock clock)) {
@@ -194,14 +195,17 @@ public final class TaskTester {
     }
 
     private void housekeep() {
-        for (TaskEngine engine : engines) {
-            try {
-                engine.housekeepNow();
-            } catch (RuntimeException e) {
-                throw e;
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
+        try {
+            for (TaskEngine engine : engines) {
+                engine.heartbeatNow();
             }
+            for (TaskEngine engine : engines) {
+                engine.runLeaderJobsNow();
+            }
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
         }
     }
 

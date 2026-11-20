@@ -168,7 +168,9 @@ class MilestoneOneTest {
         nodeA.tasks().independently().push(Slice.ASSESSMENT, "anna", new Slice.AssessmentRequest("anna", 500000));
         assertThat(stalled.await(10, TimeUnit.SECONDS)).isTrue();
 
+        // As if node A had been paused for an hour: its heartbeat is old and its housekeeping lease ran out.
         database.execute("UPDATE tasks.node SET heartbeat_at = now() - interval '1 hour' WHERE id = " + nodeA.nodeId());
+        database.execute("UPDATE tasks.lease SET expires_at = now() - interval '1 hour' WHERE node_id = " + nodeA.nodeId());
         fixture.start("node-b", slice(new AssessmentHandler(register, ledger), new FeedPublisher(), FAST),
             settings -> settings.withHeartbeat(Duration.ofMillis(100), Duration.ofMillis(500)));
         await("node B to finish the reclaimed task", Duration.ofSeconds(10), () -> fixture.count(
@@ -213,7 +215,9 @@ class MilestoneOneTest {
                 }
             })).with(TopicSettings.defaults().withOrdering(ordering).withConcurrency(3).withBatchSize(4).withRetry(FAST))));
         }
-        List<Creation<String>> creations = IntStream.range(0, 150).mapToObj(index -> Creation.of("person-" + index % 10, String.valueOf(index))).toList();
+        // More identifiers than one node can hold at once (3 batches of 4), so every node gets work.
+        int identifiers = 30;
+        List<Creation<String>> creations = IntStream.range(0, 150).mapToObj(index -> Creation.of("person-" + index % identifiers, String.valueOf(index))).toList();
         List<Long> ids = fixture.engines().getFirst().tasks().independently().push(topic, Insertion.APPEND, creations).stream().map(pushed -> pushed.id()).toList();
 
         fixture.awaitQueueEmpty(Duration.ofSeconds(60));
@@ -221,7 +225,7 @@ class MilestoneOneTest {
         assertThat(violations).isEmpty();
         assertThat(nodes).as("work was spread over several workers").hasSizeGreaterThan(1);
         Map<String, List<Long>> expected = IntStream.range(0, 150).boxed()
-            .collect(Collectors.groupingBy(index -> "person-" + index % 10, Collectors.mapping(ids::get, Collectors.toList())));
+            .collect(Collectors.groupingBy(index -> "person-" + index % identifiers, Collectors.mapping(ids::get, Collectors.toList())));
         assertThat(succeeded).isEqualTo(expected);
     }
 

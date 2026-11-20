@@ -7,10 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 
 import org.example.task2.PayloadCodec;
@@ -21,7 +18,7 @@ import org.example.task2.spi.TaskStore;
 /**
  * Processes topics on this node. On start it lets the store check or migrate its schema,
  * registers the node, creates every registered topic, and starts one poll loop per topic plus
- * the heartbeat, expiry and promotion jobs.
+ * the {@link Housekeeper}.
  *
  * <p>Wiring is plain constructor arguments for now; the configuration model with defaults,
  * per-module configurers and overrides comes in a later phase.
@@ -38,7 +35,7 @@ public final class TaskEngine implements AutoCloseable {
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
     private final Map<Integer, TopicWorker<?>> workersById = new ConcurrentHashMap<>();
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
-    private ScheduledExecutorService housekeeping;
+    private Housekeeper housekeeper;
     private Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
@@ -127,39 +124,11 @@ public final class TaskEngine implements AutoCloseable {
                 }
             });
         }
-        housekeeping = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name("task2-housekeeping-", 0).factory());
-        schedule("heartbeat", settings.heartbeat(), () -> EngineCore.transact(store, transaction -> {
-            store.heartbeat(transaction, nodeId);
-            return null;
-        }));
-        schedule("expiry", settings.heartbeat(), () -> EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry()))
-            .forEach(this::wakeById));
-        schedule("promotion", settings.promoteInterval(), () -> {
-            List<Integer> promoted;
-            do {
-                promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, 1000));
-                promoted.forEach(this::wakeById);
-            } while (promoted.size() == 1000);
-        });
-        schedule("orphan sweep", settings.heartbeat(), this::releaseOrphans);
+        housekeeper = new Housekeeper(store, settings, nodeId, Housekeeper.retention(ids), this::wakeById, this::releaseOrphans);
+        housekeeper.start();
         workersByName.values().forEach(TopicWorker::start);
         started = true;
         return this;
-    }
-
-    @FunctionalInterface
-    private interface Job {
-        void run() throws Exception;
-    }
-
-    private void schedule(String name, Duration interval, Job job) {
-        housekeeping.scheduleWithFixedDelay(() -> {
-            try {
-                job.run();
-            } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "The " + name + " job failed; it runs again in " + interval, e);
-            }
-        }, 0, interval.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     TaskStore store() {
@@ -180,21 +149,23 @@ public final class TaskEngine implements AutoCloseable {
         return started ? workersByName.values() : List.of();
     }
 
-    /** Runs the housekeeping jobs once, now: heartbeat, expiry and promotion. */
-    void housekeepNow() throws Exception {
-        if (!started) {
-            return;
+    /** Heartbeats and renews or takes the housekeeping lease, now. */
+    void heartbeatNow() throws Exception {
+        if (started) {
+            housekeeper.heartbeat();
         }
-        EngineCore.transact(store, transaction -> {
-            store.heartbeat(transaction, nodeId);
-            return null;
-        });
-        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry())).forEach(this::wakeById);
-        List<Integer> promoted;
-        do {
-            promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, 1000));
-            promoted.forEach(this::wakeById);
-        } while (promoted.size() == 1000);
+    }
+
+    /** If this node leads, runs expiry, promotion, retention and count snapshots once, now. */
+    void runLeaderJobsNow() throws Exception {
+        if (started) {
+            housekeeper.runLeaderJobsNow();
+        }
+    }
+
+    /** Whether this node holds the housekeeping lease and runs the cluster-wide jobs. */
+    public boolean leadsHousekeeping() {
+        return started && housekeeper.leading();
     }
 
     /**
@@ -250,7 +221,7 @@ public final class TaskEngine implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            housekeeping.shutdownNow();
+            housekeeper.stop();
             if (notifier != null) {
                 notifier.close();
             }

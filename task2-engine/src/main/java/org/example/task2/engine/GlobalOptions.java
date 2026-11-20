@@ -47,5 +47,8 @@ public interface GlobalOptions {
         HousekeepingOptions promoteEvery(Duration interval);
 
         HousekeepingOptions snapshotCountsEvery(Duration interval);
+
+        /** How often finished tasks past their retention are deleted. */
+        HousekeepingOptions purgeEvery(Duration interval);
     }
 }

@@ -105,10 +105,18 @@ public interface TaskStore {
     int registerNode(StoreTransaction transaction, String name, String version) throws SQLException;
 
     /**
-     * Tries to become the leader for a group of cluster-wide jobs. At most one lease per name is
-     * held at a time across every node; it ends when closed, or when the holder dies.
+     * Takes or renews this node's lease on a group of cluster-wide jobs, such as housekeeping. At
+     * most one node holds a lease at a time. The holder keeps it by renewing it within its term;
+     * once a term runs out, the lease goes to whichever node asks next, so a node that dies or
+     * hangs loses it without closing anything.
+     *
+     * @return whether this node holds the lease for {@code term}, counted from the start of the
+     *         transaction
      */
-    Lease lead(String name) throws SQLException;
+    boolean lead(StoreTransaction transaction, String name, int nodeId, Duration term) throws SQLException;
+
+    /** Gives a lease up at once, if this node holds it. */
+    void resign(StoreTransaction transaction, String name, int nodeId) throws SQLException;
 
     /**
      * Deletes up to {@code limit} finished tasks with this outcome that completed before the cutoff.
@@ -291,16 +299,6 @@ public interface TaskStore {
     }
 
     record ActiveClaim(int topicId, long taskId, int attempt, Instant claimedAt) {
-    }
-
-    /** Leadership of a group of jobs. */
-    interface Lease extends AutoCloseable {
-
-        /** Whether this node still leads; false once the lease is closed or its holder lost it. */
-        boolean held();
-
-        @Override
-        void close();
     }
 
     record TopicSnapshot(String topic, QueueCounts counts, Instant takenAt) {

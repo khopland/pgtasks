@@ -15,22 +15,58 @@ import org.junit.jupiter.api.Test;
 /** TCK: leadership of cluster-wide jobs, retention and count snapshots. */
 public abstract class HousekeepingTck extends StoreTck {
 
+    private static final Duration TERM = Duration.ofSeconds(10);
+
+    private static boolean lead(StoreFixture fixture, String name, int node) throws Exception {
+        return fixture.inTransaction(transaction -> fixture.store().lead(transaction, name, node, TERM));
+    }
+
     @Test
     void one_leader_at_a_time() throws Exception {
         StoreFixture fixture = fixture();
-        try (TaskStore.Lease first = fixture.store().lead("housekeeping");
-             TaskStore.Lease second = fixture.store().lead("housekeeping");
-             TaskStore.Lease other = fixture.store().lead("something-else")) {
-            assertThat(first.held()).isTrue();
-            assertThat(second.held()).isFalse();
-            assertThat(other.held()).isTrue();
+        int nodeA = fixture.node("node-a"), nodeB = fixture.node("node-b");
 
-            first.close();
-            assertThat(first.held()).isFalse();
-            try (TaskStore.Lease next = fixture.store().lead("housekeeping")) {
-                assertThat(next.held()).as("the lease passes on once released").isTrue();
-            }
+        assertThat(lead(fixture, "housekeeping", nodeA)).isTrue();
+        assertThat(lead(fixture, "housekeeping", nodeB)).as("held by A").isFalse();
+        assertThat(lead(fixture, "something-else", nodeB)).as("another lease").isTrue();
+        assertThat(lead(fixture, "housekeeping", nodeA)).as("A renews").isTrue();
+
+        fixture.inTransaction(transaction -> {
+            fixture.store().resign(transaction, "housekeeping", nodeB);
+            return null;
+        });
+        assertThat(lead(fixture, "housekeeping", nodeB)).as("B can't resign A's lease").isFalse();
+        fixture.inTransaction(transaction -> {
+            fixture.store().resign(transaction, "housekeeping", nodeA);
+            return null;
+        });
+        assertThat(lead(fixture, "housekeeping", nodeB)).as("free once A resigned").isTrue();
+        assertThat(lead(fixture, "housekeeping", nodeA)).isFalse();
+    }
+
+    @Test
+    void a_lease_whose_term_ran_out_goes_to_the_next_node() throws Exception {
+        StoreFixture fixture = fixture();
+        int nodeA = fixture.node("node-a"), nodeB = fixture.node("node-b");
+        assertThat(lead(fixture, "housekeeping", nodeA)).isTrue();
+
+        fixture.advance(TERM.minusSeconds(2));
+        assertThat(lead(fixture, "housekeeping", nodeB)).as("A's term hasn't run out").isFalse();
+
+        fixture.advance(Duration.ofSeconds(4));
+        assertThat(lead(fixture, "housekeeping", nodeB)).as("A stopped renewing").isTrue();
+        assertThat(lead(fixture, "housekeeping", nodeA)).as("A lost it").isFalse();
+    }
+
+    @Test
+    void a_lease_taken_in_a_rolled_back_transaction_is_not_held() throws Exception {
+        StoreFixture fixture = fixture();
+        int nodeA = fixture.node("node-a"), nodeB = fixture.node("node-b");
+        try (var transaction = fixture.store().begin()) {
+            assertThat(fixture.store().lead(transaction, "housekeeping", nodeA, TERM)).isTrue();
+            transaction.rollback();
         }
+        assertThat(lead(fixture, "housekeeping", nodeB)).isTrue();
     }
 
     @Test

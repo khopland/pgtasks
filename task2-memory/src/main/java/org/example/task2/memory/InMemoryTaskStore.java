@@ -60,7 +60,7 @@ public final class InMemoryTaskStore implements TaskStore {
     private final List<Rows.Attempt> attempts = new ArrayList<>();
     private final Map<String, Rows.Bucket> buckets = new HashMap<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
-    private final Map<String, Lease> leaders = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Held> leases = new HashMap<>();
     private int nextTopic = 1, nextNode = 1;
     private long nextTask = 1;
 
@@ -434,33 +434,29 @@ public final class InMemoryTaskStore implements TaskStore {
         return List.copyOf(requeued);
     }
 
+    /** A lease: who holds it and until when, in store time. */
+    private record Held(int nodeId, Instant until) {
+    }
+
     @Override
-    public Lease lead(String name) {
-        Lease lease = new Lease() {
-            private volatile boolean closed;
+    public boolean lead(StoreTransaction transaction, String name, int nodeId, Duration term) {
+        MemoryTransaction memory = memory(transaction);
+        Instant now = now();
+        Held current = leases.get(name);
+        if (current != null && current.nodeId() != nodeId && !current.until().isBefore(now)) {
+            return false;
+        }
+        memory.put(leases, name, new Held(nodeId, now.plus(term)));
+        return true;
+    }
 
-            @Override
-            public boolean held() {
-                return !closed && leaders.get(name) == this;
-            }
-
-            @Override
-            public void close() {
-                closed = true;
-                leaders.remove(name, this);
-            }
-        };
-        Lease current = leaders.compute(name, (key, holder) -> holder == null || !holder.held() ? lease : holder);
-        return current == lease ? lease : new Lease() {
-            @Override
-            public boolean held() {
-                return false;
-            }
-
-            @Override
-            public void close() {
-            }
-        };
+    @Override
+    public void resign(StoreTransaction transaction, String name, int nodeId) {
+        MemoryTransaction memory = memory(transaction);
+        Held current = leases.get(name);
+        if (current != null && current.nodeId() == nodeId) {
+            memory.remove(leases, name);
+        }
     }
 
     @Override
