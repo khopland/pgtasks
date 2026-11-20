@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.List;
 
 import org.example.task2.Insertion;
@@ -20,11 +21,16 @@ class SchemaTest {
     static PostgresExtension postgres = StoreFixture.extension();
 
     @Test
-    void migration_is_idempotent(PostgresDatabase database) throws SQLException {
-        TaskSchema.migrate(database.dataSource());
-
-        assertThat(database.count("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'tasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'attempt', 'rate_limit', 'rate_admission', 'schedule')"))
-            .isEqualTo(8);
+    void creates_every_table_and_records_its_version(PostgresDatabase database) {
+        assertThat(database.count("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'tasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'attempt', 'rate_limit', 'rate_admission', 'schedule', 'meta', 'schema_history')"))
+            .isEqualTo(10);
+        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(1, 1));
+        assertThat(database.rows("SELECT version, script FROM tasks.schema_history ORDER BY installed_rank")).containsExactly(
+            Arrays.asList(1, "V001__tasks_schema.sql"),
+            Arrays.asList(null, "R__create_topic.sql"),
+            Arrays.asList(null, "R__notify_ready.sql"),
+            Arrays.asList(null, "R__task_view.sql")
+        );
     }
 
     @Test
@@ -33,7 +39,7 @@ class SchemaTest {
             .isEqualTo("{scheduled,retrying,ready,active,suspended,failed}");
         assertThat(database.rows("SELECT enum_range(NULL::tasks.task_outcome)::text").getFirst().getFirst())
             .isEqualTo("{succeeded,filtered,failed,redundant,recreated}");
-        assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'tasks' AND table_name NOT LIKE 'databasechangelog%' AND data_type = 'timestamp without time zone'"))
+        assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'tasks' AND data_type = 'timestamp without time zone'"))
             .isZero();
     }
 
@@ -89,20 +95,5 @@ class SchemaTest {
             .isZero();
         assertThat(database.rows("SELECT prosecdef, proconfig::text FROM pg_proc WHERE proname = 'create_topic'").getFirst())
             .containsExactly(true, "{\"search_path=pg_catalog, pg_temp\"}");
-    }
-
-    @Test
-    void a_custom_schema_name_works_end_to_end(PostgresDatabase database) throws SQLException {
-        TaskSchema.migrate(database.dataSource(), "jobs");
-        PostgresTaskStore store = new PostgresTaskStore("jobs");
-        try (Connection connection = database.connect()) {
-            int topic = store.createTopic(connection, "topic");
-            store.push(connection, topic, Insertion.APPEND, List.of(StoreFixture.task("person-1")));
-            int node = store.registerNode(connection, "node", "test");
-            assertThat(store.claim(connection, new org.example.task2.spi.TaskStore.ClaimRequest(topic, node, org.example.task2.Ordering.FIFO, 10, null)).tasks())
-                .hasSize(1);
-        }
-        assertThat(database.count("SELECT count(*) FROM jobs.queue WHERE state = 'active'")).isEqualTo(1);
-        assertThat(database.count("SELECT count(*) FROM tasks.queue")).isZero();
     }
 }

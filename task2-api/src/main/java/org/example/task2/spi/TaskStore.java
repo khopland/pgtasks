@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
 
+import javax.sql.DataSource;
+
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
@@ -17,6 +19,12 @@ import org.example.task2.Pushed;
  * connection and never commits.
  */
 public interface TaskStore {
+
+    /**
+     * Called once when an engine starts, before anything else: check, or migrate, the storage.
+     */
+    default void prepare(DataSource dataSource) throws SQLException {
+    }
 
     /** Registers a topic and creates its storage, if it doesn't exist yet. Returns its id. */
     int createTopic(Connection connection, String name) throws SQLException;

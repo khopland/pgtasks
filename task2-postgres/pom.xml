@@ -9,7 +9,7 @@
   </parent>
 
   <artifactId>task2-postgres</artifactId>
-  <description>Task 2.0 storage on Postgres: the tasks schema, its Liquibase changelog, the task store and the LISTEN/NOTIFY notifier.</description>
+  <description>Task 2.0 storage on Postgres: the tasks schema as plain SQL files with a built-in runner, the task store and the LISTEN/NOTIFY notifier. No migration tool dependency.</description>
 
   <dependencies>
     <dependency>
@@ -21,12 +21,6 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>provided</scope>
-    </dependency>
-    <!-- Only needed for TaskSchema.migrate; teams that run migrations from a pipeline leave it out. -->
-    <dependency>
-      <groupId>org.liquibase</groupId>
-      <artifactId>liquibase-core</artifactId>
-      <optional>true</optional>
     </dependency>
 
     <dependency>

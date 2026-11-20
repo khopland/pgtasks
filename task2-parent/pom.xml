@@ -16,7 +16,7 @@
     <assertj.version>3.27.7</assertj.version>
     <postgresql.version>42.7.14</postgresql.version>
     <hikari.version>7.0.2</hikari.version>
-    <!-- 4.x is Apache-2.0; 5.x changed license. The changelog itself works with both. -->
+    <!-- Test scope only: Task 2.0 depends on no migration tool. Used to set up the 1.x schema. -->
     <liquibase.version>4.33.0</liquibase.version>
     <embedded-postgres.version>2.2.2</embedded-postgres.version>
     <!-- Tests run on Postgres 17; the SQL avoids 18-only features. -->

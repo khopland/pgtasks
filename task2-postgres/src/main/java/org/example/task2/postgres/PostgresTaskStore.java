@@ -17,7 +17,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.regex.Pattern;
+
+import javax.sql.DataSource;
 
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
@@ -28,27 +29,24 @@ import org.example.task2.spi.TaskStore;
 /**
  * The task store on the {@code tasks} schema (see {@link TaskSchema}). Every operation is one
  * statement, except a claim under a strict rate limit, which also reads and charges the
- * limit's token bucket in the same transaction.
+ * limit's token bucket in the same transaction. When an engine starts, the store migrates or
+ * validates the schema according to its {@link SchemaMode}.
  */
 public final class PostgresTaskStore implements TaskStore {
 
-    private static final Pattern SCHEMA = Pattern.compile("[a-z_][a-z0-9_]{0,62}");
-
-    private final String schema;
+    private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire;
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
 
+    /** A store that migrates the schema with the built-in runner when an engine starts. */
     public PostgresTaskStore() {
-        this(TaskSchema.DEFAULT_SCHEMA);
+        this(SchemaMode.MIGRATE);
     }
 
-    public PostgresTaskStore(String schema) {
-        if (!SCHEMA.matcher(schema).matches()) {
-            throw new IllegalArgumentException("Invalid schema name: " + schema);
-        }
-        this.schema = schema;
+    public PostgresTaskStore(SchemaMode mode) {
+        this.mode = Objects.requireNonNull(mode, "mode");
         createTopic = sql("SELECT tasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM tasks.topic WHERE name = :name");
         registerNode = sql("INSERT INTO tasks.node (name, version) VALUES (:name, :version) RETURNING id");
@@ -182,12 +180,13 @@ public final class PostgresTaskStore implements TaskStore {
             """);
     }
 
-    public String schema() {
-        return schema;
+    @Override
+    public void prepare(DataSource dataSource) throws SQLException {
+        TaskSchema.prepare(dataSource, mode);
     }
 
-    private NamedSql sql(String text) {
-        return NamedSql.parse(schema.equals(TaskSchema.DEFAULT_SCHEMA) ? text : text.replace("tasks.", schema + "."));
+    private static NamedSql sql(String text) {
+        return NamedSql.parse(text);
     }
 
     private static String pushSql(Insertion insertion) {
@@ -654,6 +653,6 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public String toString() {
-        return "PostgresTaskStore[" + Objects.requireNonNull(schema) + "]";
+        return "PostgresTaskStore[" + mode + "]";
     }
 }

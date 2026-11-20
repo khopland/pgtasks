@@ -21,8 +21,9 @@ import org.example.task2.spi.Notifier;
 import org.example.task2.spi.TaskStore;
 
 /**
- * Processes topics on this node. On start it registers the node, creates every registered
- * topic, and starts one poll loop per topic plus the heartbeat, expiry and promotion jobs.
+ * Processes topics on this node. On start it lets the store check or migrate its schema,
+ * registers the node, creates every registered topic, and starts one poll loop per topic plus
+ * the heartbeat, expiry and promotion jobs.
  *
  * <p>Wiring is plain constructor arguments for now; the configuration model with defaults,
  * per-module configurers and overrides comes in a later phase.
@@ -77,6 +78,7 @@ public final class TaskEngine implements AutoCloseable {
         if (started) {
             throw new IllegalStateException("Already started");
         }
+        store.prepare(dataSource);
         nodeId = jdbc.transact(connection -> store.registerNode(connection, settings.nodeName(), version()));
         EngineCore core = new EngineCore(store, jdbc, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake);
         Map<Topic<?>, Integer> ids = new HashMap<>();

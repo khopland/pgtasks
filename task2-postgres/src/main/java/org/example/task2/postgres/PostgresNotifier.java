@@ -26,18 +26,14 @@ public final class PostgresNotifier implements Notifier {
         Connection open() throws SQLException;
     }
 
+    private static final String CHANNEL = "tasks_ready";
+
     private final ConnectionFactory connections;
-    private final String channel;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Thread thread;
 
     public PostgresNotifier(ConnectionFactory connections) {
-        this(connections, TaskSchema.DEFAULT_SCHEMA);
-    }
-
-    public PostgresNotifier(ConnectionFactory connections, String schema) {
         this.connections = Objects.requireNonNull(connections);
-        this.channel = schema + "_ready";
     }
 
     @Override
@@ -54,7 +50,7 @@ public final class PostgresNotifier implements Notifier {
         while (running.get()) {
             try (Connection connection = connections.open()) {
                 try (Statement statement = connection.createStatement()) {
-                    statement.execute("LISTEN \"" + channel + "\"");
+                    statement.execute("LISTEN " + CHANNEL);
                 }
                 if (!first) {
                     listener.missed();
