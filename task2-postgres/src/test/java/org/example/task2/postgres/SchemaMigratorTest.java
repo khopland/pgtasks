@@ -77,7 +77,7 @@ class SchemaMigratorTest {
     void every_shipped_file_is_listed_and_follows_the_conventions() throws IOException {
         Path location = Path.of("src/main/resources", TaskSchema.LOCATION);
         try (Stream<Path> files = Files.list(location)) {
-            assertThat(files.map(path -> path.getFileName().toString()).sorted().toList())
+            assertThat(files.map(path -> path.getFileName().toString()).filter(name -> name.endsWith(".sql")).sorted().toList())
                 .as("files on disk; list new ones in TaskSchema.FILES")
                 .containsExactlyInAnyOrderElementsOf(TaskSchema.FILES);
         }
@@ -89,6 +89,22 @@ class SchemaMigratorTest {
             }
             assertThat(script.transactional()).as(script.name() + " runs in a transaction").isTrue();
         }
+    }
+
+    @Test
+    void the_liquibase_wrapper_lists_every_file_with_matching_flags() throws IOException {
+        String changelog = Files.readString(Path.of("src/main/resources", TaskSchema.LIQUIBASE_CHANGELOG));
+        Pattern changeSet = Pattern.compile("<changeSet id=\"tasks-([^\"]+)\" author=\"task2\"([^>]*)>\\s*<sqlFile path=\"([^\"]+)\"([^>]*)/>");
+        var matcher = changeSet.matcher(changelog);
+        List<String> listed = new ArrayList<>();
+        while (matcher.find()) {
+            SchemaScript script = shipped().stream().filter(each -> each.name().equals(matcher.group(3))).findFirst().orElseThrow();
+            listed.add(script.name());
+            assertThat(matcher.group(2).contains("runOnChange=\"true\"")).as(script.name() + " runOnChange").isEqualTo(script.repeatable());
+            assertThat(matcher.group(2).contains("runInTransaction=\"false\"")).as(script.name() + " runInTransaction").isEqualTo(!script.transactional());
+            assertThat(matcher.group(4)).contains("splitStatements=\"false\"");
+        }
+        assertThat(listed).as("in the order a DBA pipeline runs them").containsExactlyElementsOf(TaskSchema.FILES);
     }
 
     @Test

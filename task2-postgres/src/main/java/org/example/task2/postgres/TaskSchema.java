@@ -21,10 +21,20 @@ import javax.sql.DataSource;
  * <ul>
  *   <li>nothing in particular: the built-in runner applies them at startup ({@link SchemaMode#MIGRATE},
  *       the default, or {@link #migrate} directly);</li>
- *   <li>Flyway: a separate Flyway instance on {@code classpath:}{@value #LOCATION} with
- *       {@code schemas=tasks} and its own history table, and {@link SchemaMode#VALIDATE};</li>
- *   <li>Liquibase: a changelog that wraps the same files with {@code sqlFile}
- *       ({@code runOnChange} for the repeatable ones), and {@link SchemaMode#VALIDATE};</li>
+ *   <li>Flyway: a separate Flyway instance, so the version numbers don't clash with the
+ *       application's own migrations, and {@link SchemaMode#VALIDATE}:
+ *       <pre>{@code
+ * Flyway.configure()
+ *     .dataSource(dataSource)
+ *     .locations("classpath:org/example/task2/postgres/db")
+ *     .schemas("tasks")
+ *     .table("flyway_task_history")
+ *     .load()
+ *     .migrate();
+ *       }</pre></li>
+ *   <li>Liquibase: include {@value #LIQUIBASE_CHANGELOG} from the application's changelog. It is a
+ *       plain XML resource that wraps the same files with {@code sqlFile} ({@code runOnChange} for
+ *       the repeatable ones), so it adds no dependency. Then {@link SchemaMode#VALIDATE};</li>
  *   <li>a DBA pipeline: the files in order, as the schema owner, and {@link SchemaMode#VALIDATE}.</li>
  * </ul>
  *
@@ -45,6 +55,8 @@ public final class TaskSchema {
     public static final String SCHEMA = "tasks";
 
     public static final String LOCATION = "org/example/task2/postgres/db";
+
+    public static final String LIQUIBASE_CHANGELOG = LOCATION + "/changelog.xml";
 
     /** The files, in the order a DBA pipeline runs them: versioned by version, then repeatable by name. */
     static final List<String> FILES = List.of(
