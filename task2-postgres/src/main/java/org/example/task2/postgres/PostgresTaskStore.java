@@ -85,7 +85,7 @@ public final class PostgresTaskStore implements TaskStore {
             pushes.put(insertion, sql(pushSql(insertion)));
         }
         for (Ordering ordering : Ordering.values()) {
-            polls.put(ordering, sql(pollSql(ordering)));
+            polls.put(ordering, sql(pollSql(ordering)).withCustomPlans());
         }
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""

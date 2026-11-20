@@ -26,6 +26,13 @@
         <module>task2-v1-regressions</module>
       </modules>
     </profile>
+    <!-- Phase 2: schema benchmark. Slow; run on purpose. -->
+    <profile>
+      <id>benchmark</id>
+      <modules>
+        <module>task2-benchmark</module>
+      </modules>
+    </profile>
   </profiles>
   <properties>
     <project.build.sourceEncoding>utf-8</project.build.sourceEncoding>
