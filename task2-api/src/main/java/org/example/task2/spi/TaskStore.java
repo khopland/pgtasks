@@ -95,6 +95,13 @@ public interface TaskStore {
      */
     List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry) throws SQLException;
 
+    /**
+     * The tasks this node holds active. A node compares them with what it is actually processing,
+     * to release claims it lost track of, such as one whose commit succeeded but whose reply never
+     * arrived.
+     */
+    List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException;
+
     int registerNode(StoreTransaction transaction, String name, String version) throws SQLException;
 
     void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
@@ -263,6 +270,9 @@ public interface TaskStore {
         public long total() {
             return scheduled + retrying + ready + active + suspended + failed;
         }
+    }
+
+    record ActiveClaim(int topicId, long taskId, int attempt, Instant claimedAt) {
     }
 
     /** @param result failed or expired */

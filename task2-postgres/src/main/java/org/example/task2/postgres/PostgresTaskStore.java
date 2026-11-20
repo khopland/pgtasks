@@ -41,7 +41,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -209,6 +209,12 @@ public final class PostgresTaskStore implements TaskStore {
                    min(run_at)
             FROM tasks.queue
             WHERE topic_id = :topic::integer
+            """);
+        activeClaims = sql("""
+            SELECT topic_id, task_id, attempt, claimed_at
+            FROM tasks.queue
+            WHERE node_id = :node::integer AND state = 'active'
+            ORDER BY task_id
             """);
         listAttempts = sql("""
             SELECT task_id, attempt, node_id, result, error::text
@@ -718,6 +724,18 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return List.copyOf(topics);
+    }
+
+    @Override
+    public List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException {
+        List<ActiveClaim> claims = new ArrayList<>();
+        try (PreparedStatement statement = activeClaims.prepare(transaction.connection(), NamedSql.parameters().set("node", nodeId));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                claims.add(new ActiveClaim(resultSet.getInt(1), resultSet.getLong(2), resultSet.getInt(3), instant(resultSet, "claimed_at")));
+            }
+        }
+        return claims;
     }
 
     @Override

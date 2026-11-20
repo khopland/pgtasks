@@ -99,6 +99,7 @@ final class TopicWorker<T> {
                 TaskStore.Claim claimed = core.transact(transaction -> core.store().claim(transaction, request));
                 failures = 0;
                 if (!claimed.tasks().isEmpty()) {
+                    claimed.tasks().forEach(task -> core.held().put(task.id(), task.attempt()));
                     BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());
                     claimedTasks.addAndGet(claimed.tasks().size());
                     runningBatches.incrementAndGet();

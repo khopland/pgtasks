@@ -84,15 +84,20 @@ final class BatchRun<T> {
         }
         Map<BatchResource<?>, Object> opened = new LinkedHashMap<>();
         try {
-            Decisions decisions = runnable.isEmpty() ? Decisions.builder().build() : process(topic, runnable, opened);
-            if (decisions == null) {
-                release(claims, claimed.stream().map(ClaimedTask::id).toList());
-                return;
-            }
-            complete(topic, claims, decisions, early.build(), opened);
+            runBatch(topic, claims, runnable, early.build(), opened);
         } finally {
             opened.values().forEach(BatchRun::closeQuietly);
+            claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
         }
+    }
+
+    private void runBatch(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, Decisions early, Map<BatchResource<?>, Object> opened) {
+        Decisions decisions = runnable.isEmpty() ? Decisions.builder().build() : process(topic, runnable, opened);
+        if (decisions == null) {
+            release(claims, claimed.stream().map(ClaimedTask::id).toList());
+            return;
+        }
+        complete(topic, claims, decisions, early, opened);
     }
 
     /** Hands every claimed task back without running it or counting the attempt. */
@@ -100,7 +105,10 @@ final class BatchRun<T> {
         Map<Long, ClaimedTask> claims = new LinkedHashMap<>();
         claimed.forEach(claim -> claims.put(claim.id(), claim));
         release(claims, List.copyOf(claims.keySet()));
+        claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
     }
+
+    static final Resolution RELEASED = RELEASE;
 
     private Task<T> task(ClaimedTask claim, T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
@@ -177,7 +185,9 @@ final class BatchRun<T> {
         Set<String> targets = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
         try {
-            core.transact(transaction -> {
+            core.transactRetrying("The completion of a batch in " + topic.ref(), transaction -> {
+                observations.clear();
+                targets.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
                 targets.addAll(pushDownstream(transaction, decisions, observations));
                 targets.addAll(applyJunctions(transaction, decisions));
@@ -194,7 +204,7 @@ final class BatchRun<T> {
             LOGGER.log(System.Logger.Level.WARNING, "The completion of a batch in " + topic.ref() + " failed and was rolled back", e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
-                core.transact(transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
+                core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
             } catch (Exception recording) {
                 LOGGER.log(System.Logger.Level.ERROR, "Could not record the failure; the tasks stay active until this node's claims expire", recording);
             }
@@ -279,7 +289,7 @@ final class BatchRun<T> {
             return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE);
         }).toList();
         try {
-            core.transact(transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), releases));
+            core.transactRetrying("Releasing tasks in " + worker.topic().ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), releases));
         } catch (Exception e) {
             LOGGER.log(System.Logger.Level.WARNING, "Could not release tasks " + ids + "; they stay active until this node's claims expire", e);
         }

@@ -433,6 +433,15 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
+    public List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) {
+        memory(transaction);
+        return queue.values().stream()
+            .filter(row -> row.state() == State.ACTIVE && Objects.equals(row.nodeId(), nodeId))
+            .map(row -> new ActiveClaim(row.topicId(), row.taskId(), row.attempt(), row.claimedAt()))
+            .toList();
+    }
+
+    @Override
     public int registerNode(StoreTransaction transaction, String name, String version) {
         MemoryTransaction memory = memory(transaction);
         int id = nextNode++;

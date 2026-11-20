@@ -227,6 +227,27 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void a_node_sees_the_claims_it_holds() throws SQLException {
+        StoreFixture fixture = setUp();
+        fixture.push(topic, Insertion.APPEND, task("a"), task("b"));
+        int other = fixture.node("node-b");
+        ClaimedTask mine = fixture.claim(topic, node, org.example.task2.Ordering.FIFO, 1).getFirst();
+        fixture.claim(topic, other, org.example.task2.Ordering.FIFO, 1);
+
+        List<TaskStore.ActiveClaim> claims = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node));
+
+        assertThat(claims).singleElement().satisfies(claim -> {
+            assertThat(claim.topicId()).isEqualTo(topic);
+            assertThat(claim.taskId()).isEqualTo(mine.id());
+            assertThat(claim.attempt()).isEqualTo(1);
+            assertThat(claim.claimedAt()).isNotNull();
+        });
+        fixture.complete(topic, node, mine, StoreFixture.succeeded());
+        List<TaskStore.ActiveClaim> after = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node));
+        assertThat(after).isEmpty();
+    }
+
+    @Test
     void heartbeat_of_an_unknown_node_fails() throws SQLException {
         StoreFixture fixture = setUp();
         assertThatThrownBy(() -> fixture.heartbeat(9999)).isInstanceOf(IllegalStateException.class);

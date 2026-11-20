@@ -37,6 +37,7 @@ public final class TaskEngine implements AutoCloseable {
     private final DefaultTasks tasks;
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
     private final Map<Integer, TopicWorker<?>> workersById = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> held = new ConcurrentHashMap<>();
     private ScheduledExecutorService housekeeping;
     private Notifier notifier;
     private volatile int nodeId = -1;
@@ -74,7 +75,8 @@ public final class TaskEngine implements AutoCloseable {
         }
         store.prepare();
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version()));
-        EngineCore core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake);
+        EngineCore core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
+            held, () -> !started);
         Map<Topic<?>, Integer> ids = new HashMap<>();
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
@@ -123,6 +125,7 @@ public final class TaskEngine implements AutoCloseable {
                 promoted.forEach(this::wakeById);
             } while (promoted.size() == 1000);
         });
+        schedule("orphan sweep", settings.heartbeat(), this::releaseOrphans);
         workersByName.values().forEach(TopicWorker::start);
         started = true;
         return this;
@@ -171,6 +174,29 @@ public final class TaskEngine implements AutoCloseable {
             promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, 1000));
             promoted.forEach(this::wakeById);
         } while (promoted.size() == 1000);
+    }
+
+    /**
+     * Releases tasks this node holds active but isn't processing, such as a claim whose commit
+     * succeeded while its reply was lost. A grace period covers claims that are on their way in.
+     */
+    private void releaseOrphans() throws Exception {
+        Duration grace = settings.heartbeat().multipliedBy(2).compareTo(Duration.ofSeconds(2)) < 0 ? Duration.ofSeconds(2) : settings.heartbeat().multipliedBy(2);
+        java.time.Instant cutoff = store.clock().instant().minus(grace);
+        Map<Integer, List<TaskStore.Completion>> orphans = new HashMap<>();
+        for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
+            if (!held.containsKey(claim.taskId()) && claim.claimedAt() != null && claim.claimedAt().isBefore(cutoff)) {
+                orphans.computeIfAbsent(claim.topicId(), ignored -> new java.util.ArrayList<>())
+                    .add(new TaskStore.Completion(claim.taskId(), claim.attempt(), claim.claimedAt(), BatchRun.RELEASED));
+            }
+        }
+        for (Map.Entry<Integer, List<TaskStore.Completion>> entry : orphans.entrySet()) {
+            int released = EngineCore.transact(store, transaction -> store.release(transaction, entry.getKey(), nodeId, entry.getValue()));
+            if (released > 0) {
+                LOGGER.log(System.Logger.Level.WARNING, "Released " + released + " task(s) this node held but wasn't processing");
+                wakeById(entry.getKey());
+            }
+        }
     }
 
     /** Wakes this node's worker for a topic, if it has one. */

@@ -419,6 +419,27 @@ class EngineTest {
     }
 
     @Test
+    @DisplayName("A claim whose reply never arrived is released by the node's orphan sweep")
+    void orphaned_claims_are_released() throws Exception {
+        TaskEngine engine = engines.start("node-a", List.of(succeeding(TOPIC)), settings -> settings.withHeartbeat(Duration.ofMillis(50), Duration.ofHours(1)));
+        engines.createTopics("other");
+        TaskTester tester = engines.tester();
+        long id;
+        // Claimed for this node in the store, but the engine never saw the claim.
+        try (var transaction = engines.store.begin()) {
+            int topicId = engines.store.findTopic(transaction, TOPIC.name()).orElseThrow();
+            id = engines.store.push(transaction, topicId, Insertion.APPEND, List.of(new TaskStore.NewTask("lost", null, null, null, null, false, 0, null, null, null))).getFirst().id();
+            engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1, null));
+            transaction.commit();
+        }
+        assertThat(view(tester, id).state()).isEqualTo("active");
+
+        engines.clock.advance(Duration.ofSeconds(3));
+        EngineFixture.await("the orphan to be released and run", Duration.ofSeconds(5), () -> "succeeded".equals(view(tester, id).state()));
+        assertThat(view(tester, id).attempt()).as("the lost claim didn't count").isEqualTo(1);
+    }
+
+    @Test
     void the_in_memory_store_cannot_join_jdbc_transactions_or_lend_a_connection() throws Exception {
         TaskEngine engine = engines.start("node-a", List.of(succeeding(TOPIC)));
         Connection connection = (Connection) java.lang.reflect.Proxy.newProxyInstance(
