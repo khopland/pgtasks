@@ -6,6 +6,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
+import org.example.task2.Ordering;
 import org.example.task2.spi.TaskStore;
 
 /**
@@ -95,6 +96,11 @@ final class TopicWorker<T> {
                             LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
                         } finally {
                             release();
+                            // Finishing a task can unblock later tasks for its identifier. No
+                            // row becomes newly ready then, so no notification is sent: poll again.
+                            if (topic.settings().ordering() != Ordering.FIFO) {
+                                signal.signal();
+                            }
                         }
                     });
                     dispatched = true;

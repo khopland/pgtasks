@@ -14,37 +14,37 @@ import org.example.task2.test.PostgresDatabase;
 import org.example.task2.test.PostgresExtension;
 
 /** Engines on a real Postgres. Each engine gets its own pool, so several engines stand in for several pods. */
-final class EngineFixture implements AutoCloseable {
+public final class EngineFixture implements AutoCloseable {
 
-    static PostgresExtension extension() {
+    public static PostgresExtension extension() {
         return PostgresExtension.migrated(database -> TaskSchema.migrate(database.dataSource()));
     }
 
-    final PostgresDatabase database;
+    public final PostgresDatabase database;
     private final List<TaskEngine> engines = new CopyOnWriteArrayList<>();
 
-    EngineFixture(PostgresDatabase database) {
+    public EngineFixture(PostgresDatabase database) {
         this.database = database;
     }
 
     /** Fast housekeeping for tests; expiry stays long unless a test shortens it. */
-    static EngineSettings settings(String node) {
+    public static EngineSettings settings(String node) {
         return EngineSettings.defaults(node)
             .withHeartbeat(Duration.ofMillis(200), Duration.ofHours(1))
             .withPromoteInterval(Duration.ofMillis(50));
     }
 
-    TaskEngine start(String node, List<Topic<?>> topics) throws Exception {
+    public TaskEngine start(String node, List<Topic<?>> topics) throws Exception {
         return start(node, topics, UnaryOperator.identity());
     }
 
-    TaskEngine start(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) throws Exception {
+    public TaskEngine start(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) throws Exception {
         TaskEngine engine = create(node, topics, customize);
         engine.start();
         return engine;
     }
 
-    TaskEngine create(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) {
+    public TaskEngine create(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) {
         HikariDataSource pool = database.newPool(node, 12);
         EngineSettings settings = customize.apply(settings(node).withNotifier(new PostgresNotifier(database::connect)));
         TaskEngine engine = new TaskEngine(pool, new PostgresTaskStore(), settings, topics);
@@ -52,7 +52,12 @@ final class EngineFixture implements AutoCloseable {
         return engine;
     }
 
-    static void await(String what, Duration timeout, BooleanSupplier condition) throws InterruptedException {
+    /** The engines this fixture created, in order. */
+    public List<TaskEngine> engines() {
+        return List.copyOf(engines);
+    }
+
+    public static void await(String what, Duration timeout, BooleanSupplier condition) throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!condition.getAsBoolean()) {
             if (System.nanoTime() > deadline) {
@@ -62,12 +67,27 @@ final class EngineFixture implements AutoCloseable {
         }
     }
 
-    void awaitQueueEmpty(Duration timeout) throws InterruptedException {
+    public void awaitQueueEmpty(Duration timeout) throws InterruptedException {
         await("an empty queue", timeout, () -> database.count("SELECT count(*) FROM tasks.queue") == 0);
     }
 
-    long count(String sql, Object... parameters) {
+    public long count(String sql, Object... parameters) {
         return database.count(sql, parameters);
+    }
+
+    /** Creates topics up front, so a test can queue a whole batch before any engine polls. */
+    public void createTopics(String... names) throws java.sql.SQLException {
+        try (java.sql.Connection connection = database.connect()) {
+            PostgresTaskStore store = new PostgresTaskStore();
+            for (String name : names) {
+                store.createTopic(connection, name);
+            }
+        }
+    }
+
+    /** Makes every delayed task and retry due now. */
+    public void makeDue() {
+        database.execute("UPDATE tasks.queue SET run_at = now() - interval '1 millisecond' WHERE run_at IS NOT NULL");
     }
 
     @Override
