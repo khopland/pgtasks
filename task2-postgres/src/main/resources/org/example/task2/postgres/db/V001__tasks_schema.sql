@@ -34,6 +34,9 @@ CREATE TABLE tasks.topic (
     variables   jsonb,
     state       tasks.topic_state NOT NULL DEFAULT 'active',
     paused      boolean NOT NULL DEFAULT false,
+    -- How long finished tasks are kept per outcome, as ISO periods: {"succeeded": "P30D"}. Set by
+    -- the nodes that run the topic, so whichever node leads housekeeping applies it. NULL: kept forever.
+    retention   jsonb CHECK (jsonb_typeof(retention) = 'object'),
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 

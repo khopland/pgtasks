@@ -1,6 +1,10 @@
 package org.example.task2.memory;
 
 import java.time.Instant;
+import java.time.Period;
+import java.util.Map;
+
+import org.example.task2.Outcome;
 
 /** The in-memory tables. Rows are immutable, so a transaction can undo by putting the old row back. */
 final class Rows {
@@ -16,7 +20,12 @@ final class Rows {
         }
     }
 
-    record Topic(int id, String name, Instant createdAt) {
+    /** @param retention per outcome, or null if no node set it */
+    record Topic(int id, String name, Instant createdAt, Map<Outcome, Period> retention) {
+
+        Topic withRetention(Map<Outcome, Period> retention) {
+            return new Topic(id, name, createdAt, Map.copyOf(retention));
+        }
     }
 
     record Node(int id, String name, String version, Instant startedAt, Instant heartbeatAt) {

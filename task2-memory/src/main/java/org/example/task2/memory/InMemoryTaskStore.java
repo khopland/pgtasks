@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.time.Period;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -139,7 +140,7 @@ public final class InMemoryTaskStore implements TaskStore {
             return existing.getAsInt();
         }
         int id = nextTopic++;
-        memory.put(topics, id, new Rows.Topic(id, name, now()));
+        memory.put(topics, id, new Rows.Topic(id, name, now(), null));
         return id;
     }
 
@@ -470,6 +471,26 @@ public final class InMemoryTaskStore implements TaskStore {
             .toList();
         purged.forEach(task -> memory.remove(tasks, task.id()));
         return purged.size();
+    }
+
+    @Override
+    public void setRetention(StoreTransaction transaction, int topicId, Map<org.example.task2.Outcome, Period> retention) throws SQLException {
+        MemoryTransaction memory = memory(transaction);
+        Rows.Topic topic = topics.get(topicId);
+        if (topic == null) {
+            throw new SQLException("No topic with id " + topicId);
+        }
+        memory.put(topics, topicId, topic.withRetention(retention));
+    }
+
+    @Override
+    public Map<Integer, Map<org.example.task2.Outcome, Period>> retention(StoreTransaction transaction) {
+        memory(transaction);
+        Map<Integer, Map<org.example.task2.Outcome, Period>> result = new LinkedHashMap<>();
+        topics.values().stream()
+            .filter(topic -> topic.retention() != null && !topic.retention().isEmpty())
+            .forEach(topic -> result.put(topic.id(), topic.retention()));
+        return result;
     }
 
     @Override

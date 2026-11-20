@@ -5,8 +5,10 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.time.Period;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -123,6 +125,17 @@ public interface TaskStore {
      * Unfinished tasks are never touched. Returns how many were deleted.
      */
     int purge(StoreTransaction transaction, int topicId, org.example.task2.Outcome outcome, Instant completedBefore, int limit) throws SQLException;
+
+    /**
+     * Records how long a topic's finished tasks are kept per outcome, so that whichever node leads
+     * housekeeping applies it, also to topics that node doesn't run. Every node sets it when it
+     * starts with the topic, so the last one to start wins; a topic nobody set it for keeps its
+     * tasks forever. An outcome that isn't listed is kept forever.
+     */
+    void setRetention(StoreTransaction transaction, int topicId, Map<org.example.task2.Outcome, Period> retention) throws SQLException;
+
+    /** The recorded retention of every topic that has one, by topic id. */
+    Map<Integer, Map<org.example.task2.Outcome, Period>> retention(StoreTransaction transaction) throws SQLException;
 
     /** Records every topic's queue counts now. */
     void snapshotCounts(StoreTransaction transaction) throws SQLException;

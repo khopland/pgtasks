@@ -94,6 +94,7 @@ public final class TaskEngine implements AutoCloseable {
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
+                store.setRetention(transaction, created, topic.settings().retention());
                 if (topic.settings().rateLimit() != null) {
                     store.ensureAdmission(transaction, topic.settings().rateLimit().name(), topic.settings().rateLimit().burst());
                 }
@@ -124,7 +125,7 @@ public final class TaskEngine implements AutoCloseable {
                 }
             });
         }
-        housekeeper = new Housekeeper(store, settings, nodeId, Housekeeper.retention(ids), this::wakeById, this::releaseOrphans);
+        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans);
         housekeeper.start();
         workersByName.values().forEach(TopicWorker::start);
         started = true;

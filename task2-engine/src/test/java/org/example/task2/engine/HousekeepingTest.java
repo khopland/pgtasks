@@ -108,6 +108,24 @@ class HousekeepingTest {
     }
 
     @Test
+    void the_leader_applies_retention_to_topics_it_does_not_run() throws Exception {
+        TopicRef<String> other = TopicRef.of("other", String.class);
+        TaskEngine leader = engines.start("node-a", topic());
+        EngineFixture.await("A to lead", Duration.ofSeconds(5), leader::leadsHousekeeping);
+        TaskEngine runner = engines.start("node-b", List.of(Topic.of(other, batch -> batch.decide(task -> Decision.success()))
+            .with(TopicSettings.defaults().withRetention(Map.of(Outcome.SUCCEEDED, Period.ofDays(7))))));
+        TaskTester tester = engines.tester();
+        long id = runner.tasks().independently().push(other, "a", "ok").id();
+        tester.awaitIdle();
+        assertThat(tester.find(id).orElseThrow().state()).isEqualTo("succeeded");
+
+        tester.advance(Duration.ofDays(8));
+
+        assertThat(leader.leadsHousekeeping()).isTrue();
+        assertThat(tester.find(id)).as("purged by node A, which doesn't run the topic").isEmpty();
+    }
+
+    @Test
     void retention_counts_from_completion_not_from_creation() throws Exception {
         TaskEngine engine = engines.start("node-a", List.of(topic().getFirst().with(TopicSettings.defaults()
             .withRetention(Map.of(Outcome.SUCCEEDED, Period.ofDays(30))))));

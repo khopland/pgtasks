@@ -7,11 +7,14 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.Period;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +46,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
-    private final NamedSql lead, resign;
+    private final NamedSql lead, resign, setRetention, retention;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -252,6 +255,19 @@ public final class PostgresTaskStore implements TaskStore {
             DELETE FROM tasks.task t
             USING doomed
             WHERE t.topic_id = :topic::integer AND t.id = doomed.id
+            """);
+        // Written at every start, so it skips the write when nothing changed.
+        setRetention = sql("""
+            UPDATE tasks.topic
+            SET retention = jsonb_object(:outcomes::text[], :periods::text[])
+            WHERE id = :topic::integer
+              AND retention IS DISTINCT FROM jsonb_object(:outcomes::text[], :periods::text[])
+            """);
+        retention = sql("""
+            SELECT t.id, r.key, r.value
+            FROM tasks.topic t
+            CROSS JOIN LATERAL jsonb_each_text(t.retention) AS r
+            ORDER BY t.id
             """);
         snapshot = sql("""
             INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at)
@@ -852,6 +868,38 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = purge.prepare(transaction.connection(), parameters)) {
             return statement.executeUpdate();
         }
+    }
+
+    @Override
+    public void setRetention(StoreTransaction transaction, int topicId, Map<org.example.task2.Outcome, Period> retention) throws SQLException {
+        List<org.example.task2.Outcome> outcomes = retention.keySet().stream().sorted().toList();
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("topic", topicId)
+            .array("outcomes", "text", outcomes.stream().map(org.example.task2.Outcome::label).toArray())
+            .array("periods", "text", outcomes.stream().map(outcome -> retention.get(outcome).toString()).toArray());
+        try (PreparedStatement statement = setRetention.prepare(transaction.connection(), parameters)) {
+            statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public Map<Integer, Map<org.example.task2.Outcome, Period>> retention(StoreTransaction transaction) throws SQLException {
+        Map<Integer, Map<org.example.task2.Outcome, Period>> result = new LinkedHashMap<>();
+        try (PreparedStatement statement = retention.prepare(transaction.connection(), NamedSql.parameters());
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                // Skips outcomes this version doesn't know, set by a newer node during a rolling deploy.
+                String label = resultSet.getString(2);
+                Optional<org.example.task2.Outcome> outcome = Arrays.stream(org.example.task2.Outcome.values())
+                    .filter(candidate -> candidate.label().equals(label))
+                    .findFirst();
+                if (outcome.isPresent()) {
+                    result.computeIfAbsent(resultSet.getInt(1), ignored -> new EnumMap<>(org.example.task2.Outcome.class))
+                        .put(outcome.get(), Period.parse(resultSet.getString(3)));
+                }
+            }
+        }
+        return result;
     }
 
     @Override

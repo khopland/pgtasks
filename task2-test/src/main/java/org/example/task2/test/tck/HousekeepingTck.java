@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.Period;
 import java.util.List;
+import java.util.Map;
 
 import org.example.task2.Insertion;
 import org.example.task2.Outcome;
@@ -113,6 +115,40 @@ public abstract class HousekeepingTck extends StoreTck {
         assertThat(none).isZero();
         assertThat(limited).isEqualTo(2);
         assertThat(rest).isEqualTo(3);
+    }
+
+    @Test
+    void retention_is_recorded_per_topic_and_the_last_setting_wins() throws Exception {
+        StoreFixture fixture = fixture();
+        int first = fixture.topic("first"), second = fixture.topic("second");
+        fixture.topic("unset");
+        int empty = fixture.topic("empty");
+        Map<Outcome, Period> kept = Map.of(Outcome.SUCCEEDED, Period.ofDays(30), Outcome.FILTERED, Period.ofWeeks(1));
+        fixture.inTransaction(transaction -> {
+            fixture.store().setRetention(transaction, first, kept);
+            fixture.store().setRetention(transaction, second, Map.of(Outcome.SUCCEEDED, Period.ofYears(1)));
+            fixture.store().setRetention(transaction, second, Map.of(Outcome.FAILED, Period.ofMonths(18)));
+            fixture.store().setRetention(transaction, empty, Map.of());
+            return null;
+        });
+
+        Map<Integer, Map<Outcome, Period>> retention = fixture.inTransaction(transaction -> fixture.store().retention(transaction));
+
+        assertThat(retention).as("topics without retention keep everything and aren't listed").containsOnlyKeys(first, second);
+        assertThat(retention.get(first)).isEqualTo(kept);
+        assertThat(retention.get(second)).isEqualTo(Map.of(Outcome.FAILED, Period.ofMonths(18)));
+    }
+
+    @Test
+    void retention_set_in_a_rolled_back_transaction_is_not_recorded() throws Exception {
+        StoreFixture fixture = fixture();
+        int topic = fixture.topic("topic");
+        try (var transaction = fixture.store().begin()) {
+            fixture.store().setRetention(transaction, topic, Map.of(Outcome.SUCCEEDED, Period.ofDays(1)));
+            transaction.rollback();
+        }
+        Map<Integer, Map<Outcome, Period>> retention = fixture.inTransaction(transaction -> fixture.store().retention(transaction));
+        assertThat(retention).isEmpty();
     }
 
     @Test

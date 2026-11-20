@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
 import java.time.ZoneOffset;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -19,7 +18,8 @@ import org.example.task2.spi.TaskStore;
  * Housekeeping on one node. Every node heartbeats, renews or takes the housekeeping lease, and
  * releases claims it lost track of. The node holding the lease also runs the cluster-wide jobs:
  * requeueing tasks of dead nodes, promoting due tasks, deleting finished tasks past their
- * retention, and snapshotting queue counts.
+ * retention, and snapshotting queue counts. Retention is read from the store, where every node
+ * records it for its topics, so the leader applies it to topics it doesn't run itself.
  *
  * <p>The lease lasts four heartbeats unless renewed, so a leader that dies or hangs is replaced
  * by the next node that asks. The jobs are safe to run on two nodes at once, which can happen
@@ -40,7 +40,6 @@ final class Housekeeper {
     private final TaskStore store;
     private final EngineSettings settings;
     private final int nodeId;
-    private final Map<Integer, Map<Outcome, Period>> retention;
     private final IntConsumer wake;
     private final Job sweepOrphans;
     private final Object leadership = new Object();
@@ -48,16 +47,13 @@ final class Housekeeper {
     private ScheduledExecutorService executor;
 
     /**
-     * @param retention    per topic id, how long finished tasks are kept per outcome; the leader
-     *                     only applies retention to topics its node knows
      * @param wake         wakes this node's worker for a topic id
      * @param sweepOrphans releases tasks this node holds but isn't processing
      */
-    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, Map<Integer, Map<Outcome, Period>> retention, IntConsumer wake, Job sweepOrphans) {
+    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans) {
         this.store = store;
         this.settings = settings;
         this.nodeId = nodeId;
-        this.retention = Map.copyOf(retention);
         this.wake = wake;
         this.sweepOrphans = sweepOrphans;
     }
@@ -177,6 +173,7 @@ final class Housekeeper {
     /** Deletes finished tasks past their retention, counted from completion, a batch at a time. */
     private void purge() throws Exception {
         Instant now = store.clock().instant();
+        Map<Integer, Map<Outcome, Period>> retention = EngineCore.transact(store, store::retention);
         for (Map.Entry<Integer, Map<Outcome, Period>> topic : retention.entrySet()) {
             for (Map.Entry<Outcome, Period> kept : topic.getValue().entrySet()) {
                 Instant cutoff = now.atZone(ZoneOffset.UTC).minus(kept.getValue()).toInstant();
@@ -193,17 +190,6 @@ final class Housekeeper {
             store.snapshotCounts(transaction);
             return null;
         });
-    }
-
-    /** Retention per topic id, from the topics this node runs. */
-    static Map<Integer, Map<Outcome, Period>> retention(Map<Topic<?>, Integer> ids) {
-        Map<Integer, Map<Outcome, Period>> retention = new HashMap<>();
-        ids.forEach((topic, id) -> {
-            if (!topic.settings().retention().isEmpty()) {
-                retention.put(id, topic.settings().retention());
-            }
-        });
-        return retention;
     }
 
     @Override
