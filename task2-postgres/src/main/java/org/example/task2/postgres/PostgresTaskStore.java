@@ -149,16 +149,21 @@ public final class PostgresTaskStore implements TaskStore {
             )
             SELECT task_id FROM moved
             """);
+        // A LIMIT ... FOR UPDATE SKIP LOCKED selection must be materialized: as the inner side of a
+        // semi-join it can be rescanned, and each rescan skips the rows this statement already
+        // changed and returns the next ones, so the limit stops holding.
         promote = sql("""
-            UPDATE tasks.queue q
-            SET state = 'ready', run_at = NULL
-            WHERE q.task_id IN (
+            WITH due AS MATERIALIZED (
                 SELECT o.task_id FROM tasks.queue o
                 WHERE o.state IN ('scheduled', 'retrying') AND o.run_at <= clock_timestamp()
                 ORDER BY o.run_at
                 LIMIT :limit::integer
                 FOR UPDATE OF o SKIP LOCKED
             )
+            UPDATE tasks.queue q
+            SET state = 'ready', run_at = NULL
+            FROM due
+            WHERE q.task_id = due.task_id
             RETURNING q.topic_id
             """);
         // The attempt is kept: an expired run counts, since a poison task can take a node down.
@@ -210,15 +215,18 @@ public final class PostgresTaskStore implements TaskStore {
             FROM tasks.queue
             WHERE topic_id = :topic::integer
             """);
+        // Materialized for the same reason as promote: otherwise the limit doesn't hold.
         purge = sql("""
-            DELETE FROM tasks.task t
-            WHERE t.topic_id = :topic::integer
-              AND t.id IN (
+            WITH doomed AS MATERIALIZED (
                 SELECT d.id FROM tasks.task d
                 WHERE d.topic_id = :topic::integer AND d.outcome = :outcome::tasks.task_outcome AND d.completed_at < :before::timestamptz
                 ORDER BY d.completed_at
                 LIMIT :limit::integer
-                FOR UPDATE SKIP LOCKED)
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM tasks.task t
+            USING doomed
+            WHERE t.topic_id = :topic::integer AND t.id = doomed.id
             """);
         snapshot = sql("""
             INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at)

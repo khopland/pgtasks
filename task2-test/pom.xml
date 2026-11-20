@@ -33,10 +33,6 @@
       <artifactId>embedded-postgres</artifactId>
     </dependency>
     <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
-    </dependency>
-    <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
     </dependency>
@@ -60,4 +56,86 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <!--
+    Embedded Postgres binaries for the machine running the build, picked by OS and architecture.
+    Tests against an external server (task2.test.postgres.url) don't need them.
+  -->
+  <profiles>
+    <profile>
+      <id>binaries-linux-amd64</id>
+      <activation>
+        <os>
+          <name>Linux</name>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>binaries-linux-arm64</id>
+      <activation>
+        <os>
+          <name>Linux</name>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>binaries-darwin-amd64</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>x86_64</arch>
+        </os>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>binaries-darwin-arm64</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>binaries-windows-amd64</id>
+      <activation>
+        <os>
+          <family>windows</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>

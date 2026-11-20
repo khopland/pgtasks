@@ -144,6 +144,22 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void promotion_respects_its_limit() throws Exception {
+        StoreFixture fixture = setUp();
+        fixture.push(topic, Insertion.APPEND, StoreFixture.delayed("a", Duration.ofSeconds(10)), StoreFixture.delayed("b", Duration.ofSeconds(10)),
+            StoreFixture.delayed("c", Duration.ofSeconds(10)), StoreFixture.delayed("d", Duration.ofSeconds(10)), StoreFixture.delayed("e", Duration.ofSeconds(10)));
+        fixture.advance(Duration.ofSeconds(20));
+
+        List<Integer> promoted = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
+        assertThat(promoted).containsExactly(topic);
+        assertThat(fixture.counts(topic).ready()).isEqualTo(2);
+        assertThat(fixture.counts(topic).due()).isEqualTo(3);
+
+        assertThat(fixture.promoteDue()).containsExactly(topic);
+        assertThat(fixture.counts(topic).ready()).isEqualTo(5);
+    }
+
+    @Test
     void a_dead_letter_stays_in_the_queue_with_its_error() throws SQLException {
         StoreFixture fixture = setUp();
         long id = fixture.push(topic, "a");
