@@ -13,6 +13,7 @@
     <!-- Task 2.0: separate parent, Java 25, JUnit 5, Postgres only -->
     <module>task2-parent</module>
     <module>task2-test</module>
+    <module>task2-api</module>
   </modules>
   <profiles>
     <!-- Phase 0: regression tests for plan section 02. They fail on the unpatched 1.x snapshot. -->
