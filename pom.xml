@@ -10,6 +10,9 @@
     <module>task-jdbc</module>
     <module>task-processor</module>
     <module>task-processor-jdbc</module>
+    <!-- Task 2.0: separate parent, Java 25, JUnit 5, Postgres only -->
+    <module>task2-parent</module>
+    <module>task2-test</module>
   </modules>
   <properties>
     <project.build.sourceEncoding>utf-8</project.build.sourceEncoding>
