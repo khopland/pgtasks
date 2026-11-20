@@ -33,6 +33,7 @@ final class PostgresStoreFixture extends StoreFixture {
         database.execute("UPDATE tasks.queue SET run_at = run_at - " + interval + " WHERE run_at IS NOT NULL");
         database.execute("UPDATE tasks.node SET heartbeat_at = heartbeat_at - " + interval);
         database.execute("UPDATE tasks.rate_admission SET refilled_at = refilled_at - " + interval);
+        database.execute("UPDATE tasks.rate_limit SET until = until - " + interval + " WHERE until IS NOT NULL");
         database.execute("UPDATE tasks.lease SET acquired_at = acquired_at - " + interval + ", expires_at = expires_at - " + interval);
     }
 }

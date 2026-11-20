@@ -148,6 +148,25 @@ public interface TaskStore {
     /** Makes sure the admission state for a strict rate limit exists. */
     void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException;
 
+    /** Every rate limit override operators have set, reset ones included (plan section 08). */
+    List<LimitOverride> limitOverrides(StoreTransaction transaction) throws SQLException;
+
+    /**
+     * Overrides a rate limit's rate, burst or both, optionally until a time; with both null, resets
+     * it to the configured values. Every change bumps the override's version, which is 0 for a
+     * limit never overridden, so it can serve as an ETag. Once committed, every node is notified.
+     *
+     * @param perSecond       the rate, or null to keep the configured one
+     * @param burst           the burst, or null to keep the configured one
+     * @param until           when the override lapses by itself, or null for never
+     * @param by              who made the change, for the record
+     * @param expectedVersion the version this change is based on, or null to change it regardless
+     * @return the override as changed, or empty if its version isn't {@code expectedVersion}
+     * @throws IllegalArgumentException if no node has configured the limit
+     */
+    Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
+                                          Long expectedVersion) throws SQLException;
+
     /** One task as tasks.task_view shows it. */
     Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException;
 
@@ -188,6 +207,28 @@ public interface TaskStore {
             if (burst < 1) {
                 throw new IllegalArgumentException("burst must be at least 1");
             }
+        }
+    }
+
+    /**
+     * An operator's override of a configured rate limit. A null rate or burst keeps the configured
+     * value.
+     */
+    record LimitOverride(String name, Double perSecond, Integer burst, Instant until, long version, Instant updatedAt, String updatedBy) {
+
+        public LimitOverride {
+            Objects.requireNonNull(name, "name");
+            if (perSecond != null && !(perSecond > 0)) {
+                throw new IllegalArgumentException("rate must be positive; pausing is a separate switch");
+            }
+            if (burst != null && burst < 1) {
+                throw new IllegalArgumentException("burst must be at least 1");
+            }
+        }
+
+        /** Whether it changes the limit at this time: it sets something and hasn't lapsed. */
+        public boolean activeAt(Instant now) {
+            return (perSecond != null || burst != null) && (until == null || now.isBefore(until));
         }
     }
 

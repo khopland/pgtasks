@@ -12,7 +12,8 @@ import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 
 /**
- * LISTENs for the notifications that the queue triggers send when tasks become ready. Uses one
+ * LISTENs for the notifications that the queue triggers send when tasks become ready, and that
+ * changes to rate limit overrides send. Uses one
  * long-lived connection; on any error it reconnects with backoff and reports
  * {@link Listener#missed()}, so the engine polls every topic once.
  */
@@ -26,7 +27,8 @@ public final class PostgresNotifier implements Notifier {
         Connection open() throws SQLException;
     }
 
-    private static final String CHANNEL = "tasks_ready";
+    private static final String READY = "tasks_ready";
+    private static final String LIMIT = "tasks_limit";
 
     private final ConnectionFactory connections;
     private final AtomicBoolean running = new AtomicBoolean();
@@ -50,7 +52,8 @@ public final class PostgresNotifier implements Notifier {
         while (running.get()) {
             try (Connection connection = connections.open()) {
                 try (Statement statement = connection.createStatement()) {
-                    statement.execute("LISTEN " + CHANNEL);
+                    statement.execute("LISTEN " + READY);
+                    statement.execute("LISTEN " + LIMIT);
                 }
                 if (!first) {
                     listener.missed();
@@ -64,6 +67,10 @@ public final class PostgresNotifier implements Notifier {
                         continue;
                     }
                     for (PGNotification notification : notifications) {
+                        if (LIMIT.equals(notification.getName())) {
+                            listener.limitChanged(notification.getParameter());
+                            continue;
+                        }
                         try {
                             listener.ready(Integer.parseInt(notification.getParameter()));
                         } catch (NumberFormatException ignored) {

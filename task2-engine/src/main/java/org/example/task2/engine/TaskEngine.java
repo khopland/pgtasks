@@ -36,6 +36,7 @@ public final class TaskEngine implements AutoCloseable {
     private final Map<Integer, TopicWorker<?>> workersById = new ConcurrentHashMap<>();
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
     private Housekeeper housekeeper;
+    private RateLimits limits;
     private Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
@@ -88,8 +89,9 @@ public final class TaskEngine implements AutoCloseable {
         }
         store.prepare();
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version()));
+        limits = new RateLimits(store, topics.stream().map(topic -> topic.settings().rateLimit()).filter(Objects::nonNull).toList(), this::limitChanged);
         EngineCore core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started);
+            held, () -> !started, limits);
         Map<Topic<?>, Integer> ids = new HashMap<>();
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
@@ -108,6 +110,7 @@ public final class TaskEngine implements AutoCloseable {
             workersByName.put(topic.ref().name(), worker);
             workersById.put(ids.get(topic), worker);
         }
+        limits.refresh();
         notifier = settings.notifier();
         if (notifier != null) {
             notifier.start(new Notifier.Listener() {
@@ -120,12 +123,18 @@ public final class TaskEngine implements AutoCloseable {
                 }
 
                 @Override
+                public void limitChanged(String name) {
+                    limits.refreshSoon();
+                }
+
+                @Override
                 public void missed() {
                     workersById.values().forEach(TopicWorker::wake);
+                    limits.refreshSoon();
                 }
             });
         }
-        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans);
+        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans, limits::refresh);
         housekeeper.start();
         workersByName.values().forEach(TopicWorker::start);
         started = true;
@@ -162,6 +171,21 @@ public final class TaskEngine implements AutoCloseable {
         if (started) {
             housekeeper.runLeaderJobsNow();
         }
+    }
+
+    /** The rate limits of this node's topics, and operators' runtime overrides of them. */
+    public RateLimits limits() {
+        if (limits == null) {
+            throw new IllegalStateException("Not started");
+        }
+        return limits;
+    }
+
+    /** Tells the workers using a limit that it changed, so a wait for permits ends early. */
+    private void limitChanged(String name) {
+        workersById.values().stream()
+            .filter(worker -> worker.topic().settings().rateLimit() != null && worker.topic().settings().rateLimit().name().equals(name))
+            .forEach(TopicWorker::limitChanged);
     }
 
     /** Whether this node holds the housekeeping lease and runs the cluster-wide jobs. */

@@ -23,6 +23,10 @@
         <sqlFile path="R__create_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
+    <changeSet id="tasks-R__notify_limit" author="task2" runOnChange="true">
+        <sqlFile path="R__notify_limit.sql" relativeToChangelogFile="true" splitStatements="false"/>
+    </changeSet>
+
     <changeSet id="tasks-R__notify_ready" author="task2" runOnChange="true">
         <sqlFile path="R__notify_ready.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>

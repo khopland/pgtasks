@@ -24,7 +24,8 @@ record EngineCore(
     RandomGenerator random,
     Consumer<String> wake,
     Map<Long, Integer> held,
-    BooleanSupplier stopping
+    BooleanSupplier stopping,
+    RateLimits limits
 ) {
 
     private static final System.Logger LOGGER = System.getLogger(EngineCore.class.getName());

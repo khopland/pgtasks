@@ -60,6 +60,7 @@ public final class InMemoryTaskStore implements TaskStore {
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
     private final List<Rows.Attempt> attempts = new ArrayList<>();
     private final Map<String, Rows.Bucket> buckets = new HashMap<>();
+    private final Map<String, LimitOverride> limitOverrides = new TreeMap<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
     private final Map<String, Held> leases = new HashMap<>();
     private int nextTopic = 1, nextNode = 1;
@@ -111,6 +112,12 @@ public final class InMemoryTaskStore implements TaskStore {
     void notifyReady(Set<Integer> topicIds) {
         for (int topicId : topicIds) {
             listeners.forEach(listener -> listener.ready(topicId));
+        }
+    }
+
+    void notifyLimits(Set<String> names) {
+        for (String name : names) {
+            listeners.forEach(listener -> listener.limitChanged(name));
         }
     }
 
@@ -539,6 +546,30 @@ public final class InMemoryTaskStore implements TaskStore {
     @Override
     public void ensureAdmission(StoreTransaction transaction, String name, int burst) {
         bucket(memory(transaction), name, burst);
+    }
+
+    @Override
+    public List<LimitOverride> limitOverrides(StoreTransaction transaction) {
+        memory(transaction);
+        return List.copyOf(limitOverrides.values());
+    }
+
+    @Override
+    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
+                                                 Long expectedVersion) {
+        MemoryTransaction memory = memory(transaction);
+        if (!buckets.containsKey(name)) {
+            throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
+        }
+        LimitOverride current = limitOverrides.get(name);
+        long version = current == null ? 0 : current.version();
+        if (expectedVersion != null && expectedVersion != version) {
+            return Optional.empty();
+        }
+        LimitOverride changed = new LimitOverride(name, perSecond, burst, until, version + 1, now(), by);
+        memory.put(limitOverrides, name, changed);
+        memory.limitChanged(name);
+        return Optional.of(changed);
     }
 
     @Override

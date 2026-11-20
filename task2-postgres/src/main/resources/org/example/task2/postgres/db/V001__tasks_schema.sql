@@ -125,23 +125,27 @@ CREATE TABLE tasks.attempt (
 );
 CREATE INDEX attempt_task_idx ON tasks.attempt (task_id, attempt);
 
--- Runtime overrides of configured limits (plan section 08).
+-- Strict admission: one token bucket per limit, shared by every node. A claim locks the row,
+-- polls at most the available tokens and charges what it got. A node creates the row when it
+-- starts with a limit, so it also lists every limit some node has configured.
+CREATE TABLE tasks.rate_admission (
+    name         text PRIMARY KEY,
+    tokens       double precision NOT NULL CHECK (tokens >= 0),
+    refilled_at  timestamptz NOT NULL
+);
+
+-- Runtime overrides of configured limits (plan section 08). A NULL rate or burst keeps the
+-- configured one; with both NULL the limit is back to its configured values. The row stays when
+-- reset, so version only grows and can serve as an ETag. Changes are broadcast by NOTIFY
+-- tasks_limit (R__notify_limit.sql), so every node applies them within about a second.
 CREATE TABLE tasks.rate_limit (
-    name        text PRIMARY KEY,
+    name        text PRIMARY KEY REFERENCES tasks.rate_admission (name),
     rate        double precision CHECK (rate > 0),
     burst       integer CHECK (burst > 0),
     until       timestamptz,
     version     bigint NOT NULL DEFAULT 1,
     updated_at  timestamptz NOT NULL DEFAULT now(),
     updated_by  text
-);
-
--- Strict admission: one token bucket per limit, shared by every node. A claim locks the row,
--- polls at most the available tokens and charges what it got.
-CREATE TABLE tasks.rate_admission (
-    name         text PRIMARY KEY,
-    tokens       double precision NOT NULL CHECK (tokens >= 0),
-    refilled_at  timestamptz NOT NULL
 );
 
 -- Recurring task definitions (Phase 5).

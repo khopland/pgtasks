@@ -29,6 +29,7 @@ final class TopicWorker<T> {
     private final EngineCore core;
     private final Semaphore permits;
     private final Signal signal = new Signal();
+    private final Signal limitSignal = new Signal();
     private final ExecutorService batches;
     private volatile boolean running, stopping;
     private Thread poller;
@@ -68,18 +69,24 @@ final class TopicWorker<T> {
         signal.signal();
     }
 
-    private void loop() {
-        TaskStore.ClaimRequest request = new TaskStore.ClaimRequest(
+    /** The topic's rate limit changed: a wait for permits ends, and the next claim uses the new values. */
+    void limitChanged() {
+        limitSignal.signal();
+    }
+
+    /** The claim, with the rate limit's current values: an operator can change them at any time. */
+    private TaskStore.ClaimRequest request() {
+        RateLimit limit = topic.settings().rateLimit() == null ? null : core.limits().effective(topic.settings().rateLimit());
+        return new TaskStore.ClaimRequest(
             topicId,
             core.nodeId(),
             topic.settings().ordering(),
             topic.settings().batchSize(),
-            topic.settings().rateLimit() == null ? null : new TaskStore.Admission(
-                topic.settings().rateLimit().name(),
-                topic.settings().rateLimit().perSecond(),
-                topic.settings().rateLimit().burst()
-            )
+            limit == null ? null : new TaskStore.Admission(limit.name(), limit.perSecond(), limit.burst())
         );
+    }
+
+    private void loop() {
         int failures = 0;
         while (running) {
             try {
@@ -96,6 +103,7 @@ final class TopicWorker<T> {
             boolean dispatched = false;
             long claim = claims.incrementAndGet();
             try {
+                TaskStore.ClaimRequest request = request();
                 TaskStore.Claim claimed = core.transact(transaction -> core.store().claim(transaction, request));
                 failures = 0;
                 if (!claimed.tasks().isEmpty()) {
@@ -131,8 +139,8 @@ final class TopicWorker<T> {
                 release();
                 dispatched = true;
                 if (claimed.admissionWait() != null) {
-                    // A wake-up doesn't shorten a wait for the rate limit.
-                    Signal.sleep(claimed.admissionWait());
+                    // New work doesn't shorten a wait for the rate limit; a changed limit does.
+                    limitSignal.await(claimed.admissionWait());
                 } else {
                     lastEmptyClaim = claim;
                     signal.await(topic.settings().pollInterval());

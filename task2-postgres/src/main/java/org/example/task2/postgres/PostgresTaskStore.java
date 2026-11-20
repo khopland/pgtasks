@@ -46,7 +46,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
-    private final NamedSql lead, resign, setRetention, retention;
+    private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -269,6 +269,27 @@ public final class PostgresTaskStore implements TaskStore {
             CROSS JOIN LATERAL jsonb_each_text(t.retention) AS r
             ORDER BY t.id
             """);
+        limitOverrides = sql("""
+            SELECT name, rate, burst, until, version, updated_at, updated_by
+            FROM tasks.rate_limit
+            ORDER BY name
+            """);
+        // Only a limit some node configured (it has a token bucket) can be overridden. A first
+        // override is based on version 0; two at once serialize on the primary key, and the second
+        // then finds version 1 and changes nothing.
+        overrideLimit = sql("""
+            INSERT INTO tasks.rate_limit AS l (name, rate, burst, until, updated_by)
+            SELECT a.name, :rate::double precision, :burst::integer, :until::timestamptz, :by::text
+            FROM tasks.rate_admission a
+            WHERE a.name = :name
+              AND (coalesce(:expected::bigint, 0) = 0 OR EXISTS (SELECT 1 FROM tasks.rate_limit e WHERE e.name = :name))
+            ON CONFLICT (name) DO UPDATE
+            SET rate = excluded.rate, burst = excluded.burst, until = excluded.until,
+                version = l.version + 1, updated_at = now(), updated_by = excluded.updated_by
+            WHERE :expected::bigint IS NULL OR l.version = :expected::bigint
+            RETURNING l.name, l.rate, l.burst, l.until, l.version, l.updated_at, l.updated_by
+            """);
+        limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM tasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
             INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at)
             SELECT t.id, now(),
@@ -992,6 +1013,58 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return released;
+    }
+
+    @Override
+    public List<LimitOverride> limitOverrides(StoreTransaction transaction) throws SQLException {
+        List<LimitOverride> overrides = new ArrayList<>();
+        try (PreparedStatement statement = limitOverrides.prepare(transaction.connection(), NamedSql.parameters());
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                overrides.add(limitOverride(resultSet));
+            }
+        }
+        return overrides;
+    }
+
+    @Override
+    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
+                                                 Long expectedVersion) throws SQLException {
+        // Validates the values the way the row will hold them, before touching the database.
+        new LimitOverride(name, perSecond, burst, until, 0, null, by);
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("name", name)
+            .set("rate", perSecond)
+            .set("burst", burst)
+            .set("until", until == null ? null : OffsetDateTime.ofInstant(until, java.time.ZoneOffset.UTC))
+            .set("by", by)
+            .set("expected", expectedVersion);
+        try (PreparedStatement statement = overrideLimit.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            if (resultSet.next()) {
+                return Optional.of(limitOverride(resultSet));
+            }
+        }
+        try (PreparedStatement statement = limitConfigured.prepare(transaction.connection(), NamedSql.parameters().set("name", name));
+             ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            if (!resultSet.getBoolean(1)) {
+                throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static LimitOverride limitOverride(ResultSet resultSet) throws SQLException {
+        return new LimitOverride(
+            resultSet.getString("name"),
+            resultSet.getObject("rate", Double.class),
+            resultSet.getObject("burst", Integer.class),
+            instant(resultSet, "until"),
+            resultSet.getLong("version"),
+            instant(resultSet, "updated_at"),
+            resultSet.getString("updated_by")
+        );
     }
 
     @Override

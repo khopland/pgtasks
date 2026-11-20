@@ -1,17 +1,20 @@
 package org.example.task2.test.tck;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
 import org.example.task2.spi.TaskStore;
 import org.junit.jupiter.api.Test;
 
-/** TCK: the strict rate limit, a token bucket shared by every node. */
+/** TCK: the strict rate limit, a token bucket shared by every node, and operators' overrides of it. */
 public abstract class AdmissionTck extends StoreTck {
 
     private final TaskStore.Admission limit = new TaskStore.Admission("downstream", 10, 3);
@@ -86,5 +89,83 @@ public abstract class AdmissionTck extends StoreTck {
         List<TaskStore.ClaimedTask> theirs = claim(fixture, other, 100).tasks();
 
         assertThat(mine.size() + theirs.size()).isEqualTo(3);
+    }
+
+    private static List<TaskStore.LimitOverride> overrides(StoreFixture fixture) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().limitOverrides(transaction));
+    }
+
+    private Optional<TaskStore.LimitOverride> override(StoreFixture fixture, Double rate, Integer burst, Long expected) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().overrideLimit(transaction, limit.name(), rate, burst, null, "ops", expected));
+    }
+
+    @Test
+    void overrides_are_versioned_so_two_operators_cannot_overwrite_each_other() throws SQLException {
+        StoreFixture fixture = setUp();
+        assertThat(overrides(fixture)).isEmpty();
+
+        TaskStore.LimitOverride first = override(fixture, 20.0, null, 0L).orElseThrow();
+        Optional<TaskStore.LimitOverride> stale = override(fixture, 5.0, null, 0L);
+        TaskStore.LimitOverride second = override(fixture, null, 8, first.version()).orElseThrow();
+        TaskStore.LimitOverride forced = override(fixture, 30.0, 9, null).orElseThrow();
+
+        assertThat(first.version()).isEqualTo(1);
+        assertThat(first.perSecond()).isEqualTo(20.0);
+        assertThat(first.burst()).as("keeps the configured burst").isNull();
+        assertThat(first.updatedBy()).isEqualTo("ops");
+        assertThat(stale).as("based on a version that is gone").isEmpty();
+        assertThat(second.version()).isEqualTo(2);
+        assertThat(second.perSecond()).as("a change replaces the whole override").isNull();
+        assertThat(forced.version()).as("no version given: changes it regardless").isEqualTo(3);
+        assertThat(override(fixture, 1.0, null, 7L)).isEmpty();
+        assertThat(overrides(fixture)).containsExactly(forced);
+    }
+
+    @Test
+    void a_first_override_must_be_based_on_version_zero() throws SQLException {
+        StoreFixture fixture = setUp();
+        assertThat(override(fixture, 20.0, null, 3L)).isEmpty();
+        assertThat(override(fixture, 20.0, null, 0L)).isPresent();
+    }
+
+    @Test
+    void a_reset_keeps_the_row_so_the_version_only_grows() throws SQLException {
+        StoreFixture fixture = setUp();
+        TaskStore.LimitOverride set = override(fixture, 20.0, 5, 0L).orElseThrow();
+        TaskStore.LimitOverride reset = override(fixture, null, null, set.version()).orElseThrow();
+
+        assertThat(reset.version()).isEqualTo(2);
+        assertThat(reset.activeAt(fixture.store().clock().instant())).isFalse();
+        assertThat(override(fixture, 20.0, null, 0L)).as("version 0 is gone for good").isEmpty();
+    }
+
+    @Test
+    void an_override_lapses_at_its_until() throws Exception {
+        StoreFixture fixture = setUp();
+        Instant until = fixture.store().clock().instant().plusSeconds(60);
+        fixture.inTransaction(transaction -> fixture.store().overrideLimit(transaction, limit.name(), 20.0, null, until, "ops", null));
+
+        fixture.advance(Duration.ofSeconds(61));
+
+        TaskStore.LimitOverride override = overrides(fixture).getFirst();
+        assertThat(override.activeAt(fixture.store().clock().instant())).isFalse();
+    }
+
+    @Test
+    void only_a_configured_limit_can_be_overridden() throws SQLException {
+        StoreFixture fixture = setUp();
+        assertThatThrownBy(() -> fixture.inTransaction(transaction -> fixture.store().overrideLimit(transaction, "unknown", 1.0, null, null, "ops", null)))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("unknown");
+    }
+
+    @Test
+    void an_override_in_a_rolled_back_transaction_is_not_kept() throws SQLException {
+        StoreFixture fixture = setUp();
+        try (var transaction = fixture.store().begin()) {
+            fixture.store().overrideLimit(transaction, limit.name(), 20.0, null, null, "ops", null);
+            transaction.rollback();
+        }
+        assertThat(overrides(fixture)).isEmpty();
     }
 }

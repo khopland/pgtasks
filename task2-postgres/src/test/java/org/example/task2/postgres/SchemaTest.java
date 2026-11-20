@@ -30,6 +30,7 @@ class SchemaTest {
         assertThat(database.rows("SELECT version, script FROM tasks.schema_history ORDER BY installed_rank")).containsExactly(
             Arrays.asList(1, "V001__tasks_schema.sql"),
             Arrays.asList(null, "R__create_topic.sql"),
+            Arrays.asList(null, "R__notify_limit.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
             Arrays.asList(null, "R__task_view.sql")
         );
