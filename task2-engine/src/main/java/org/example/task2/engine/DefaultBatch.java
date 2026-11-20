@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 
 import org.example.task2.Batch;
@@ -12,6 +13,8 @@ import org.example.task2.Creation;
 import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
+import org.example.task2.Junction;
+import org.example.task2.Juncture;
 import org.example.task2.Push;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
@@ -65,7 +68,7 @@ final class DefaultBatch<T> implements Batch<T> {
             } catch (Exception e) {
                 decision = Decision.failed(e);
             }
-            decisions.decide(task, decision, work.pushes);
+            decisions.decide(task, decision, work.pushes, work.junctions);
         }
         return decisions.build();
     }
@@ -74,6 +77,7 @@ final class DefaultBatch<T> implements Batch<T> {
 
         private final Task<T> task;
         private final List<Push<?>> pushes = new ArrayList<>();
+        private final List<Junction> junctions = new ArrayList<>();
 
         StagedWork(Task<T> task) {
             this.task = task;
@@ -87,6 +91,11 @@ final class DefaultBatch<T> implements Batch<T> {
         @Override
         public <C> void push(TopicRef<C> topic, Insertion insertion, Creation<C> creation) {
             pushes.add(new Push<>(topic, insertion, creation));
+        }
+
+        @Override
+        public void junction(TopicRef<?> topic, Juncture juncture, Set<String> identifiers) {
+            junctions.add(new Junction(topic, juncture, identifiers));
         }
     }
 }

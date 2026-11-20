@@ -259,12 +259,12 @@ class SchemaMigratorTest {
 
     @Test
     void the_store_prepares_the_schema_by_its_mode(PostgresDatabase database) throws SQLException {
-        assertThatThrownBy(() -> new PostgresTaskStore(SchemaMode.VALIDATE).prepare(database.dataSource())).isInstanceOf(TaskSchemaException.class);
-        new PostgresTaskStore(SchemaMode.NONE).prepare(database.dataSource());
+        assertThatThrownBy(() -> new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE).prepare()).isInstanceOf(TaskSchemaException.class);
+        new PostgresTaskStore(database.dataSource(), SchemaMode.NONE).prepare();
         assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'tasks'")).isZero();
 
-        new PostgresTaskStore().prepare(database.dataSource());
-        new PostgresTaskStore(SchemaMode.VALIDATE).prepare(database.dataSource());
+        new PostgresTaskStore(database.dataSource()).prepare();
+        new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE).prepare();
         assertThat(history(database)).isEqualTo(4);
     }
 }

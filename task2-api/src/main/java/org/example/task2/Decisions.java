@@ -15,13 +15,18 @@ import java.util.stream.Collectors;
  */
 public final class Decisions {
 
-    /** One task's decision and the downstream work it staged. */
-    public record Verdict(Task<?> task, Decision decision, List<Push<?>> downstream) {
+    /** One task's decision and the downstream work and junctions it staged. */
+    public record Verdict(Task<?> task, Decision decision, List<Push<?>> downstream, List<Junction> junctions) {
 
         public Verdict {
             Objects.requireNonNull(task, "task");
             Objects.requireNonNull(decision, "decision");
             downstream = List.copyOf(downstream);
+            junctions = List.copyOf(junctions);
+        }
+
+        public Verdict(Task<?> task, Decision decision, List<Push<?>> downstream) {
+            this(task, decision, downstream, List.of());
         }
     }
 
@@ -71,13 +76,13 @@ public final class Decisions {
     public Decisions revise(Task<?> task, Decision decision) {
         Verdict current = verdict(task);
         Map<Long, Verdict> revised = new LinkedHashMap<>(verdicts);
-        revised.put(task.id(), new Verdict(current.task(), decision, current.downstream()));
+        revised.put(task.id(), new Verdict(current.task(), decision, current.downstream(), current.junctions()));
         return new Decisions(revised);
     }
 
     /**
      * Combines two views of the same batch: per task, the more severe decision wins. The
-     * downstream work comes from this instance; a review can't add any.
+     * downstream work and junctions come from this instance; a review can't add any.
      */
     public Decisions merge(Decisions other) {
         if (!verdicts.keySet().equals(other.verdicts.keySet())) {
@@ -87,7 +92,8 @@ public final class Decisions {
         verdicts.forEach((id, verdict) -> merged.put(id, new Verdict(
             verdict.task(),
             Decision.merge(verdict.decision(), other.verdicts.get(id).decision()),
-            verdict.downstream()
+            verdict.downstream(),
+            verdict.junctions()
         )));
         return new Decisions(merged);
     }
@@ -119,7 +125,11 @@ public final class Decisions {
         }
 
         public Builder decide(Task<?> task, Decision decision, List<Push<?>> downstream) {
-            if (verdicts.putIfAbsent(task.id(), new Verdict(task, decision, downstream)) != null) {
+            return decide(task, decision, downstream, List.of());
+        }
+
+        public Builder decide(Task<?> task, Decision decision, List<Push<?>> downstream, List<Junction> junctions) {
+            if (verdicts.putIfAbsent(task.id(), new Verdict(task, decision, downstream, junctions)) != null) {
                 throw new IllegalStateException("Task " + task.id() + " already has a decision");
             }
             return this;

@@ -17,19 +17,32 @@ import org.example.task2.TaskStorageException;
 import org.example.task2.TaskWriter;
 import org.example.task2.Tasks;
 import org.example.task2.TopicRef;
+import org.example.task2.spi.AppTransaction;
+import org.example.task2.spi.StoreTransaction;
 import org.example.task2.spi.TaskStore;
 import org.example.task2.spi.TransactionBinding;
 
-/** Transaction-aware enqueue. Only {@link #independently()} ever commits. */
+/**
+ * Transaction-aware enqueue. Only {@link #independently()} ever commits on its own. With a store
+ * that keeps its tasks outside the application's database, {@link #push} holds the pushes back
+ * until the application transaction commits.
+ */
 final class DefaultTasks implements Tasks {
+
+    private static final System.Logger LOGGER = System.getLogger(DefaultTasks.class.getName());
+
+    /** Sees every push that is stored, for tests that capture pushes. */
+    interface Observer {
+        void pushed(TopicRef<?> topic, Insertion insertion, List<? extends Creation<?>> creations, List<Pushed> results);
+    }
 
     private final TaskStore store;
     private final TopicDirectory topics;
     private final Map<String, PayloadCodec<?>> topicCodecs;
     private final Map<Class<?>, PayloadCodec<?>> typeCodecs;
     private final TransactionBinding transactions;
-    private final Jdbc jdbc;
     private final Consumer<String> wakeLocally;
+    private volatile Observer observer = (topic, insertion, creations, results) -> { };
 
     DefaultTasks(
         TaskStore store,
@@ -37,7 +50,6 @@ final class DefaultTasks implements Tasks {
         Map<String, PayloadCodec<?>> topicCodecs,
         Map<Class<?>, PayloadCodec<?>> typeCodecs,
         TransactionBinding transactions,
-        Jdbc jdbc,
         Consumer<String> wakeLocally
     ) {
         this.store = store;
@@ -45,22 +57,53 @@ final class DefaultTasks implements Tasks {
         this.topicCodecs = Map.copyOf(topicCodecs);
         this.typeCodecs = Map.copyOf(typeCodecs);
         this.transactions = transactions;
-        this.jdbc = jdbc;
         this.wakeLocally = wakeLocally;
+    }
+
+    void observe(Observer observer) {
+        this.observer = Objects.requireNonNull(observer);
     }
 
     @Override
     public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-        Connection connection = transactions.current().orElseThrow(() -> new IllegalStateException(
+        AppTransaction transaction = transactions.current().orElseThrow(() -> new IllegalStateException(
             "tasks.push(...) joins the current transaction, but there is none. Run it inside a transaction, "
                 + "use tasks.on(connection) to push on an explicit connection, or tasks.independently() to commit on its own."
         ));
-        return pushOn(connection, topic, insertion, creations);
+        if (store.joinsApplicationTransactions()) {
+            Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
+                "The current transaction has no JDBC connection, so a push to " + store + " can't join it."));
+            return pushOn(connection, topic, insertion, creations);
+        }
+        // The store can't join the transaction: check now, store once it has committed.
+        List<Creation<T>> held = List.copyOf(creations);
+        codec(topic);
+        try {
+            EngineCore.transact(store, storeTransaction -> topics.id(storeTransaction, topic.name()));
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        transaction.afterCommit(() -> {
+            try {
+                independently().push(topic, insertion, held);
+            } catch (RuntimeException e) {
+                LOGGER.log(System.Logger.Level.ERROR, "Could not store pushes to " + topic + " after the transaction committed", e);
+                throw e;
+            }
+        });
+        return held.stream().map(creation -> new Pushed(creation.identifier(), Pushed.Status.PENDING, null)).toList();
     }
 
     @Override
     public TaskWriter on(Connection connection) {
         Objects.requireNonNull(connection, "connection");
+        if (!store.joinsApplicationTransactions()) {
+            throw new UnsupportedOperationException(store + " keeps its tasks outside your database, so a push can't join a JDBC "
+                + "transaction. Use tasks.push(...) inside a transaction, which holds the push back until it commits, "
+                + "or tasks.independently().");
+        }
         return new TaskWriter() {
             @Override
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
@@ -76,7 +119,7 @@ final class DefaultTasks implements Tasks {
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
                 List<Pushed> pushed;
                 try {
-                    pushed = jdbc.transact(connection -> write(connection, topic, insertion, creations, null));
+                    pushed = EngineCore.transact(store, transaction -> write(transaction, topic, insertion, creations, null));
                 } catch (SQLException e) {
                     throw new TaskStorageException("Could not push to " + topic, e);
                 } catch (RuntimeException e) {
@@ -92,26 +135,22 @@ final class DefaultTasks implements Tasks {
 
     private <T> List<Pushed> pushOn(Connection connection, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
         try {
-            if (connection.getAutoCommit()) {
-                throw new IllegalStateException("The connection is in auto-commit mode, so the push would commit on its own. "
-                    + "Start a transaction first, or use tasks.independently() if that is what you want.");
-            }
-            return write(connection, topic, insertion, creations, null);
+            return write(store.join(connection), topic, insertion, creations, null);
         } catch (SQLException e) {
             throw new TaskStorageException("Could not push to " + topic, e);
         }
     }
 
     /**
-     * Writes on the given connection without committing. {@code parents}, if given, holds the
-     * task that staged each creation, for the lineage columns.
+     * Writes in the given store transaction without committing. {@code parents}, if given, holds
+     * the task that staged each creation, for the lineage columns.
      */
-    <T> List<Pushed> write(Connection connection, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) throws SQLException {
+    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
         PayloadCodec<T> codec = codec(topic);
-        int topicId = topics.id(connection, topic.name());
+        int topicId = topics.id(transaction, topic.name());
         List<TaskStore.NewTask> tasks = new ArrayList<>(creations.size());
         for (int index = 0; index < creations.size(); index++) {
             Creation<T> creation = creations.get(index);
@@ -129,7 +168,13 @@ final class DefaultTasks implements Tasks {
                 parent == null ? null : parent.flowRootId()
             ));
         }
-        return store.push(connection, topicId, insertion, tasks);
+        List<Pushed> results = store.push(transaction, topicId, insertion, tasks);
+        observer.pushed(topic, insertion, creations, results);
+        return results;
+    }
+
+    int topicId(StoreTransaction transaction, String topic) throws SQLException {
+        return topics.id(transaction, topic);
     }
 
     @SuppressWarnings("unchecked")

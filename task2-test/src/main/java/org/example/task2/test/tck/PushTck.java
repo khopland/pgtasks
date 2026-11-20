@@ -1,69 +1,78 @@
-package org.example.task2.postgres;
+package org.example.task2.test.tck;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.example.task2.postgres.StoreFixture.deduplicated;
-import static org.example.task2.postgres.StoreFixture.delayed;
-import static org.example.task2.postgres.StoreFixture.suspended;
-import static org.example.task2.postgres.StoreFixture.task;
+import static org.example.task2.test.tck.StoreFixture.deduplicated;
+import static org.example.task2.test.tck.StoreFixture.delayed;
+import static org.example.task2.test.tck.StoreFixture.suspended;
+import static org.example.task2.test.tck.StoreFixture.task;
 
-import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import org.example.task2.Insertion;
 import org.example.task2.Pushed;
-import org.example.task2.test.PostgresDatabase;
-import org.example.task2.test.PostgresExtension;
-import org.junit.jupiter.api.BeforeEach;
+import org.example.task2.spi.StoreTransaction;
+import org.example.task2.spi.TaskStore;
+import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.RegisterExtension;
 
-class PushTest {
+/** TCK: pushes and the four insertion policies. */
+public abstract class PushTck extends StoreTck {
 
-    @RegisterExtension
-    static PostgresExtension postgres = StoreFixture.extension();
-
-    private StoreFixture fixture;
     private int topic, other, node;
 
-    @BeforeEach
-    void setUp(PostgresDatabase database) throws SQLException {
-        fixture = new StoreFixture(database);
+    private StoreFixture setUp() throws SQLException {
+        StoreFixture fixture = fixture();
         topic = fixture.topic("topic");
         other = fixture.topic("other");
         node = fixture.node("node-a");
+        return fixture;
     }
 
     @Test
     void append_stores_and_queues_in_order() throws SQLException {
+        StoreFixture fixture = setUp();
         List<Pushed> pushed = fixture.push(topic, Insertion.APPEND, task("a"), task("b"), task("a"));
 
         assertThat(pushed).extracting(Pushed::status).containsOnly(Pushed.Status.QUEUED);
         assertThat(pushed).extracting(Pushed::id).isSorted().doesNotHaveDuplicates();
-        assertThat(fixture.database.rows("SELECT identifier, state, payload FROM tasks.task_view ORDER BY id"))
-            .containsExactly(List.of("a", "ready", "payload-a"), List.of("b", "ready", "payload-b"), List.of("a", "ready", "payload-a"));
+        for (Pushed each : pushed) {
+            TaskView view = fixture.view(each.id()).orElseThrow();
+            assertThat(view.topic()).isEqualTo("topic");
+            assertThat(view.identifier()).isEqualTo(each.identifier());
+            assertThat(view.state()).isEqualTo("ready");
+            assertThat(view.payload()).isEqualTo("payload-" + each.identifier());
+            assertThat(view.finished()).isFalse();
+            assertThat(view.createdAt()).isNotNull();
+        }
     }
 
     @Test
     void delayed_and_suspended_pushes_wait() throws SQLException {
+        StoreFixture fixture = setUp();
+        Instant before = fixture.store().clock().instant();
         List<Pushed> pushed = fixture.push(topic, Insertion.APPEND, delayed("a", Duration.ofMinutes(5)), suspended("b"), delayed("c", Duration.ZERO));
 
         assertThat(pushed).extracting(Pushed::id).extracting(fixture::state).containsExactly("scheduled", "suspended", "ready");
-        assertThat(fixture.database.count("SELECT count(*) FROM tasks.queue WHERE run_at BETWEEN now() + interval '4 minutes' AND now() + interval '6 minutes'"))
-            .isEqualTo(1);
+        assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
+            .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
+        assertThat(fixture.counts(topic)).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0));
     }
 
     @Test
-    void push_to_an_unknown_topic_fails() {
+    void push_to_an_unknown_topic_fails() throws SQLException {
+        StoreFixture fixture = setUp();
         assertThatThrownBy(() -> fixture.push(9999, Insertion.APPEND, task("a"))).isInstanceOf(SQLException.class);
     }
 
     @Test
     void supersede_makes_waiting_tasks_redundant_but_not_running_or_parked_ones() throws SQLException {
+        StoreFixture fixture = setUp();
         long running = fixture.push(topic, "a");
         fixture.claim(topic, node);
         long ready = fixture.push(topic, "a");
@@ -83,10 +92,12 @@ class PushTest {
         assertThat(fixture.state(otherTopic)).isEqualTo("ready");
         assertThat(fixture.state(pushed.get(0).id())).isEqualTo("redundant");
         assertThat(fixture.state(pushed.get(1).id())).isEqualTo("ready");
+        assertThat(fixture.view(ready).orElseThrow().finished()).isTrue();
     }
 
     @Test
     void supersede_covers_a_task_that_is_backing_off() throws SQLException {
+        StoreFixture fixture = setUp();
         fixture.push(topic, "a");
         var claimed = fixture.claim(topic, node).getFirst();
         fixture.complete(topic, node, claimed, StoreFixture.retrying(Duration.ofHours(1)));
@@ -98,6 +109,7 @@ class PushTest {
 
     @Test
     void replace_also_covers_parked_dead_and_finished_tasks() throws SQLException {
+        StoreFixture fixture = setUp();
         long succeeded = fixture.push(topic, "a");
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         long dead = fixture.push(topic, "a");
@@ -112,12 +124,12 @@ class PushTest {
         assertThat(fixture.state(dead)).isEqualTo("redundant");
         assertThat(fixture.state(parked)).isEqualTo("redundant");
         assertThat(fixture.state(running)).isEqualTo("active");
-        assertThat(fixture.database.rows("SELECT previous_outcome::text FROM tasks.task WHERE id = ?", succeeded).getFirst().getFirst())
-            .isEqualTo("succeeded");
+        assertThat(fixture.view(succeeded).orElseThrow().previousOutcome()).isEqualTo("succeeded");
     }
 
     @Test
     void delete_removes_earlier_tasks_and_their_history() throws SQLException {
+        StoreFixture fixture = setUp();
         long finished = fixture.push(topic, "a");
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         long running = fixture.push(topic, "x");
@@ -133,17 +145,18 @@ class PushTest {
         assertThat(fixture.state(waiting)).isNull();
         assertThat(fixture.state(running)).isEqualTo("active");
         assertThat(fixture.state(keepOther)).isEqualTo("ready");
-        assertThat(fixture.database.count("SELECT count(*) FROM tasks.task WHERE identifier = 'a'")).isEqualTo(1);
+        assertThat(fixture.state(pushed.get(2).id())).isEqualTo("ready");
     }
 
     @Test
     void a_dedup_key_allows_one_unfinished_task() throws SQLException {
+        StoreFixture fixture = setUp();
         List<Pushed> first = fixture.push(topic, Insertion.APPEND, deduplicated("a", "key-1"));
         List<Pushed> second = fixture.push(topic, Insertion.APPEND, deduplicated("a", "key-1"), deduplicated("b", "key-2"));
 
         assertThat(first).extracting(Pushed::status).containsExactly(Pushed.Status.QUEUED);
         assertThat(second).extracting(Pushed::status).containsExactly(Pushed.Status.DUPLICATE, Pushed.Status.QUEUED);
-        assertThat(fixture.database.count("SELECT count(*) FROM tasks.task")).isEqualTo(2);
+        assertThat(fixture.counts(topic).total()).isEqualTo(2);
 
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         assertThat(fixture.push(topic, Insertion.APPEND, deduplicated("a", "key-1"))).extracting(Pushed::status).containsExactly(Pushed.Status.QUEUED);
@@ -151,14 +164,13 @@ class PushTest {
 
     @Test
     void a_dedup_key_holds_against_a_concurrent_producer() throws Exception {
-        try (Connection first = fixture.database.dataSource().getConnection(); Connection second = fixture.database.dataSource().getConnection()) {
-            first.setAutoCommit(false);
-            second.setAutoCommit(false);
-            assertThat(fixture.store.push(first, topic, Insertion.APPEND, List.of(deduplicated("a", "key")))).extracting(Pushed::status).containsExactly(Pushed.Status.QUEUED);
+        StoreFixture fixture = setUp();
+        try (StoreTransaction first = fixture.store().begin()) {
+            assertThat(fixture.store().push(first, topic, Insertion.APPEND, List.of(deduplicated("a", "key")))).extracting(Pushed::status).containsExactly(Pushed.Status.QUEUED);
 
             CompletableFuture<List<Pushed>> concurrent = CompletableFuture.supplyAsync(() -> {
-                try {
-                    List<Pushed> result = fixture.store.push(second, topic, Insertion.APPEND, List.of(deduplicated("a", "key")));
+                try (StoreTransaction second = fixture.store().begin()) {
+                    List<Pushed> result = fixture.store().push(second, topic, Insertion.APPEND, List.of(deduplicated("a", "key")));
                     second.commit();
                     return result;
                 } catch (SQLException e) {
@@ -171,15 +183,41 @@ class PushTest {
 
             assertThat(concurrent.get(5, TimeUnit.SECONDS)).extracting(Pushed::status).containsExactly(Pushed.Status.DUPLICATE);
         }
-        assertThat(fixture.database.count("SELECT count(*) FROM tasks.queue")).isEqualTo(1);
+        assertThat(fixture.counts(topic).total()).isEqualTo(1);
+    }
+
+    @Test
+    void a_rolled_back_push_leaves_nothing() throws SQLException {
+        StoreFixture fixture = setUp();
+        long id;
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            id = fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("a"))).getFirst().id();
+            transaction.rollback();
+        }
+        assertThat(fixture.state(id)).isNull();
+        assertThat(fixture.counts(topic).total()).isZero();
     }
 
     @Test
     void lineage_and_reference_are_stored() throws SQLException {
-        var child = new org.example.task2.spi.TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L);
+        StoreFixture fixture = setUp();
+        var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L);
         long id = fixture.push(topic, Insertion.APPEND, child).getFirst().id();
 
-        assertThat(fixture.database.rows("SELECT reference, parent_id, root_id, payload_type FROM tasks.task WHERE id = ?", id).getFirst())
-            .containsExactly("ref-1", 10L, 7L, "v1");
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.reference()).isEqualTo("ref-1");
+        assertThat(view.parentId()).isEqualTo(10L);
+        assertThat(view.rootId()).isEqualTo(7L);
+        assertThat(view.payloadType()).isEqualTo("v1");
+    }
+
+    @Test
+    void topics_are_created_once() throws SQLException {
+        StoreFixture fixture = setUp();
+        assertThat(fixture.topic("topic")).isEqualTo(topic);
+        java.util.OptionalInt found = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "other"));
+        java.util.OptionalInt missing = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "missing"));
+        assertThat(found).hasValue(other);
+        assertThat(missing).isEmpty();
     }
 }

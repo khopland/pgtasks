@@ -9,12 +9,24 @@
   </parent>
 
   <artifactId>task2-test</artifactId>
-  <description>Test support for Task 2.0: a real Postgres per test run, without Docker.</description>
+  <description>Test support for Task 2.0: the store TCK, and a real Postgres per test run without Docker.</description>
 
   <dependencies>
     <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-api</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
     </dependency>
     <dependency>
       <groupId>io.zonky.test</groupId>
@@ -40,11 +52,6 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.assertj</groupId>
-      <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

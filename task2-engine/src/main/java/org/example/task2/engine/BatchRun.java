@@ -16,10 +16,13 @@ import org.example.task2.Creation;
 import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
+import org.example.task2.Junction;
+import org.example.task2.Juncture;
 import org.example.task2.Push;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
 import org.example.task2.spi.StaleClaimException;
+import org.example.task2.spi.StoreTransaction;
 import org.example.task2.spi.TaskStore.ClaimedTask;
 import org.example.task2.spi.TaskStore.Completion;
 import org.example.task2.spi.TaskStore.Outcome;
@@ -173,11 +176,12 @@ final class BatchRun<T> {
         early.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
         try {
-            core.jdbc().transact(connection -> {
-                core.store().complete(connection, worker.topicId(), core.nodeId(), completions);
-                targets.addAll(pushDownstream(connection, decisions));
+            core.transact(transaction -> {
+                core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
+                targets.addAll(pushDownstream(transaction, decisions));
+                targets.addAll(applyJunctions(transaction, decisions));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
-                    beforeCommit(resource.getKey(), resource.getValue(), decisions, connection);
+                    beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
                 }
                 return null;
             });
@@ -189,7 +193,7 @@ final class BatchRun<T> {
             LOGGER.log(System.Logger.Level.WARNING, "The completion of a batch in " + topic.ref() + " failed and was rolled back", e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
-                core.jdbc().transact(connection -> core.store().release(connection, worker.topicId(), core.nodeId(), failures));
+                core.transact(transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
             } catch (Exception recording) {
                 LOGGER.log(System.Logger.Level.ERROR, "Could not record the failure; the tasks stay active until this node's claims expire", recording);
             }
@@ -206,7 +210,7 @@ final class BatchRun<T> {
     }
 
     /** Pushes the downstream work of continuing tasks, one statement per target topic and insertion. */
-    private Set<String> pushDownstream(Connection connection, Decisions decisions) throws java.sql.SQLException {
+    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions) throws java.sql.SQLException {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
         Map<Target, List<Push<?>>> pushes = new LinkedHashMap<>();
@@ -223,16 +227,44 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : pushes.entrySet()) {
-            write(connection, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), parents.get(entry.getKey()));
+            write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), parents.get(entry.getKey()));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
     }
 
     @SuppressWarnings("unchecked")
-    private <C> void write(Connection connection, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) throws java.sql.SQLException {
+    private <C> void write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) throws java.sql.SQLException {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        core.tasks().write(connection, topic, insertion, creations, parents);
+        core.tasks().write(transaction, topic, insertion, creations, parents);
+    }
+
+    /**
+     * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
+     * task pushed in the same completion can complete a group. One call per target and juncture.
+     */
+    private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws java.sql.SQLException {
+        record Target(String topic, Juncture juncture) {
+        }
+        Map<Target, List<Set<String>>> groups = new LinkedHashMap<>();
+        for (Decisions.Verdict verdict : decisions.verdicts()) {
+            if (!verdict.decision().continues()) {
+                continue;
+            }
+            for (Junction junction : verdict.junctions()) {
+                Set<String> group = new LinkedHashSet<>(junction.identifiers());
+                group.add(verdict.task().identifier());
+                groups.computeIfAbsent(new Target(junction.topic().name(), junction.juncture()), ignored -> new ArrayList<>()).add(group);
+            }
+        }
+        Set<String> released = new LinkedHashSet<>();
+        for (Map.Entry<Target, List<Set<String>>> entry : groups.entrySet()) {
+            int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
+            if (!core.store().junction(transaction, topicId, entry.getKey().juncture(), entry.getValue()).isEmpty()) {
+                released.add(entry.getKey().topic());
+            }
+        }
+        return released;
     }
 
     private void release(Map<Long, ClaimedTask> claims, List<Long> ids) {
@@ -244,7 +276,7 @@ final class BatchRun<T> {
             return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE);
         }).toList();
         try {
-            core.jdbc().transact(connection -> core.store().release(connection, worker.topicId(), core.nodeId(), releases));
+            core.transact(transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), releases));
         } catch (Exception e) {
             LOGGER.log(System.Logger.Level.WARNING, "Could not release tasks " + ids + "; they stay active until this node's claims expire", e);
         }

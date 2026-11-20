@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -15,15 +16,18 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 
 import javax.sql.DataSource;
 
 import org.example.task2.Insertion;
+import org.example.task2.Juncture;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 import org.example.task2.spi.StaleClaimException;
+import org.example.task2.spi.StoreTransaction;
 import org.example.task2.spi.TaskStore;
 
 /**
@@ -34,18 +38,21 @@ import org.example.task2.spi.TaskStore;
  */
 public final class PostgresTaskStore implements TaskStore {
 
+    private final DataSource dataSource;
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts;
+    private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
 
     /** A store that migrates the schema with the built-in runner when an engine starts. */
-    public PostgresTaskStore() {
-        this(SchemaMode.MIGRATE);
+    public PostgresTaskStore(DataSource dataSource) {
+        this(dataSource, SchemaMode.MIGRATE);
     }
 
-    public PostgresTaskStore(SchemaMode mode) {
+    public PostgresTaskStore(DataSource dataSource, SchemaMode mode) {
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.mode = Objects.requireNonNull(mode, "mode");
         createTopic = sql("SELECT tasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM tasks.topic WHERE name = :name");
@@ -178,11 +185,57 @@ public final class PostgresTaskStore implements TaskStore {
             )
             SELECT topic_id FROM requeued
             """);
+        for (Juncture juncture : Juncture.values()) {
+            junctions.put(juncture, sql(junctionSql(juncture)));
+        }
+        findTask = sql("""
+            SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
+                   coalesce(q.attempt, t.attempts) AS attempt, q.run_at, coalesce(q.priority, 0) AS priority, q.node_id,
+                   t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
+                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
+            FROM tasks.task t
+            JOIN tasks.topic tp ON tp.id = t.topic_id
+            LEFT JOIN tasks.queue q ON q.task_id = t.id
+            WHERE t.id = :id::bigint
+            """);
+        countQueue = sql("""
+            SELECT count(*) FILTER (WHERE state = 'scheduled'),
+                   count(*) FILTER (WHERE state = 'retrying'),
+                   count(*) FILTER (WHERE state = 'ready'),
+                   count(*) FILTER (WHERE state = 'active'),
+                   count(*) FILTER (WHERE state = 'suspended'),
+                   count(*) FILTER (WHERE state = 'failed'),
+                   count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp())
+            FROM tasks.queue
+            WHERE topic_id = :topic::integer
+            """);
+        listAttempts = sql("""
+            SELECT task_id, attempt, node_id, result, error::text
+            FROM tasks.attempt
+            WHERE task_id = :id::bigint
+            ORDER BY attempt, finished_at
+            """);
+    }
+
+
+    @Override
+    public void prepare() throws SQLException {
+        TaskSchema.prepare(dataSource, mode);
     }
 
     @Override
-    public void prepare(DataSource dataSource) throws SQLException {
-        TaskSchema.prepare(dataSource, mode);
+    public StoreTransaction begin() throws SQLException {
+        return PostgresTransaction.open(dataSource.getConnection());
+    }
+
+    @Override
+    public boolean joinsApplicationTransactions() {
+        return true;
+    }
+
+    @Override
+    public StoreTransaction join(Connection connection) {
+        return PostgresTransaction.join(connection);
     }
 
     private static NamedSql sql(String text) {
@@ -301,6 +354,43 @@ public final class PostgresTaskStore implements TaskStore {
             """;
     }
 
+    private static String junctionSql(Juncture juncture) {
+        // A group is complete when every identifier has a task that counts; then the group's
+        // suspended tasks become ready.
+        String counts = switch (juncture) {
+            case SINGULAR -> """
+                SELECT 1 FROM tasks.queue s
+                WHERE s.topic_id = :topic::integer AND s.identifier = g.identifier AND s.state = 'suspended'
+                """;
+            case ETERNAL -> """
+                SELECT 1 FROM tasks.task t
+                WHERE t.topic_id = :topic::integer AND t.identifier = g.identifier
+                  AND (t.outcome IS NULL OR t.outcome <> 'redundant')
+                """;
+        };
+        return """
+            WITH g AS (
+                SELECT * FROM unnest(:groups::integer[], :identifiers::text[]) AS g(group_no, identifier)
+            ),
+            checked AS (
+                SELECT g.group_no, g.identifier, EXISTS (%s) AS present
+                FROM g
+            ),
+            complete AS (
+                SELECT group_no FROM checked GROUP BY group_no HAVING bool_and(present)
+            ),
+            released AS (
+                UPDATE tasks.queue q
+                SET state = 'ready'
+                WHERE q.topic_id = :topic::integer
+                  AND q.state = 'suspended'
+                  AND q.identifier IN (SELECT c.identifier FROM checked c JOIN complete USING (group_no))
+                RETURNING q.identifier
+            )
+            SELECT DISTINCT identifier FROM released
+            """.formatted(counts);
+    }
+
     private static String pollSql(Ordering ordering) {
         String blocking = switch (ordering) {
             case FIFO -> null;
@@ -346,7 +436,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public int createTopic(Connection connection, String name) throws SQLException {
+    public int createTopic(StoreTransaction transaction, String name) throws SQLException {
+        Connection connection = transaction.connection();
         try (PreparedStatement statement = createTopic.prepare(connection, NamedSql.parameters().set("name", name));
              ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
@@ -355,7 +446,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public OptionalInt findTopic(Connection connection, String name) throws SQLException {
+    public OptionalInt findTopic(StoreTransaction transaction, String name) throws SQLException {
+        Connection connection = transaction.connection();
         try (PreparedStatement statement = findTopic.prepare(connection, NamedSql.parameters().set("name", name));
              ResultSet resultSet = statement.executeQuery()) {
             return resultSet.next() ? OptionalInt.of(resultSet.getInt(1)) : OptionalInt.empty();
@@ -363,7 +455,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Pushed> push(Connection connection, int topicId, Insertion insertion, List<NewTask> tasks) throws SQLException {
+    public List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks) throws SQLException {
+        Connection connection = transaction.connection();
         if (tasks.isEmpty()) {
             return List.of();
         }
@@ -439,7 +532,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public Claim claim(Connection connection, ClaimRequest request) throws SQLException {
+    public Claim claim(StoreTransaction transaction, ClaimRequest request) throws SQLException {
+        Connection connection = transaction.connection();
         Admission admission = request.admission();
         int limit = request.limit();
         if (admission != null) {
@@ -499,13 +593,14 @@ public final class PostgresTaskStore implements TaskStore {
                     return resultSet.getDouble(1);
                 }
             }
-            ensureAdmission(connection, admission.name(), admission.burst());
+            insertAdmission(connection, admission.name(), admission.burst());
         }
         throw new IllegalStateException("No admission state for rate limit " + admission.name());
     }
 
     @Override
-    public void complete(Connection connection, int topicId, int nodeId, List<Completion> completions) throws SQLException {
+    public void complete(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException {
+        Connection connection = transaction.connection();
         Set<Long> matched = apply(connection, topicId, nodeId, completions);
         if (matched.size() != completions.size()) {
             Set<Long> lost = new LinkedHashSet<>();
@@ -519,7 +614,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public int release(Connection connection, int topicId, int nodeId, List<Completion> completions) throws SQLException {
+    public int release(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException {
+        Connection connection = transaction.connection();
         return apply(connection, topicId, nodeId, completions).size();
     }
 
@@ -601,12 +697,14 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Integer> promoteDue(Connection connection, int limit) throws SQLException {
+    public List<Integer> promoteDue(StoreTransaction transaction, int limit) throws SQLException {
+        Connection connection = transaction.connection();
         return topics(promote, connection, NamedSql.parameters().set("limit", limit));
     }
 
     @Override
-    public List<Integer> requeueExpired(Connection connection, int nodeId, Duration expiry) throws SQLException {
+    public List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry) throws SQLException {
+        Connection connection = transaction.connection();
         return topics(expire, connection, NamedSql.parameters().set("node", nodeId).set("expiry", expiry.toMillis()));
     }
 
@@ -622,7 +720,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public int registerNode(Connection connection, String name, String version) throws SQLException {
+    public int registerNode(StoreTransaction transaction, String name, String version) throws SQLException {
+        Connection connection = transaction.connection();
         try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version));
              ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
@@ -631,7 +730,8 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void heartbeat(Connection connection, int nodeId) throws SQLException {
+    public void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
+        Connection connection = transaction.connection();
         try (PreparedStatement statement = heartbeat.prepare(connection, NamedSql.parameters().set("node", nodeId))) {
             if (statement.executeUpdate() != 1) {
                 throw new IllegalStateException("Node " + nodeId + " is not registered");
@@ -640,10 +740,96 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void ensureAdmission(Connection connection, String name, int burst) throws SQLException {
+    public void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException {
+        insertAdmission(transaction.connection(), name, burst);
+    }
+
+    private void insertAdmission(Connection connection, String name, int burst) throws SQLException {
         try (PreparedStatement statement = ensureAdmission.prepare(connection, NamedSql.parameters().set("name", name).set("burst", (double) burst))) {
             statement.executeUpdate();
         }
+    }
+
+    @Override
+    public Set<String> junction(StoreTransaction transaction, int topicId, Juncture juncture, Collection<Set<String>> groups) throws SQLException {
+        List<Object> numbers = new ArrayList<>(), identifiers = new ArrayList<>();
+        int group = 0;
+        for (Set<String> members : groups) {
+            group++;
+            for (String identifier : members) {
+                numbers.add(group);
+                identifiers.add(identifier);
+            }
+        }
+        if (identifiers.isEmpty()) {
+            return Set.of();
+        }
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("topic", topicId)
+            .array("groups", "integer", numbers.toArray())
+            .array("identifiers", "text", identifiers.toArray());
+        Set<String> released = new LinkedHashSet<>();
+        try (PreparedStatement statement = junctions.get(juncture).prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                released.add(resultSet.getString(1));
+            }
+        }
+        return released;
+    }
+
+    @Override
+    public Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException {
+        try (PreparedStatement statement = findTask.prepare(transaction.connection(), NamedSql.parameters().set("id", taskId));
+             ResultSet resultSet = statement.executeQuery()) {
+            if (!resultSet.next()) {
+                return Optional.empty();
+            }
+            return Optional.of(new TaskView(
+                resultSet.getString("topic"),
+                resultSet.getLong("id"),
+                resultSet.getString("identifier"),
+                resultSet.getString("state"),
+                resultSet.getBoolean("finished"),
+                resultSet.getInt("attempt"),
+                instant(resultSet, "run_at"),
+                resultSet.getInt("priority"),
+                resultSet.getObject("node_id", Integer.class),
+                resultSet.getString("reference"),
+                resultSet.getObject("parent_id", Long.class),
+                resultSet.getObject("root_id", Long.class),
+                resultSet.getString("payload"),
+                resultSet.getString("payload_type"),
+                resultSet.getString("output"),
+                resultSet.getString("error"),
+                resultSet.getString("previous_outcome"),
+                instant(resultSet, "created_at"),
+                instant(resultSet, "completed_at")
+            ));
+        }
+    }
+
+    @Override
+    public QueueCounts count(StoreTransaction transaction, int topicId) throws SQLException {
+        try (PreparedStatement statement = countQueue.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId));
+             ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            return new QueueCounts(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
+                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7));
+        }
+    }
+
+    @Override
+    public List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException {
+        List<AttemptView> attempts = new ArrayList<>();
+        try (PreparedStatement statement = listAttempts.prepare(transaction.connection(), NamedSql.parameters().set("id", taskId));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                attempts.add(new AttemptView(resultSet.getLong(1), resultSet.getInt(2), resultSet.getObject(3, Integer.class),
+                    resultSet.getString(4), resultSet.getString(5)));
+            }
+        }
+        return attempts;
     }
 
     private static Instant instant(ResultSet resultSet, String column) throws SQLException {
@@ -653,6 +839,6 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public String toString() {
-        return "PostgresTaskStore[" + mode + "]";
+        return "PostgresTaskStore[" + dataSource + ", " + mode + "]";
     }
 }

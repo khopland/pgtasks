@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.List;
 
 import org.example.task2.Insertion;
+import org.example.task2.spi.StoreTransaction;
+import org.example.task2.test.tck.StoreFixture;
+import org.postgresql.ds.PGSimpleDataSource;
 import org.example.task2.test.PostgresDatabase;
 import org.example.task2.test.PostgresExtension;
 import org.junit.jupiter.api.Test;
@@ -18,7 +20,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 class SchemaTest {
 
     @RegisterExtension
-    static PostgresExtension postgres = StoreFixture.extension();
+    static PostgresExtension postgres = PostgresStoreFixture.extension();
 
     @Test
     void creates_every_table_and_records_its_version(PostgresDatabase database) {
@@ -45,7 +47,7 @@ class SchemaTest {
 
     @Test
     void create_topic_is_idempotent_and_creates_a_partition(PostgresDatabase database) throws SQLException {
-        StoreFixture fixture = new StoreFixture(database);
+        PostgresStoreFixture fixture = new PostgresStoreFixture(database);
         int first = fixture.topic("assessment");
         int again = fixture.topic("assessment");
         int other = fixture.topic("notify");
@@ -75,14 +77,22 @@ class SchemaTest {
         database.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA tasks TO task_runtime");
         database.execute("GRANT USAGE ON ALL SEQUENCES IN SCHEMA tasks TO task_runtime");
         database.execute("GRANT EXECUTE ON FUNCTION tasks.create_topic(text, text, jsonb) TO task_runtime");
-        PostgresTaskStore store = new PostgresTaskStore();
-        try (Connection runtime = DriverManager.getConnection(database.jdbcUrl(), "task_runtime", "runtime")) {
+        PGSimpleDataSource runtimeUser = new PGSimpleDataSource();
+        runtimeUser.setURL(database.jdbcUrl());
+        runtimeUser.setUser("task_runtime");
+        runtimeUser.setPassword("runtime");
+        PostgresTaskStore store = new PostgresTaskStore(runtimeUser, SchemaMode.VALIDATE);
+        try (Connection runtime = runtimeUser.getConnection()) {
             assertThatThrownBy(() -> runtime.createStatement().execute("CREATE TABLE tasks.sneaky (id int)"))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("permission denied");
 
-            int topic = store.createTopic(runtime, "created-at-runtime");
-            assertThat(store.push(runtime, topic, Insertion.APPEND, List.of(StoreFixture.task("person-1")))).hasSize(1);
+            store.prepare();
+            try (StoreTransaction transaction = store.begin()) {
+                int topic = store.createTopic(transaction, "created-at-runtime");
+                assertThat(store.push(transaction, topic, Insertion.APPEND, List.of(StoreFixture.task("person-1")))).hasSize(1);
+                transaction.commit();
+            }
         } finally {
             database.execute("DROP OWNED BY task_runtime");
             database.execute("DROP ROLE task_runtime");

@@ -13,8 +13,6 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 
-import javax.sql.DataSource;
-
 import org.example.task2.PayloadCodec;
 import org.example.task2.Tasks;
 import org.example.task2.spi.Notifier;
@@ -32,11 +30,9 @@ public final class TaskEngine implements AutoCloseable {
 
     private static final System.Logger LOGGER = System.getLogger(TaskEngine.class.getName());
 
-    private final DataSource dataSource;
     private final TaskStore store;
     private final EngineSettings settings;
     private final List<Topic<?>> topics;
-    private final Jdbc jdbc;
     private final TopicDirectory directory;
     private final DefaultTasks tasks;
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
@@ -46,8 +42,7 @@ public final class TaskEngine implements AutoCloseable {
     private volatile int nodeId = -1;
     private volatile boolean started;
 
-    public TaskEngine(DataSource dataSource, TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
-        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+    public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
         this.store = Objects.requireNonNull(store, "store");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.topics = List.copyOf(topics);
@@ -57,9 +52,8 @@ public final class TaskEngine implements AutoCloseable {
                 throw new IllegalArgumentException("Topic " + topic.ref() + " is registered twice");
             }
         }
-        this.jdbc = new Jdbc(dataSource);
         this.directory = new TopicDirectory(store);
-        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), jdbc, this::wake);
+        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wake);
     }
 
     /** Transaction-aware enqueue. Usable before {@link #start()}, for topics that already exist. */
@@ -78,15 +72,15 @@ public final class TaskEngine implements AutoCloseable {
         if (started) {
             throw new IllegalStateException("Already started");
         }
-        store.prepare(dataSource);
-        nodeId = jdbc.transact(connection -> store.registerNode(connection, settings.nodeName(), version()));
-        EngineCore core = new EngineCore(store, jdbc, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake);
+        store.prepare();
+        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version()));
+        EngineCore core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake);
         Map<Topic<?>, Integer> ids = new HashMap<>();
         for (Topic<?> topic : topics) {
-            int id = jdbc.transact(connection -> {
-                int created = store.createTopic(connection, topic.ref().name());
+            int id = EngineCore.transact(store, transaction -> {
+                int created = store.createTopic(transaction, topic.ref().name());
                 if (topic.settings().rateLimit() != null) {
-                    store.ensureAdmission(connection, topic.settings().rateLimit().name(), topic.settings().rateLimit().burst());
+                    store.ensureAdmission(transaction, topic.settings().rateLimit().name(), topic.settings().rateLimit().burst());
                 }
                 return created;
             });
@@ -116,16 +110,16 @@ public final class TaskEngine implements AutoCloseable {
             });
         }
         housekeeping = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name("task2-housekeeping-", 0).factory());
-        schedule("heartbeat", settings.heartbeat(), () -> jdbc.transact(connection -> {
-            store.heartbeat(connection, nodeId);
+        schedule("heartbeat", settings.heartbeat(), () -> EngineCore.transact(store, transaction -> {
+            store.heartbeat(transaction, nodeId);
             return null;
         }));
-        schedule("expiry", settings.heartbeat(), () -> jdbc.transact(connection -> store.requeueExpired(connection, nodeId, settings.expiry()))
+        schedule("expiry", settings.heartbeat(), () -> EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry()))
             .forEach(this::wakeById));
         schedule("promotion", settings.promoteInterval(), () -> {
             List<Integer> promoted;
             do {
-                promoted = jdbc.transact(connection -> store.promoteDue(connection, 1000));
+                promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, 1000));
                 promoted.forEach(this::wakeById);
             } while (promoted.size() == 1000);
         });
@@ -198,6 +192,6 @@ public final class TaskEngine implements AutoCloseable {
 
     @Override
     public String toString() {
-        return "TaskEngine[" + settings.nodeName() + ", " + dataSource + "]";
+        return "TaskEngine[" + settings.nodeName() + ", " + store + "]";
     }
 }

@@ -87,7 +87,7 @@ final class TopicWorker<T> {
             }
             boolean dispatched = false;
             try {
-                TaskStore.Claim claim = core.jdbc().transact(connection -> core.store().claim(connection, request));
+                TaskStore.Claim claim = core.transact(transaction -> core.store().claim(transaction, request));
                 failures = 0;
                 if (!claim.tasks().isEmpty()) {
                     BatchRun<T> run = new BatchRun<>(this, core, claim.tasks());
