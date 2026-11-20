@@ -27,7 +27,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-/** The checklist from the infra guide's "Testing a task flow", applied to the slice. */
+/**
+ * The checklist from the infra guide's "Testing a task flow", applied to the slice on Postgres:
+ * the parts about SQL, NOTIFY and JDBC transactions. Retries, delays, deadlines and stopping are
+ * covered on the in-memory store in EngineTest.
+ */
 class SliceTest {
 
     @RegisterExtension
@@ -112,38 +116,6 @@ class SliceTest {
     }
 
     @Test
-    @DisplayName("A failure retries and finally dead-letters with its error")
-    void failure_retries_then_dead_letters() throws Exception {
-        TopicRef<String> topic = TopicRef.of("flaky", String.class);
-        TaskEngine engine = fixture.start("node-a", List.of(Topic.of(topic, batch -> batch.decide(task -> Decision.failed("still broken")))
-            .with(TopicSettings.defaults().withRetry(new Retry(3, Duration.ofMillis(50), 2, Duration.ofMillis(200), 0)))));
-
-        engine.tasks().independently().push(topic, "x", "payload");
-
-        await("the dead letter", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM tasks.task_view WHERE state = 'failed'") == 1);
-        assertThat(database.rows("SELECT attempt, error->>'message' FROM tasks.task_view")).containsExactly(List.of(3, "still broken"));
-        assertThat(fixture.count("SELECT count(*) FROM tasks.attempt WHERE result = 'failed'")).isEqualTo(3);
-        Thread.sleep(300);
-        assertThat(fixture.count("SELECT count(*) FROM tasks.attempt")).as("never retried after that").isEqualTo(3);
-    }
-
-    @Test
-    @DisplayName("later() runs the task again without using up an attempt")
-    void later_recovers_without_using_an_attempt() throws Exception {
-        TopicRef<String> topic = TopicRef.of("waiting", String.class);
-        AtomicInteger runs = new AtomicInteger();
-        TaskEngine engine = fixture.start("node-a", List.of(Topic.of(topic, batch -> batch.decide(task ->
-            runs.incrementAndGet() < 3 ? Decision.later(Duration.ofMillis(100)) : Decision.success()))));
-
-        engine.tasks().independently().push(topic, "x", "payload");
-
-        fixture.awaitQueueEmpty(Duration.ofSeconds(10));
-        assertThat(runs).hasValue(3);
-        assertThat(database.rows("SELECT state, attempt FROM tasks.task_view")).containsExactly(List.of("succeeded", 1));
-        assertThat(fixture.count("SELECT count(*) FROM tasks.attempt")).isZero();
-    }
-
-    @Test
     @DisplayName("Work is found without a notification, by the fallback poll")
     void wake_up_without_a_notification() throws Exception {
         TopicRef<String> topic = TopicRef.of("polled", String.class);
@@ -184,56 +156,5 @@ class SliceTest {
         }
 
         assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
-    }
-
-    @Test
-    @DisplayName("A batch that runs past its deadline is cancelled and retried")
-    void batch_deadline() throws Exception {
-        TopicRef<String> topic = TopicRef.of("slow", String.class);
-        AtomicInteger runs = new AtomicInteger();
-        CountDownLatch interrupted = new CountDownLatch(1);
-        TaskEngine engine = fixture.start("node-a", List.of(Topic.of(topic, batch -> batch.decide(task -> {
-            if (runs.incrementAndGet() == 1) {
-                try {
-                    Thread.sleep(Duration.ofSeconds(30));
-                } catch (InterruptedException e) {
-                    interrupted.countDown();
-                    throw e;
-                }
-            }
-            return Decision.success();
-        })).with(TopicSettings.defaults().withBatchDeadline(Duration.ofMillis(300)).withRetry(FAST))));
-
-        engine.tasks().independently().push(topic, "x", "payload");
-
-        fixture.awaitQueueEmpty(Duration.ofSeconds(10));
-        assertThat(interrupted.await(1, TimeUnit.SECONDS)).as("the slow handler was interrupted").isTrue();
-        assertThat(database.rows("SELECT attempt, error->>'message' FROM tasks.attempt")).containsExactly(List.of(1, "Batch deadline of PT0.3S exceeded"));
-        assertThat(database.rows("SELECT state, attempt FROM tasks.task_view")).containsExactly(List.of("succeeded", 2));
-    }
-
-    @Test
-    @DisplayName("Stopping waits for running batches, and releases hung ones without using an attempt")
-    void stop_drains_then_releases() throws Exception {
-        TopicRef<String> topic = TopicRef.of("draining", String.class);
-        CountDownLatch started = new CountDownLatch(2);
-        TaskEngine engine = fixture.start("node-a", List.of(Topic.of(topic, batch -> batch.decide(task -> {
-            started.countDown();
-            if (task.identifier().equals("hung")) {
-                Thread.sleep(Duration.ofMinutes(5));
-            } else {
-                Thread.sleep(200);
-            }
-            return Decision.success();
-        })).with(TopicSettings.defaults().withBatchSize(1))));
-        engine.tasks().independently().push(topic, "quick", "payload");
-        engine.tasks().independently().push(topic, "hung", "payload");
-        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
-
-        engine.stop(Duration.ofMillis(500));
-
-        assertThat(database.rows("SELECT identifier, state, attempt FROM tasks.task_view ORDER BY id"))
-            .containsExactly(List.of("quick", "succeeded", 1), List.of("hung", "retrying", 0));
-        assertThat(fixture.count("SELECT count(*) FROM tasks.attempt")).isZero();
     }
 }

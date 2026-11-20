@@ -205,7 +205,8 @@ public final class PostgresTaskStore implements TaskStore {
                    count(*) FILTER (WHERE state = 'active'),
                    count(*) FILTER (WHERE state = 'suspended'),
                    count(*) FILTER (WHERE state = 'failed'),
-                   count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp())
+                   count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp()),
+                   min(run_at)
             FROM tasks.queue
             WHERE topic_id = :topic::integer
             """);
@@ -815,7 +816,7 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
             return new QueueCounts(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
-                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7));
+                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"));
         }
     }
 

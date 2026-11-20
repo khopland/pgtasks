@@ -143,6 +143,36 @@ public final class TaskEngine implements AutoCloseable {
         }, 0, interval.toNanos(), TimeUnit.NANOSECONDS);
     }
 
+    TaskStore store() {
+        return store;
+    }
+
+    DefaultTasks defaultTasks() {
+        return tasks;
+    }
+
+    /** The running workers; none once the engine has stopped. */
+    java.util.Collection<TopicWorker<?>> workers() {
+        return started ? workersByName.values() : List.of();
+    }
+
+    /** Runs the housekeeping jobs once, now: heartbeat, expiry and promotion. */
+    void housekeepNow() throws Exception {
+        if (!started) {
+            return;
+        }
+        EngineCore.transact(store, transaction -> {
+            store.heartbeat(transaction, nodeId);
+            return null;
+        });
+        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry())).forEach(this::wakeById);
+        List<Integer> promoted;
+        do {
+            promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, 1000));
+            promoted.forEach(this::wakeById);
+        } while (promoted.size() == 1000);
+    }
+
     /** Wakes this node's worker for a topic, if it has one. */
     public void wake(String topic) {
         TopicWorker<?> worker = workersByName.get(topic);

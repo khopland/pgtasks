@@ -61,7 +61,9 @@ public abstract class PushTck extends StoreTck {
         assertThat(pushed).extracting(Pushed::id).extracting(fixture::state).containsExactly("scheduled", "suspended", "ready");
         assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
             .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
-        assertThat(fixture.counts(topic)).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0));
+        TaskStore.QueueCounts counts = fixture.counts(topic);
+        assertThat(counts).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt()));
+        assertThat(counts.nextRunAt()).isEqualTo(fixture.view(pushed.getFirst().id()).orElseThrow().runAt());
     }
 
     @Test

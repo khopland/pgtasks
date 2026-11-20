@@ -31,7 +31,10 @@ final class DefaultTasks implements Tasks {
 
     private static final System.Logger LOGGER = System.getLogger(DefaultTasks.class.getName());
 
-    /** Sees every push that is stored, for tests that capture pushes. */
+    /**
+     * Sees pushes once they are committed, for tests that capture pushes. Pushes on an explicit
+     * connection are seen when written, since their commit is the caller's.
+     */
     interface Observer {
         void pushed(TopicRef<?> topic, Insertion insertion, List<? extends Creation<?>> creations, List<Pushed> results);
     }
@@ -73,7 +76,9 @@ final class DefaultTasks implements Tasks {
         if (store.joinsApplicationTransactions()) {
             Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
                 "The current transaction has no JDBC connection, so a push to " + store + " can't join it."));
-            return pushOn(connection, topic, insertion, creations);
+            List<Pushed> results = write(join(connection), topic, insertion, creations, null);
+            transaction.afterCommit(() -> observed(topic, insertion, creations, results));
+            return results;
         }
         // The store can't join the transaction: check now, store once it has committed.
         List<Creation<T>> held = List.copyOf(creations);
@@ -107,7 +112,9 @@ final class DefaultTasks implements Tasks {
         return new TaskWriter() {
             @Override
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-                return pushOn(connection, topic, insertion, creations);
+                List<Pushed> results = write(join(connection), topic, insertion, creations, null);
+                observed(topic, insertion, creations, results);
+                return results;
             }
         };
     }
@@ -127,17 +134,22 @@ final class DefaultTasks implements Tasks {
                 } catch (Exception e) {
                     throw new IllegalStateException(e);
                 }
+                observed(topic, insertion, creations, pushed);
                 wakeLocally.accept(topic.name());
                 return pushed;
             }
         };
     }
 
-    private <T> List<Pushed> pushOn(Connection connection, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
+    private StoreTransaction join(Connection connection) {
+        return store.join(connection);
+    }
+
+    void observed(TopicRef<?> topic, Insertion insertion, List<? extends Creation<?>> creations, List<Pushed> results) {
         try {
-            return write(store.join(connection), topic, insertion, creations, null);
-        } catch (SQLException e) {
-            throw new TaskStorageException("Could not push to " + topic, e);
+            observer.pushed(topic, insertion, creations, results);
+        } catch (RuntimeException e) {
+            LOGGER.log(System.Logger.Level.WARNING, "A push observer failed", e);
         }
     }
 
@@ -145,7 +157,15 @@ final class DefaultTasks implements Tasks {
      * Writes in the given store transaction without committing. {@code parents}, if given, holds
      * the task that staged each creation, for the lineage columns.
      */
-    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) throws SQLException {
+    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) {
+        try {
+            return store(transaction, topic, insertion, creations, parents);
+        } catch (SQLException e) {
+            throw new TaskStorageException("Could not push to " + topic, e);
+        }
+    }
+
+    private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
@@ -168,9 +188,7 @@ final class DefaultTasks implements Tasks {
                 parent == null ? null : parent.flowRootId()
             ));
         }
-        List<Pushed> results = store.push(transaction, topicId, insertion, tasks);
-        observer.pushed(topic, insertion, creations, results);
-        return results;
+        return store.push(transaction, topicId, insertion, tasks);
     }
 
     int topicId(StoreTransaction transaction, String topic) throws SQLException {

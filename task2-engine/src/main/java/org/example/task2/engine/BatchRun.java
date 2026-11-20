@@ -175,10 +175,11 @@ final class BatchRun<T> {
         decisions.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
+        List<Runnable> observations = new ArrayList<>();
         try {
             core.transact(transaction -> {
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
-                targets.addAll(pushDownstream(transaction, decisions));
+                targets.addAll(pushDownstream(transaction, decisions, observations));
                 targets.addAll(applyJunctions(transaction, decisions));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
@@ -199,6 +200,7 @@ final class BatchRun<T> {
             }
             return;
         }
+        observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
                 afterCommit(resource.getKey(), resource.getValue(), decisions);
@@ -210,7 +212,7 @@ final class BatchRun<T> {
     }
 
     /** Pushes the downstream work of continuing tasks, one statement per target topic and insertion. */
-    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions) throws java.sql.SQLException {
+    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations) {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
         Map<Target, List<Push<?>>> pushes = new LinkedHashMap<>();
@@ -227,16 +229,17 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : pushes.entrySet()) {
-            write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), parents.get(entry.getKey()));
+            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), parents.get(entry.getKey())));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
     }
 
     @SuppressWarnings("unchecked")
-    private <C> void write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) throws java.sql.SQLException {
+    private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        core.tasks().write(transaction, topic, insertion, creations, parents);
+        List<org.example.task2.Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents);
+        return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 
     /**

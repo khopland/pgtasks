@@ -254,8 +254,11 @@ public interface TaskStore {
     ) {
     }
 
-    /** Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has come. */
-    record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due) {
+    /**
+     * Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has
+     * come; {@code nextRunAt} is the earliest time one of them is due, if any.
+     */
+    record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt) {
 
         public long total() {
             return scheduled + retrying + ready + active + suspended + failed;

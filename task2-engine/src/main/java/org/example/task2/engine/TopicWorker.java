@@ -6,6 +6,8 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.example.task2.Ordering;
 import org.example.task2.spi.TaskStore;
@@ -30,6 +32,12 @@ final class TopicWorker<T> {
     private final ExecutorService batches;
     private volatile boolean running, stopping;
     private Thread poller;
+
+    // For telling when the engine is idle: claims started, the last one that found nothing, batches running.
+    private final AtomicLong claims = new AtomicLong();
+    private final AtomicLong claimedTasks = new AtomicLong();
+    private final AtomicInteger runningBatches = new AtomicInteger();
+    private volatile long lastEmptyClaim = -1;
 
     TopicWorker(Topic<T> topic, int topicId, EngineCore core) {
         this.topic = topic;
@@ -86,11 +94,14 @@ final class TopicWorker<T> {
                 return;
             }
             boolean dispatched = false;
+            long claim = claims.incrementAndGet();
             try {
-                TaskStore.Claim claim = core.transact(transaction -> core.store().claim(transaction, request));
+                TaskStore.Claim claimed = core.transact(transaction -> core.store().claim(transaction, request));
                 failures = 0;
-                if (!claim.tasks().isEmpty()) {
-                    BatchRun<T> run = new BatchRun<>(this, core, claim.tasks());
+                if (!claimed.tasks().isEmpty()) {
+                    BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());
+                    claimedTasks.addAndGet(claimed.tasks().size());
+                    runningBatches.incrementAndGet();
                     try {
                         batches.execute(() -> {
                             try {
@@ -98,6 +109,7 @@ final class TopicWorker<T> {
                             } catch (RuntimeException | Error e) {
                                 LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
                             } finally {
+                                runningBatches.decrementAndGet();
                                 release();
                                 // Finishing a task can unblock later tasks for its identifier. No
                                 // row becomes newly ready then, so no notification is sent: poll again.
@@ -108,6 +120,7 @@ final class TopicWorker<T> {
                         });
                     } catch (RejectedExecutionException e) {
                         // Stopping: hand the tasks back instead of leaving them until expiry.
+                        runningBatches.decrementAndGet();
                         run.releaseAll();
                         throw e;
                     }
@@ -116,10 +129,11 @@ final class TopicWorker<T> {
                 }
                 release();
                 dispatched = true;
-                if (claim.admissionWait() != null) {
+                if (claimed.admissionWait() != null) {
                     // A wake-up doesn't shorten a wait for the rate limit.
-                    Signal.sleep(claim.admissionWait());
+                    Signal.sleep(claimed.admissionWait());
                 } else {
+                    lastEmptyClaim = claim;
                     signal.await(topic.settings().pollInterval());
                 }
             } catch (InterruptedException e) {
@@ -146,6 +160,19 @@ final class TopicWorker<T> {
                 }
             }
         }
+    }
+
+    long claims() {
+        return claims.get();
+    }
+
+    long claimedTasks() {
+        return claimedTasks.get();
+    }
+
+    /** No batch is running, and a claim started after {@code mark} found nothing to do. */
+    boolean quietSince(long mark) {
+        return runningBatches.get() == 0 && lastEmptyClaim > mark;
     }
 
     private Duration backoff(int failures) {

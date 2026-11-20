@@ -47,7 +47,7 @@ public final class EngineFixture implements AutoCloseable {
     public TaskEngine create(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) {
         HikariDataSource pool = database.newPool(node, 12);
         EngineSettings settings = customize.apply(settings(node).withNotifier(new PostgresNotifier(database::connect)));
-        TaskEngine engine = new TaskEngine(pool, new PostgresTaskStore(), settings, topics);
+        TaskEngine engine = new TaskEngine(new PostgresTaskStore(pool), settings, topics);
         engines.add(engine);
         return engine;
     }
@@ -77,11 +77,12 @@ public final class EngineFixture implements AutoCloseable {
 
     /** Creates topics up front, so a test can queue a whole batch before any engine polls. */
     public void createTopics(String... names) throws java.sql.SQLException {
-        try (java.sql.Connection connection = database.connect()) {
-            PostgresTaskStore store = new PostgresTaskStore();
+        PostgresTaskStore store = new PostgresTaskStore(database.dataSource());
+        try (org.example.task2.spi.StoreTransaction transaction = store.begin()) {
             for (String name : names) {
-                store.createTopic(connection, name);
+                store.createTopic(transaction, name);
             }
+            transaction.commit();
         }
     }
 

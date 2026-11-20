@@ -493,17 +493,19 @@ public final class InMemoryTaskStore implements TaskStore {
         Instant now = now();
         long[] counts = new long[State.values().length];
         long due = 0;
+        Instant next = null;
         for (Rows.Queued row : queue.values()) {
             if (row.topicId() != topicId) {
                 continue;
             }
             counts[row.state().ordinal()]++;
-            if ((row.state() == State.SCHEDULED || row.state() == State.RETRYING) && !row.runAt().isAfter(now)) {
-                due++;
+            if (row.runAt() != null) {
+                due += row.runAt().isAfter(now) ? 0 : 1;
+                next = next == null || row.runAt().isBefore(next) ? row.runAt() : next;
             }
         }
         return new QueueCounts(counts[State.SCHEDULED.ordinal()], counts[State.RETRYING.ordinal()], counts[State.READY.ordinal()],
-            counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due);
+            counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due, next);
     }
 
     @Override

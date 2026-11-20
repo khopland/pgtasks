@@ -19,6 +19,11 @@
 
     <dependency>
       <groupId>org.example.task2</groupId>
+      <artifactId>task2-memory</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.example.task2</groupId>
       <artifactId>task2-postgres</artifactId>
       <scope>test</scope>
     </dependency>
