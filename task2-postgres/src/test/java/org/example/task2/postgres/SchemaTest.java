@@ -26,12 +26,9 @@ class SchemaTest {
     void creates_every_table_and_records_its_version(PostgresDatabase database) {
         assertThat(database.count("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'tasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'attempt', 'rate_limit', 'rate_admission', 'schedule', 'topic_count', 'lease', 'meta', 'schema_history')"))
             .isEqualTo(12);
-        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(4, 3));
+        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(1, 1));
         assertThat(database.rows("SELECT version, script FROM tasks.schema_history ORDER BY installed_rank")).containsExactly(
             Arrays.asList(1, "V001__tasks_schema.sql"),
-            Arrays.asList(2, "V002__count_snapshots.sql"),
-            Arrays.asList(3, "V003__partial_dedup_index.sql"),
-            Arrays.asList(4, "V004__leases.sql"),
             Arrays.asList(null, "R__create_topic.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
             Arrays.asList(null, "R__task_view.sql")
@@ -49,16 +46,24 @@ class SchemaTest {
     }
 
     @Test
-    void create_topic_is_idempotent_and_creates_a_partition(PostgresDatabase database) throws SQLException {
+    void create_topic_is_idempotent_and_only_adds_a_row(PostgresDatabase database) throws SQLException {
         PostgresStoreFixture fixture = new PostgresStoreFixture(database);
+        long relations = database.count("SELECT count(*) FROM pg_class WHERE relnamespace = 'tasks'::regnamespace");
         int first = fixture.topic("assessment");
         int again = fixture.topic("assessment");
         int other = fixture.topic("notify");
 
         assertThat(again).isEqualTo(first);
-        assertThat(other).isNotEqualTo(first);
-        assertThat(database.rows("SELECT relname FROM pg_inherits JOIN pg_class ON oid = inhrelid WHERE inhparent = 'tasks.task'::regclass ORDER BY relname"))
-            .containsExactly(List.of("task_" + first), List.of("task_" + other));
+        assertThat(other).as("registering an existing topic uses no identity value").isEqualTo(first + 1);
+        assertThat(database.count("SELECT count(*) FROM pg_class WHERE relnamespace = 'tasks'::regnamespace")).as("no new tables").isEqualTo(relations);
+        assertThat(database.count("SELECT count(*) FROM pg_partitioned_table p JOIN pg_class c ON c.oid = p.partrelid WHERE c.relnamespace = 'tasks'::regnamespace"))
+            .as("nothing is partitioned").isZero();
+    }
+
+    @Test
+    void indexes_on_the_task_table_can_be_built_concurrently(PostgresDatabase database) {
+        database.execute("CREATE INDEX CONCURRENTLY task_payload_type_idx ON tasks.task (payload_type)");
+        database.execute("DROP INDEX CONCURRENTLY tasks.task_payload_type_idx");
     }
 
     @Test
@@ -107,6 +112,7 @@ class SchemaTest {
         assertThat(database.count("SELECT count(*) FROM information_schema.role_routine_grants WHERE routine_schema = 'tasks' AND routine_name = 'create_topic' AND grantee = 'PUBLIC'"))
             .isZero();
         assertThat(database.rows("SELECT prosecdef, proconfig::text FROM pg_proc WHERE proname = 'create_topic'").getFirst())
-            .containsExactly(true, "{\"search_path=pg_catalog, pg_temp\"}");
+            .as("runs with the caller's rights and a fixed search_path")
+            .containsExactly(false, "{\"search_path=pg_catalog, pg_temp\"}");
     }
 }

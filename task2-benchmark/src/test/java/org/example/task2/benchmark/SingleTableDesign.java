@@ -14,7 +14,7 @@ import javax.sql.DataSource;
 import org.example.task2.Ordering;
 
 /**
- * The alternative: one table per topic partition holding unfinished and finished tasks, with the
+ * The alternative: one table holding unfinished and finished tasks, with the
  * same indexes as the queue design, made partial where that helps, so the comparison is fair.
  * Claims and completions update rows of the large table.
  */
@@ -60,9 +60,8 @@ final class SingleTableDesign implements Design {
                 output        text,
                 created_at    timestamptz NOT NULL DEFAULT now(),
                 completed_at  timestamptz,
-                PRIMARY KEY (topic_id, id)
-            ) PARTITION BY LIST (topic_id);
-            CREATE TABLE single.task_1 PARTITION OF single.task FOR VALUES IN (1);
+                PRIMARY KEY (id)
+            );
             CREATE INDEX single_ready_idx ON single.task (topic_id, priority DESC, id) WHERE state = 'ready';
             CREATE INDEX single_unfinished_idx ON single.task (topic_id, identifier, id) WHERE state IN %s;
             CREATE INDEX single_identifier_idx ON single.task (topic_id, identifier, id);
@@ -184,7 +183,7 @@ final class SingleTableDesign implements Design {
     @Override
     public long bytes() throws SQLException {
         try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("SELECT pg_total_relation_size('single.task_1')")) {
+             ResultSet resultSet = statement.executeQuery("SELECT pg_total_relation_size('single.task')")) {
             resultSet.next();
             return resultSet.getLong(1);
         }

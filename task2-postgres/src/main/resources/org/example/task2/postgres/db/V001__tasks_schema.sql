@@ -1,8 +1,10 @@
 -- Task 2.0 schema, version 1 (plan section 10).
 --
 -- The small, hot tasks.queue holds unfinished tasks and is the only table polling touches.
--- tasks.task is the record of every task, partitioned by topic, written once at push and once
--- at completion. Functions, views and triggers live in the repeatable R__ files.
+-- tasks.task is the record of every task, written once at push and once at completion. It is
+-- one table, not partitioned: claims never read it, so history doesn't slow them down, and a
+-- plain table can get new indexes with CREATE INDEX CONCURRENTLY and new topics without DDL.
+-- Functions, views and triggers live in the repeatable R__ files.
 --
 -- Plain SQL, applied by the library's runner, Flyway, Liquibase or a DBA pipeline alike.
 -- Like every versioned file, this one ends by recording its version in tasks.meta.
@@ -47,8 +49,8 @@ CREATE INDEX node_heartbeat_idx ON tasks.node (heartbeat_at);
 CREATE SEQUENCE tasks.task_id_seq AS bigint;
 
 CREATE TABLE tasks.task (
+    id                bigint PRIMARY KEY DEFAULT nextval('tasks.task_id_seq'),
     topic_id          integer NOT NULL REFERENCES tasks.topic (id),
-    id                bigint NOT NULL DEFAULT nextval('tasks.task_id_seq'),
     identifier        text NOT NULL,
     reference         text,
     payload           text,
@@ -63,17 +65,19 @@ CREATE TABLE tasks.task (
     error             jsonb,
     attempts          integer NOT NULL DEFAULT 0,
     completed_at      timestamptz,
-    PRIMARY KEY (topic_id, id),
     CHECK ((outcome IS NULL) = (completed_at IS NULL))
-) PARTITION BY LIST (topic_id);
+);
+-- History per identifier: REPLACE, DELETE, ETERNAL junctures and recreate.
 CREATE INDEX task_identifier_idx ON tasks.task (topic_id, identifier, id);
 CREATE INDEX task_reference_idx ON tasks.task (reference) WHERE reference IS NOT NULL;
 CREATE INDEX task_root_idx ON tasks.task (root_id) WHERE root_id IS NOT NULL;
+-- Resolving a date to a task id; tiny, because created_at grows with the id.
 CREATE INDEX task_created_brin ON tasks.task USING brin (created_at);
-CREATE INDEX task_completed_idx ON tasks.task (topic_id, completed_at);
+-- Results by period, and retention: one outcome's expired tasks are one range.
+CREATE INDEX task_completed_idx ON tasks.task (topic_id, outcome, completed_at);
 
 CREATE TABLE tasks.queue (
-    task_id     bigint PRIMARY KEY,
+    task_id     bigint PRIMARY KEY REFERENCES tasks.task (id),
     topic_id    integer NOT NULL,
     identifier  text NOT NULL,
     state       tasks.queue_state NOT NULL,
@@ -83,7 +87,6 @@ CREATE TABLE tasks.queue (
     node_id     integer REFERENCES tasks.node (id),
     claimed_at  timestamptz,
     dedup_key   text,
-    FOREIGN KEY (topic_id, task_id) REFERENCES tasks.task (topic_id, id),
     CHECK ((state = 'active') = (node_id IS NOT NULL)),
     CHECK ((state IN ('scheduled', 'retrying')) = (run_at IS NOT NULL))
 ) WITH (
@@ -101,11 +104,12 @@ CREATE INDEX queue_identifier_idx ON tasks.queue (topic_id, identifier, task_id)
 CREATE INDEX queue_due_idx ON tasks.queue (run_at) WHERE state IN ('scheduled', 'retrying');
 -- Requeueing tasks from dead nodes.
 CREATE INDEX queue_active_idx ON tasks.queue (node_id) WHERE state = 'active';
--- Idempotent push: at most one unfinished task per key. Finished tasks leave the queue.
-CREATE UNIQUE INDEX queue_dedup_idx ON tasks.queue (topic_id, dedup_key);
+-- Idempotent push: at most one unfinished task per key. Finished tasks leave the queue. Partial,
+-- because most tasks have no key, and because a full index led by topic_id would compete with
+-- queue_identifier_idx in claims whenever the queue's statistics say it is empty.
+CREATE UNIQUE INDEX queue_dedup_idx ON tasks.queue (topic_id, dedup_key) WHERE dedup_key IS NOT NULL;
 
 -- Append-only log of attempts. Records failed and expired attempts.
--- Partitioned by month; until housekeeping creates monthly partitions, rows go to the default.
 CREATE TABLE tasks.attempt (
     topic_id     integer NOT NULL,
     task_id      bigint NOT NULL,
@@ -115,11 +119,10 @@ CREATE TABLE tasks.attempt (
     finished_at  timestamptz NOT NULL DEFAULT now(),
     result       text NOT NULL,
     error        jsonb
-) PARTITION BY RANGE (started_at);
-CREATE TABLE tasks.attempt_default PARTITION OF tasks.attempt DEFAULT;
+);
 CREATE INDEX attempt_task_idx ON tasks.attempt (task_id, attempt);
 
--- Runtime overrides of configured limits (plan section 08); not used before Phase 3.
+-- Runtime overrides of configured limits (plan section 08).
 CREATE TABLE tasks.rate_limit (
     name        text PRIMARY KEY,
     rate        double precision CHECK (rate > 0),
@@ -148,6 +151,31 @@ CREATE TABLE tasks.schedule (
     payload      text,
     next_run_at  timestamptz NOT NULL,
     UNIQUE (topic_id, name)
+);
+
+-- Queue counts per topic, snapshotted by the housekeeping leader, so dashboards and health
+-- checks don't count live.
+CREATE TABLE tasks.topic_count (
+    topic_id     integer PRIMARY KEY REFERENCES tasks.topic (id),
+    taken_at     timestamptz NOT NULL,
+    scheduled    bigint NOT NULL,
+    retrying     bigint NOT NULL,
+    ready        bigint NOT NULL,
+    active       bigint NOT NULL,
+    suspended    bigint NOT NULL,
+    failed       bigint NOT NULL,
+    due          bigint NOT NULL,
+    next_run_at  timestamptz
+);
+
+-- Leases on cluster-wide jobs, such as housekeeping. A node holds a lease by renewing it within
+-- its term, so a node that dies or hangs loses it once the term runs out, without closing
+-- anything. (A session advisory lock lasts as long as its connection, which a frozen node keeps.)
+CREATE TABLE tasks.lease (
+    name         text PRIMARY KEY,
+    node_id      integer NOT NULL REFERENCES tasks.node (id) ON DELETE CASCADE,
+    acquired_at  timestamptz NOT NULL,
+    expires_at   timestamptz NOT NULL
 );
 
 INSERT INTO tasks.meta (singleton, version, compatible_from) VALUES (true, 1, 1)

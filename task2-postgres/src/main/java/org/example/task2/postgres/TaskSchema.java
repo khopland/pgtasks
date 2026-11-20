@@ -47,8 +47,7 @@ import javax.sql.DataSource;
  *
  * <p>Rights: with {@code MIGRATE} the application's user owns the schema. Otherwise the runtime
  * user needs USAGE on the schema, SELECT, INSERT, UPDATE and DELETE on its tables, USAGE on
- * {@code task_id_seq}, and EXECUTE on {@code create_topic}, which creates partitions as the
- * schema owner.
+ * {@code task_id_seq}, and EXECUTE on {@code create_topic}. No DDL rights: a topic is a row.
  */
 public final class TaskSchema {
 
@@ -61,16 +60,13 @@ public final class TaskSchema {
     /** The files, in the order a DBA pipeline runs them: versioned by version, then repeatable by name. */
     static final List<String> FILES = List.of(
         "V001__tasks_schema.sql",
-        "V002__count_snapshots.sql",
-        "V003__partial_dedup_index.sql",
-        "V004__leases.sql",
         "R__create_topic.sql",
         "R__notify_ready.sql",
         "R__task_view.sql"
     );
 
     /** The schema version this library is built for. */
-    public static final int VERSION = 4;
+    public static final int VERSION = 1;
 
     /** What {@code tasks.meta} records. */
     public record Meta(int version, int compatibleFrom) {
