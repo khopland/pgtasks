@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.example.task2</groupId>
+    <artifactId>task2-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../task2-parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>task2-v1-regressions</artifactId>
+  <description>
+    Phase 0: regression tests for the findings in plan section 02, run against the unmodified 1.x
+    modules on real Postgres. They fail on the a0c9ebf snapshot by design, so this module is only
+    part of the build with -Pv1-regressions.
+  </description>
+
+  <properties>
+    <v1.groupId>no.skatteetaten.fastsetting.formueinntekt.felles.task</v1.groupId>
+    <v1.version>0-SNAPSHOT</v1.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>${v1.groupId}</groupId>
+      <artifactId>task-processor-jdbc</artifactId>
+      <version>${v1.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>${v1.groupId}</groupId>
+      <artifactId>task-jdbc</artifactId>
+      <version>${v1.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.liquibase</groupId>
+      <artifactId>liquibase-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

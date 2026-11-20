@@ -14,6 +14,15 @@
     <module>task2-parent</module>
     <module>task2-test</module>
   </modules>
+  <profiles>
+    <!-- Phase 0: regression tests for plan section 02. They fail on the unpatched 1.x snapshot. -->
+    <profile>
+      <id>v1-regressions</id>
+      <modules>
+        <module>task2-v1-regressions</module>
+      </modules>
+    </profile>
+  </profiles>
   <properties>
     <project.build.sourceEncoding>utf-8</project.build.sourceEncoding>
     <sonar.jacoco.reportPath>${project.build.directory}/jacoco.exec</sonar.jacoco.reportPath>
