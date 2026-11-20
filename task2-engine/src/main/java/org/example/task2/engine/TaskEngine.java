@@ -41,6 +41,7 @@ public final class TaskEngine implements AutoCloseable {
     private ScheduledExecutorService housekeeping;
     private Notifier notifier;
     private volatile int nodeId = -1;
+    private List<EffectiveSettings> effectiveSettings = List.of();
     private volatile boolean started;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
@@ -55,6 +56,21 @@ public final class TaskEngine implements AutoCloseable {
         }
         this.directory = new TopicDirectory(store);
         this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wake);
+    }
+
+    /** Builds an engine from configurers, with defaults for everything they don't set. */
+    public static TaskEngineBuilder builder() {
+        return new TaskEngineBuilder();
+    }
+
+    TaskEngine withEffectiveSettings(List<EffectiveSettings> effectiveSettings) {
+        this.effectiveSettings = List.copyOf(effectiveSettings);
+        return this;
+    }
+
+    /** Each topic's settings and where each value came from; filled in when built with {@link #builder()}. */
+    public List<EffectiveSettings> effectiveSettings() {
+        return effectiveSettings;
     }
 
     /** Transaction-aware enqueue. Usable before {@link #start()}, for topics that already exist. */
@@ -148,6 +164,11 @@ public final class TaskEngine implements AutoCloseable {
 
     TaskStore store() {
         return store;
+    }
+
+    /** The topics this engine processes. */
+    public List<Topic<?>> topics() {
+        return topics;
     }
 
     DefaultTasks defaultTasks() {
