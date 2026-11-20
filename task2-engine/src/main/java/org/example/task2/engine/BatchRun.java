@@ -92,6 +92,13 @@ final class BatchRun<T> {
         }
     }
 
+    /** Hands every claimed task back without running it or counting the attempt. */
+    void releaseAll() {
+        Map<Long, ClaimedTask> claims = new LinkedHashMap<>();
+        claimed.forEach(claim -> claims.put(claim.id(), claim));
+        release(claims, List.copyOf(claims.keySet()));
+    }
+
     private Task<T> task(ClaimedTask claim, T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
             claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt());

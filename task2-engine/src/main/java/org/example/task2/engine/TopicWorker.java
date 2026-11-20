@@ -2,6 +2,7 @@ package org.example.task2.engine;
 
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -89,20 +90,27 @@ final class TopicWorker<T> {
                 TaskStore.Claim claim = core.jdbc().transact(connection -> core.store().claim(connection, request));
                 failures = 0;
                 if (!claim.tasks().isEmpty()) {
-                    batches.execute(() -> {
-                        try {
-                            new BatchRun<>(this, core, claim.tasks()).run();
-                        } catch (RuntimeException | Error e) {
-                            LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
-                        } finally {
-                            release();
-                            // Finishing a task can unblock later tasks for its identifier. No
-                            // row becomes newly ready then, so no notification is sent: poll again.
-                            if (topic.settings().ordering() != Ordering.FIFO) {
-                                signal.signal();
+                    BatchRun<T> run = new BatchRun<>(this, core, claim.tasks());
+                    try {
+                        batches.execute(() -> {
+                            try {
+                                run.run();
+                            } catch (RuntimeException | Error e) {
+                                LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
+                            } finally {
+                                release();
+                                // Finishing a task can unblock later tasks for its identifier. No
+                                // row becomes newly ready then, so no notification is sent: poll again.
+                                if (topic.settings().ordering() != Ordering.FIFO) {
+                                    signal.signal();
+                                }
                             }
-                        }
-                    });
+                        });
+                    } catch (RejectedExecutionException e) {
+                        // Stopping: hand the tasks back instead of leaving them until expiry.
+                        run.releaseAll();
+                        throw e;
+                    }
                     dispatched = true;
                     continue;
                 }
@@ -151,16 +159,23 @@ final class TopicWorker<T> {
         permits.release();
     }
 
-    /** Stops polling, lets running batches finish until the deadline, then cancels them. */
-    void stop(Duration timeout) throws InterruptedException {
+    /** Stops polling; batches already running carry on. */
+    void stopPolling() {
         running = false;
         Thread current = poller;
         if (current != null) {
             current.interrupt();
-            current.join(timeout);
         }
         batches.shutdown();
-        if (!batches.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+    }
+
+    /** Waits for running batches until the deadline, then cancels what is left. */
+    void awaitBatches(long deadlineNanos) throws InterruptedException {
+        Thread current = poller;
+        if (current != null) {
+            current.join(Duration.ofNanos(Math.max(0, deadlineNanos - System.nanoTime())));
+        }
+        if (!batches.awaitTermination(Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS)) {
             stopping = true;
             batches.shutdownNow();
             if (!batches.awaitTermination(5, TimeUnit.SECONDS)) {

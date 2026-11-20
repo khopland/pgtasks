@@ -168,9 +168,11 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         started = false;
+        long deadline = System.nanoTime() + timeout.toNanos();
         try {
+            workersByName.values().forEach(TopicWorker::stopPolling);
             for (TopicWorker<?> worker : workersByName.values()) {
-                worker.stop(timeout);
+                worker.awaitBatches(deadline);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
