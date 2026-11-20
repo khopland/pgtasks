@@ -110,15 +110,18 @@ final class SingleTableDesign implements Design {
             case SINGULAR_BY_IDENTIFIER_ON_FAILURE -> "'ready', 'retrying', 'failed'";
             case SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS -> "'ready', 'retrying', 'failed', 'suspended', 'scheduled'";
         };
+        // Written like the real store's claim: a fenced per-candidate lookup by identifier, a CASE
+        // instead of an OR, an update by ctid, and the plan pinned in the claim's transaction.
         String condition = blocking == null ? "" : """
             AND NOT EXISTS (
                 SELECT 1 FROM single.task b
                 WHERE b.topic_id = c.topic_id AND b.identifier = c.identifier AND b.id <> c.id AND b.state IN %s
-                  AND (b.state = 'active' OR (b.id < c.id AND b.state IN (%s))))
+                  AND CASE WHEN b.state = 'active' THEN true WHEN b.id < c.id THEN b.state IN (%s) ELSE false END
+                OFFSET 0)
             """.formatted(UNFINISHED, blocking);
         String sql = """
             WITH picked AS MATERIALIZED (
-                SELECT c.id FROM single.task c
+                SELECT c.ctid AS row FROM single.task c
                 WHERE c.topic_id = 1 AND c.state = 'ready'
                 %s
                 ORDER BY c.priority DESC, c.id
@@ -127,22 +130,35 @@ final class SingleTableDesign implements Design {
             )
             UPDATE single.task t
             SET state = 'active', node_id = ?, attempt = t.attempt + 1, claimed_at = clock_timestamp()
-            FROM picked
-            WHERE t.topic_id = 1 AND t.id = picked.id
+            WHERE t.topic_id = 1 AND t.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING t.id, t.attempt, t.payload
             """.formatted(condition);
-        try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement(sql)) {
-            // Same treatment as the real store: plan every claim for its actual parameters.
-            statement.unwrap(org.postgresql.PGStatement.class).setPrepareThreshold(0);
-            statement.setInt(1, limit);
-            statement.setInt(2, node);
-            List<Claimed> claimed = new ArrayList<>();
-            try (ResultSet resultSet = statement.executeQuery()) {
-                while (resultSet.next()) {
-                    claimed.add(new Claimed(resultSet.getLong(1), resultSet.getInt(2)));
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (Statement planning = connection.createStatement(); PreparedStatement statement = connection.prepareStatement(sql)) {
+                planning.execute("""
+                    SELECT set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true),
+                           set_config('enable_sort', 'off', true), set_config('enable_hashjoin', 'off', true),
+                           set_config('enable_mergejoin', 'off', true)
+                    """);
+                // Same treatment as the real store: plan every claim for its actual parameters.
+                statement.unwrap(org.postgresql.PGStatement.class).setPrepareThreshold(0);
+                statement.setInt(1, limit);
+                statement.setInt(2, node);
+                List<Claimed> claimed = new ArrayList<>();
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        claimed.add(new Claimed(resultSet.getLong(1), resultSet.getInt(2)));
+                    }
+                }
+                connection.commit();
+                return claimed;
+            } finally {
+                if (!connection.getAutoCommit()) {
+                    connection.rollback();
+                    connection.setAutoCommit(true);
                 }
             }
-            return claimed;
         }
     }
 
@@ -172,6 +188,11 @@ final class SingleTableDesign implements Design {
             resultSet.next();
             return resultSet.getLong(1);
         }
+    }
+
+    @Override
+    public void analyze() throws SQLException {
+        sql("ANALYZE single.task");
     }
 
     @Override

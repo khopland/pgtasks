@@ -119,6 +119,13 @@ final class QueueDesign implements Design {
     }
 
     @Override
+    public void analyze() throws SQLException {
+        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
+            statement.execute("ANALYZE tasks.queue");
+        }
+    }
+
+    @Override
     public void vacuum() throws SQLException {
         try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
             statement.execute("VACUUM ANALYZE tasks.task");

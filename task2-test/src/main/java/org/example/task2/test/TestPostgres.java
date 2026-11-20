@@ -17,6 +17,10 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
  * {@code task2.test.postgres.url} (plus {@code .user} and {@code .password}) to an admin URL
  * to run against an existing server instead. Each test gets its own database, see
  * {@link #createDatabase()}.
+ *
+ * <p>{@code task2.test.postgres.config} adds settings to the embedded server, as
+ * {@code key=value} pairs separated by semicolons, for instance to log slow plans:
+ * {@code -Dtask2.test.postgres.config="shared_preload_libraries=auto_explain;auto_explain.log_min_duration=10ms"}.
  */
 public final class TestPostgres {
 
@@ -62,12 +66,18 @@ public final class TestPostgres {
             );
         }
         try {
-            EmbeddedPostgres embedded = EmbeddedPostgres.builder()
+            EmbeddedPostgres.Builder builder = EmbeddedPostgres.builder()
                 .setServerConfig("max_connections", "400")
                 .setServerConfig("fsync", "off")
                 .setServerConfig("synchronous_commit", "off")
-                .setServerConfig("full_page_writes", "off")
-                .start();
+                .setServerConfig("full_page_writes", "off");
+            for (String setting : System.getProperty("task2.test.postgres.config", "").split(";")) {
+                int equals = setting.indexOf('=');
+                if (equals > 0) {
+                    builder.setServerConfig(setting.substring(0, equals).strip(), setting.substring(equals + 1).strip());
+                }
+            }
+            EmbeddedPostgres embedded = builder.start();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
                     embedded.close();

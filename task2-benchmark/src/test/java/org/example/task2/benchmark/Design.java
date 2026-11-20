@@ -32,4 +32,7 @@ interface Design {
     long bytes() throws SQLException;
 
     void vacuum() throws SQLException;
+
+    /** Refreshes the planner statistics of the tables claims read, as autovacuum would now. */
+    void analyze() throws SQLException;
 }
