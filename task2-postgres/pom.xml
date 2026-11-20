@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.example.task2</groupId>
+    <artifactId>task2-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../task2-parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>task2-postgres</artifactId>
+  <description>Task 2.0 storage on Postgres: the tasks schema, its Liquibase changelog, the task store and the LISTEN/NOTIFY notifier.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-api</artifactId>
+    </dependency>
+    <!-- The application brings its own driver. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Only needed for TaskSchema.migrate; teams that run migrations from a pipeline leave it out. -->
+    <dependency>
+      <groupId>org.liquibase</groupId>
+      <artifactId>liquibase-core</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

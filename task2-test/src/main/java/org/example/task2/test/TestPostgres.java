@@ -74,7 +74,7 @@ public final class TestPostgres {
                 } catch (IOException ignored) {
                 }
             }, "task2-test-postgres-shutdown"));
-            return new Server(embedded.getJdbcUrl("postgres", "postgres"), "postgres", "");
+            return new Server("jdbc:postgresql://localhost:" + embedded.getPort() + "/postgres", "postgres", "");
         } catch (IOException e) {
             throw new UncheckedIOException("Could not start embedded Postgres", e);
         }
