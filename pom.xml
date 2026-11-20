@@ -15,6 +15,7 @@
     <module>task2-test</module>
     <module>task2-api</module>
     <module>task2-postgres</module>
+    <module>task2-engine</module>
   </modules>
   <profiles>
     <!-- Phase 0: regression tests for plan section 02. They fail on the unpatched 1.x snapshot. -->
