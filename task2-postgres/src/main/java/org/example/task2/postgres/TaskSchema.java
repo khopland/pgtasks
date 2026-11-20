@@ -62,13 +62,14 @@ public final class TaskSchema {
     static final List<String> FILES = List.of(
         "V001__tasks_schema.sql",
         "V002__count_snapshots.sql",
+        "V003__partial_dedup_index.sql",
         "R__create_topic.sql",
         "R__notify_ready.sql",
         "R__task_view.sql"
     );
 
     /** The schema version this library is built for. */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /** What {@code tasks.meta} records. */
     public record Meta(int version, int compatibleFrom) {

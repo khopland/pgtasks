@@ -26,10 +26,11 @@ class SchemaTest {
     void creates_every_table_and_records_its_version(PostgresDatabase database) {
         assertThat(database.count("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'tasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'attempt', 'rate_limit', 'rate_admission', 'schedule', 'topic_count', 'meta', 'schema_history')"))
             .isEqualTo(11);
-        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(2, 1));
+        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(3, 3));
         assertThat(database.rows("SELECT version, script FROM tasks.schema_history ORDER BY installed_rank")).containsExactly(
             Arrays.asList(1, "V001__tasks_schema.sql"),
             Arrays.asList(2, "V002__count_snapshots.sql"),
+            Arrays.asList(3, "V003__partial_dedup_index.sql"),
             Arrays.asList(null, "R__create_topic.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
             Arrays.asList(null, "R__task_view.sql")

@@ -23,6 +23,10 @@
         <sqlFile path="V002__count_snapshots.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
+    <changeSet id="tasks-V003" author="task2">
+        <sqlFile path="V003__partial_dedup_index.sql" relativeToChangelogFile="true" splitStatements="false"/>
+    </changeSet>
+
     <changeSet id="tasks-R__create_topic" author="task2" runOnChange="true">
         <sqlFile path="R__create_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>

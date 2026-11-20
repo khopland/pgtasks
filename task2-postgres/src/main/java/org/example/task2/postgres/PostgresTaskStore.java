@@ -32,8 +32,9 @@ import org.example.task2.spi.TaskStore;
 
 /**
  * The task store on the {@code tasks} schema (see {@link TaskSchema}). Every operation is one
- * statement, except a claim under a strict rate limit, which also reads and charges the
- * limit's token bucket in the same transaction. When an engine starts, the store migrates or
+ * statement, except a claim: it first pins its plan with transaction-local planner settings, and
+ * under a strict rate limit also reads and charges the limit's token bucket in the same
+ * transaction. When an engine starts, the store migrates or
  * validates the schema according to its {@link SchemaMode}.
  */
 public final class PostgresTaskStore implements TaskStore {
@@ -41,7 +42,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -54,6 +55,17 @@ public final class PostgresTaskStore implements TaskStore {
     public PostgresTaskStore(DataSource dataSource, SchemaMode mode) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.mode = Objects.requireNonNull(mode, "mode");
+        // The queue's statistics are often those of an empty table: autovacuum tends to analyze
+        // it right after a burst drained, and until the next analyze the planner expects no rows
+        // at all. Every plan then looks free, and the cheapest-looking one can compare each queued
+        // task with each task of a batch. So statements on the queue leave the planner no such
+        // choice: rows a claim, promotion or expiry selected and locked are changed by ctid (a
+        // TID scan; nothing else can move them while the lock is held, and a row that a
+        // concurrent commit moved is skipped, which only delays it), other rows by
+        // "task_id = ANY (array)" (pushes keep task_id so a superseded row moved by a concurrent
+        // commit is still found), the per-identifier check in claims is fenced (pollSql), and a
+        // claim pins its plan (claimPlanning). ClaimPlanTest drains a burst on a queue analyzed
+        // while empty.
         createTopic = sql("SELECT tasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM tasks.topic WHERE name = :name");
         registerNode = sql("INSERT INTO tasks.node (name, version) VALUES (:name, :version) RETURNING id");
@@ -87,6 +99,17 @@ public final class PostgresTaskStore implements TaskStore {
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)).withCustomPlans());
         }
+        // A claim has one right plan: walk queue_ready_idx in order, look up each candidate's
+        // identifier, update the picked rows by ctid, read their payloads by primary key. While
+        // the queue's statistics say it is empty, the planner can't tell that plan from a bitmap
+        // scan of the whole topic followed by a sort, which looks up every ready task's
+        // identifier on every claim (the Phase 2 benchmark: 4 times slower at 20,000 tasks, and
+        // quadratic in the size of a burst). So the claim's own transaction rules the others out.
+        claimPlanning = sql("""
+            SELECT set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true),
+                   set_config('enable_sort', 'off', true), set_config('enable_hashjoin', 'off', true),
+                   set_config('enable_mergejoin', 'off', true)
+            """);
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""
             WITH d AS (
@@ -96,7 +119,8 @@ public final class PostgresTaskStore implements TaskStore {
             done AS (
                 DELETE FROM tasks.queue q
                 USING d
-                WHERE q.task_id = d.task_id
+                WHERE q.task_id = ANY (:ids::bigint[])
+                  AND q.task_id = d.task_id
                   AND q.attempt = d.attempt
                   AND q.node_id = :node::integer
                   AND q.topic_id = :topic::integer
@@ -128,7 +152,8 @@ public final class PostgresTaskStore implements TaskStore {
                     claimed_at = NULL,
                     attempt = q.attempt - d.uncounted
                 FROM d
-                WHERE q.task_id = d.task_id
+                WHERE q.task_id = ANY (:ids::bigint[])
+                  AND q.task_id = d.task_id
                   AND q.attempt = d.attempt
                   AND q.node_id = :node::integer
                   AND q.topic_id = :topic::integer
@@ -154,7 +179,7 @@ public final class PostgresTaskStore implements TaskStore {
         // changed and returns the next ones, so the limit stops holding.
         promote = sql("""
             WITH due AS MATERIALIZED (
-                SELECT o.task_id FROM tasks.queue o
+                SELECT o.ctid AS row FROM tasks.queue o
                 WHERE o.state IN ('scheduled', 'retrying') AND o.run_at <= clock_timestamp()
                 ORDER BY o.run_at
                 LIMIT :limit::integer
@@ -162,14 +187,13 @@ public final class PostgresTaskStore implements TaskStore {
             )
             UPDATE tasks.queue q
             SET state = 'ready', run_at = NULL
-            FROM due
-            WHERE q.task_id = due.task_id
+            WHERE q.ctid = ANY (ARRAY(SELECT row FROM due))
             RETURNING q.topic_id
             """);
         // The attempt is kept: an expired run counts, since a poison task can take a node down.
         expire = sql("""
             WITH stale AS (
-                SELECT o.task_id, o.topic_id, o.attempt, o.node_id, o.claimed_at
+                SELECT o.ctid AS row, o.task_id, o.topic_id, o.attempt, o.node_id, o.claimed_at
                 FROM tasks.queue o
                 WHERE o.state = 'active'
                   AND o.node_id <> :node::integer
@@ -179,8 +203,7 @@ public final class PostgresTaskStore implements TaskStore {
             requeued AS (
                 UPDATE tasks.queue q
                 SET state = 'ready', node_id = NULL, claimed_at = NULL
-                FROM stale
-                WHERE q.task_id = stale.task_id
+                WHERE q.ctid = ANY (ARRAY(SELECT row FROM stale))
                 RETURNING q.task_id, q.topic_id
             ),
             logged AS (
@@ -302,12 +325,12 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 superseded AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id IN (
+                    WHERE q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
-                          AND o.identifier IN (SELECT identifier FROM queued)
+                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state IN ('ready', 'scheduled', 'retrying')
-                        FOR UPDATE OF o SKIP LOCKED)
+                        FOR UPDATE OF o SKIP LOCKED))
                     RETURNING q.task_id
                 ),
                 superseded_tasks AS (
@@ -319,12 +342,12 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 replaced AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id IN (
+                    WHERE q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
-                          AND o.identifier IN (SELECT identifier FROM queued)
+                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state <> 'active'
-                        FOR UPDATE OF o SKIP LOCKED)
+                        FOR UPDATE OF o SKIP LOCKED))
                     RETURNING q.task_id
                 ),
                 replaced_open AS (
@@ -346,12 +369,12 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 deleted AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id IN (
+                    WHERE q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
-                          AND o.identifier IN (SELECT identifier FROM queued)
+                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state <> 'active'
-                        FOR UPDATE OF o SKIP LOCKED)
+                        FOR UPDATE OF o SKIP LOCKED))
                     RETURNING q.task_id
                 ),
                 deleted_tasks AS (
@@ -384,7 +407,7 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM input
                 WHERE state IS NOT NULL
                 ORDER BY ord
-                ON CONFLICT (topic_id, dedup_key) DO NOTHING
+                ON CONFLICT (topic_id, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
                 RETURNING task_id, identifier
             ),
             stored AS (
@@ -433,7 +456,7 @@ public final class PostgresTaskStore implements TaskStore {
                 SET state = 'ready'
                 WHERE q.topic_id = :topic::integer
                   AND q.state = 'suspended'
-                  AND q.identifier IN (SELECT c.identifier FROM checked c JOIN complete USING (group_no))
+                  AND q.identifier = ANY (ARRAY(SELECT c.identifier FROM checked c JOIN complete USING (group_no)))
                 RETURNING q.identifier
             )
             SELECT DISTINCT identifier FROM released
@@ -449,17 +472,31 @@ public final class PostgresTaskStore implements TaskStore {
         };
         // Only tasks in the same topic count (finding #6), and only earlier ones (finding #7),
         // except that an active task blocks its identifier in both directions.
+        //
+        // The check must be one lookup of the candidate's identifier in queue_identifier_idx,
+        // whatever the statistics say:
+        // - OFFSET 0 keeps it a subplan run per candidate, with the identifier as a parameter.
+        //   As a NOT EXISTS anti-join the planner may scan the whole topic per candidate instead,
+        //   and does when the statistics say the queue is empty, which they do whenever
+        //   autovacuum analyzed it right after a burst drained (ClaimPlanTest: about 30 s
+        //   instead of 2 for 20,000 tasks).
+        // - CASE instead of OR: an OR on the state lets the planner add a bitmap arm that scans
+        //   queue_active_idx, every active task of every topic, once per candidate (the Phase 2
+        //   benchmark's SINGULAR scenario: 13 ms claims, 5 times slower).
         String condition = blocking == null ? "" : """
                   AND NOT EXISTS (
                       SELECT 1 FROM tasks.queue b
                       WHERE b.topic_id = c.topic_id
                         AND b.identifier = c.identifier
                         AND b.task_id <> c.task_id
-                        AND (b.state = 'active' OR (b.task_id < c.task_id AND b.state IN (%s))))
+                        AND CASE WHEN b.state = 'active' THEN true
+                                 WHEN b.task_id < c.task_id THEN b.state IN (%s)
+                                 ELSE false END
+                      OFFSET 0)
             """.formatted(blocking);
         return """
             WITH picked AS MATERIALIZED (
-                SELECT c.task_id
+                SELECT c.ctid AS row
                 FROM tasks.queue c
                 WHERE c.topic_id = :topic::integer
                   AND c.state = 'ready'
@@ -471,8 +508,7 @@ public final class PostgresTaskStore implements TaskStore {
             claimed AS (
                 UPDATE tasks.queue q
                 SET state = 'active', node_id = :node::integer, attempt = q.attempt + 1, claimed_at = clock_timestamp()
-                FROM picked
-                WHERE q.task_id = picked.task_id
+                WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
                 RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at
             )
             SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at,
@@ -580,9 +616,16 @@ public final class PostgresTaskStore implements TaskStore {
         return results;
     }
 
+    /**
+     * Claims in the given transaction, which the engine starts for the claim alone: the claim sets
+     * transaction-local planner settings that pin its plan (see {@code claimPlanning}).
+     */
     @Override
     public Claim claim(StoreTransaction transaction, ClaimRequest request) throws SQLException {
         Connection connection = transaction.connection();
+        try (PreparedStatement statement = claimPlanning.prepare(connection, NamedSql.parameters())) {
+            statement.execute();
+        }
         Admission admission = request.admission();
         int limit = request.limit();
         if (admission != null) {
