@@ -104,6 +104,24 @@ public interface TaskStore {
 
     int registerNode(StoreTransaction transaction, String name, String version) throws SQLException;
 
+    /**
+     * Tries to become the leader for a group of cluster-wide jobs. At most one lease per name is
+     * held at a time across every node; it ends when closed, or when the holder dies.
+     */
+    Lease lead(String name) throws SQLException;
+
+    /**
+     * Deletes up to {@code limit} finished tasks with this outcome that completed before the cutoff.
+     * Unfinished tasks are never touched. Returns how many were deleted.
+     */
+    int purge(StoreTransaction transaction, int topicId, org.example.task2.Outcome outcome, Instant completedBefore, int limit) throws SQLException;
+
+    /** Records every topic's queue counts now. */
+    void snapshotCounts(StoreTransaction transaction) throws SQLException;
+
+    /** The last recorded queue counts per topic. */
+    List<TopicSnapshot> snapshots(StoreTransaction transaction) throws SQLException;
+
     void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
 
     /** Makes sure the admission state for a strict rate limit exists. */
@@ -273,6 +291,19 @@ public interface TaskStore {
     }
 
     record ActiveClaim(int topicId, long taskId, int attempt, Instant claimedAt) {
+    }
+
+    /** Leadership of a group of jobs. */
+    interface Lease extends AutoCloseable {
+
+        /** Whether this node still leads; false once the lease is closed or its holder lost it. */
+        boolean held();
+
+        @Override
+        void close();
+    }
+
+    record TopicSnapshot(String topic, QueueCounts counts, Instant takenAt) {
     }
 
     /** @param result failed or expired */

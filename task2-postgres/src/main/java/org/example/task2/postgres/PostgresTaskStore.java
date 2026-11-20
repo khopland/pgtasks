@@ -41,7 +41,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -209,6 +209,40 @@ public final class PostgresTaskStore implements TaskStore {
                    min(run_at)
             FROM tasks.queue
             WHERE topic_id = :topic::integer
+            """);
+        purge = sql("""
+            DELETE FROM tasks.task t
+            WHERE t.topic_id = :topic::integer
+              AND t.id IN (
+                SELECT d.id FROM tasks.task d
+                WHERE d.topic_id = :topic::integer AND d.outcome = :outcome::tasks.task_outcome AND d.completed_at < :before::timestamptz
+                ORDER BY d.completed_at
+                LIMIT :limit::integer
+                FOR UPDATE SKIP LOCKED)
+            """);
+        snapshot = sql("""
+            INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at)
+            SELECT t.id, now(),
+                   count(q.task_id) FILTER (WHERE q.state = 'scheduled'),
+                   count(q.task_id) FILTER (WHERE q.state = 'retrying'),
+                   count(q.task_id) FILTER (WHERE q.state = 'ready'),
+                   count(q.task_id) FILTER (WHERE q.state = 'active'),
+                   count(q.task_id) FILTER (WHERE q.state = 'suspended'),
+                   count(q.task_id) FILTER (WHERE q.state = 'failed'),
+                   count(q.task_id) FILTER (WHERE q.state IN ('scheduled', 'retrying') AND q.run_at <= now()),
+                   min(q.run_at)
+            FROM tasks.topic t
+            LEFT JOIN tasks.queue q ON q.topic_id = t.id
+            GROUP BY t.id
+            ON CONFLICT (topic_id) DO UPDATE SET taken_at = excluded.taken_at, scheduled = excluded.scheduled, retrying = excluded.retrying,
+                ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
+                due = excluded.due, next_run_at = excluded.next_run_at
+            """);
+        snapshots = sql("""
+            SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at
+            FROM tasks.topic_count c
+            JOIN tasks.topic tp ON tp.id = c.topic_id
+            ORDER BY tp.name
             """);
         activeClaims = sql("""
             SELECT topic_id, task_id, attempt, claimed_at
@@ -724,6 +758,114 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return List.copyOf(topics);
+    }
+
+    @Override
+    public Lease lead(String name) throws SQLException {
+        Connection connection = dataSource.getConnection();
+        try {
+            connection.setAutoCommit(true);
+            try (PreparedStatement statement = connection.prepareStatement("SELECT pg_try_advisory_lock(hashtextextended(?, 0))")) {
+                statement.setString(1, "tasks.leader:" + name);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    if (resultSet.getBoolean(1)) {
+                        return new PostgresLease(connection, "tasks.leader:" + name);
+                    }
+                }
+            }
+            connection.close();
+            return PostgresLease.NOT_HELD;
+        } catch (SQLException | RuntimeException e) {
+            connection.close();
+            throw e;
+        }
+    }
+
+    /** A session advisory lock on a connection of its own; the server releases it if the connection dies. */
+    private static final class PostgresLease implements Lease {
+
+        static final Lease NOT_HELD = new Lease() {
+            @Override
+            public boolean held() {
+                return false;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+
+        private final Connection connection;
+        private final String key;
+        private volatile boolean closed;
+
+        PostgresLease(Connection connection, String key) {
+            this.connection = connection;
+            this.key = key;
+        }
+
+        @Override
+        public boolean held() {
+            try {
+                return !closed && connection.isValid(2);
+            } catch (SQLException e) {
+                return false;
+            }
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            // The connection may go back to a pool, so release the lock instead of trusting close().
+            try (PreparedStatement statement = connection.prepareStatement("SELECT pg_advisory_unlock(hashtextextended(?, 0))")) {
+                statement.setString(1, key);
+                statement.execute();
+            } catch (SQLException ignored) {
+                // A dead connection has lost the lock already.
+            } finally {
+                try {
+                    connection.close();
+                } catch (SQLException ignored) {
+                }
+            }
+        }
+    }
+
+    @Override
+    public int purge(StoreTransaction transaction, int topicId, org.example.task2.Outcome outcome, Instant completedBefore, int limit) throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("topic", topicId)
+            .set("outcome", outcome.label())
+            .set("before", OffsetDateTime.ofInstant(completedBefore, java.time.ZoneOffset.UTC))
+            .set("limit", limit);
+        try (PreparedStatement statement = purge.prepare(transaction.connection(), parameters)) {
+            return statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public void snapshotCounts(StoreTransaction transaction) throws SQLException {
+        try (PreparedStatement statement = snapshot.prepare(transaction.connection(), NamedSql.parameters())) {
+            statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public List<TopicSnapshot> snapshots(StoreTransaction transaction) throws SQLException {
+        List<TopicSnapshot> result = new ArrayList<>();
+        try (PreparedStatement statement = snapshots.prepare(transaction.connection(), NamedSql.parameters());
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                result.add(new TopicSnapshot(resultSet.getString(1), new QueueCounts(resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
+                    resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), resultSet.getLong(8), instant(resultSet, "next_run_at")),
+                    instant(resultSet, "taken_at")));
+            }
+        }
+        return result;
     }
 
     @Override

@@ -59,6 +59,8 @@ public final class InMemoryTaskStore implements TaskStore {
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
     private final List<Rows.Attempt> attempts = new ArrayList<>();
     private final Map<String, Rows.Bucket> buckets = new HashMap<>();
+    private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
+    private final Map<String, Lease> leaders = new java.util.concurrent.ConcurrentHashMap<>();
     private int nextTopic = 1, nextNode = 1;
     private long nextTask = 1;
 
@@ -430,6 +432,63 @@ public final class InMemoryTaskStore implements TaskStore {
             }
         }
         return List.copyOf(requeued);
+    }
+
+    @Override
+    public Lease lead(String name) {
+        Lease lease = new Lease() {
+            private volatile boolean closed;
+
+            @Override
+            public boolean held() {
+                return !closed && leaders.get(name) == this;
+            }
+
+            @Override
+            public void close() {
+                closed = true;
+                leaders.remove(name, this);
+            }
+        };
+        Lease current = leaders.compute(name, (key, holder) -> holder == null || !holder.held() ? lease : holder);
+        return current == lease ? lease : new Lease() {
+            @Override
+            public boolean held() {
+                return false;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    @Override
+    public int purge(StoreTransaction transaction, int topicId, org.example.task2.Outcome outcome, Instant completedBefore, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Task> purged = tasks.values().stream()
+            .filter(task -> task.topicId() == topicId && outcome.label().equals(task.outcome()) && !queue.containsKey(task.id())
+                && task.completedAt() != null && task.completedAt().isBefore(completedBefore))
+            .sorted(Comparator.comparing(Rows.Task::completedAt))
+            .limit(limit)
+            .toList();
+        purged.forEach(task -> memory.remove(tasks, task.id()));
+        return purged.size();
+    }
+
+    @Override
+    public void snapshotCounts(StoreTransaction transaction) {
+        MemoryTransaction memory = memory(transaction);
+        Instant now = now();
+        for (Rows.Topic topic : List.copyOf(topics.values())) {
+            memory.put(snapshots, topic.id(), new TopicSnapshot(topic.name(), count(transaction, topic.id()), now));
+        }
+    }
+
+    @Override
+    public List<TopicSnapshot> snapshots(StoreTransaction transaction) {
+        memory(transaction);
+        return snapshots.values().stream().sorted(Comparator.comparing(TopicSnapshot::topic)).toList();
     }
 
     @Override

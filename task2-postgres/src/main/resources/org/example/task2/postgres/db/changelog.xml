@@ -19,6 +19,10 @@
         <sqlFile path="V001__tasks_schema.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
+    <changeSet id="tasks-V002" author="task2">
+        <sqlFile path="V002__count_snapshots.sql" relativeToChangelogFile="true" splitStatements="false"/>
+    </changeSet>
+
     <changeSet id="tasks-R__create_topic" author="task2" runOnChange="true">
         <sqlFile path="R__create_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
