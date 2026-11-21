@@ -69,6 +69,6 @@ What it does:
 
 ## Coordinates
 
-Task 2.0 has its own group (`org.example.task2`), packages and artifact names (`task2-*`), so
+Task 2.0 has its own group (`io.github.khopland.task2`), packages and artifact names (`task2-*`), so
 it can run beside 1.x in one application while you move topic by topic: each library works in
 its own tables.

@@ -38,7 +38,7 @@ Import the BOM, then add modules without versions:
 <dependencyManagement>
   <dependencies>
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-bom</artifactId>
       <version>0.1.0-SNAPSHOT</version>
       <type>pom</type>

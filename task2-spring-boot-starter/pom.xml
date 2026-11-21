@@ -2,7 +2,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>org.example.task2</groupId>
+    <groupId>io.github.khopland.task2</groupId>
     <artifactId>task2-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../task2-parent/pom.xml</relativePath>
@@ -42,21 +42,21 @@
   </dependencyManagement>
   <dependencies>
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-engine</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-postgres</artifactId>
     </dependency>
     <!-- Metrics and tracing; on when the app has Micrometer set up, as Actuator does. -->
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-micrometer</artifactId>
     </dependency>
     <!-- task.store=memory, for local runs and tests; the app adds it. -->
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-memory</artifactId>
       <optional>true</optional>
     </dependency>
@@ -81,7 +81,7 @@
     </dependency>
     <!-- JSON payloads, when the app has Jackson: the codec without Jackson itself. -->
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-jackson</artifactId>
       <exclusions>
         <exclusion>
@@ -108,14 +108,14 @@
     </dependency>
 
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-engine</artifactId>
       <version>${project.version}</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.example.task2</groupId>
+      <groupId>io.github.khopland.task2</groupId>
       <artifactId>task2-test</artifactId>
       <scope>test</scope>
     </dependency>

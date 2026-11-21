@@ -3,12 +3,12 @@
 ## The schema
 
 Everything lives in the `tasks` schema, as plain SQL files under
-`org/example/task2/postgres/db`. How it gets applied is up to you (`task.schema-mode`):
+`io/github/khopland/task2/postgres/db`. How it gets applied is up to you (`task.schema-mode`):
 
 - `migrate` (default): the built-in runner applies the files at startup, under an advisory lock,
   so nodes starting together don't race. The application's user owns the schema.
 - `validate`: Flyway, Liquibase or a DBA pipeline applies the same files, and the engine only
-  checks the version. For Liquibase, include `org/example/task2/postgres/db/changelog.xml`. For
+  checks the version. For Liquibase, include `io/github/khopland/task2/postgres/db/changelog.xml`. For
   Flyway, use a Flyway instance of its own with that location, schema `tasks` and a history
   table such as `flyway_task_history`. The runtime user then needs USAGE on the schema, SELECT,
   INSERT, UPDATE and DELETE on its tables, USAGE on `task_id_seq` and EXECUTE on
@@ -133,4 +133,4 @@ connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
 The library logs through `System.Logger`. In Spring Boot that reaches Logback through
 jul-to-slf4j without any setup. Elsewhere, add `org.slf4j:slf4j-jdk-platform-logging` to send
 it to SLF4J, or configure `java.util.logging`. Loggers are named after the classes, under
-`org.example.task2`.
+`io.github.khopland.task2`.
