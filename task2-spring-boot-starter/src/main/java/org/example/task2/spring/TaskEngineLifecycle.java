@@ -7,23 +7,36 @@ import org.springframework.context.SmartLifecycle;
 
 /**
  * Starts the engine once the context is refreshed and drains it when the context closes, before
- * the DataSource and the beans its handlers use are destroyed.
+ * the DataSource and the beans its handlers use are destroyed. With {@code task.enabled=false}
+ * it only prepares the engine: the schema and the configured topics, so pushes work, and no
+ * processing, housekeeping or notification listening on this node.
  */
 public final class TaskEngineLifecycle implements SmartLifecycle {
 
     private final TaskEngine engine;
     private final Duration shutdownTimeout;
+    private final boolean processing;
     private volatile boolean running;
 
     public TaskEngineLifecycle(TaskEngine engine, Duration shutdownTimeout) {
+        this(engine, shutdownTimeout, true);
+    }
+
+    /** @param processing false for a node that only pushes: the engine is prepared, never started */
+    public TaskEngineLifecycle(TaskEngine engine, Duration shutdownTimeout, boolean processing) {
         this.engine = engine;
         this.shutdownTimeout = shutdownTimeout;
+        this.processing = processing;
     }
 
     @Override
     public void start() {
         try {
-            engine.start();
+            if (processing) {
+                engine.start();
+            } else {
+                engine.prepare();
+            }
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {

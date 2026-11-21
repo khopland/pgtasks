@@ -18,6 +18,8 @@ import org.springframework.boot.health.contributor.Health;
  *       the housekeeping lease, and after the expiry other nodes requeue its tasks. Also DOWN if
  *       the database can't be reached.</li>
  *   <li>OUT_OF_SERVICE before start and after stop.</li>
+ *   <li>UP on a node that only pushes ({@code task.enabled=false}): there is nothing of its own to
+ *       be unhealthy about, and the database's own indicator covers its pushes.</li>
  * </ul>
  *
  * Disconnected notifications and claims stuck past their deadline are in the details, without
@@ -29,14 +31,25 @@ public class TaskHealthIndicator extends AbstractHealthIndicator {
     private static final int STUCK_SHOWN = 10;
 
     private final TaskEngine engine;
+    private final boolean processing;
 
     public TaskHealthIndicator(TaskEngine engine) {
+        this(engine, true);
+    }
+
+    /** @param processing false on a node that only pushes, which reports UP */
+    public TaskHealthIndicator(TaskEngine engine, boolean processing) {
         super("The task engine's health check failed");
         this.engine = engine;
+        this.processing = processing;
     }
 
     @Override
     protected void doHealthCheck(Health.Builder builder) throws Exception {
+        if (!processing) {
+            builder.up().withDetail("processing", "disabled on this node (task.enabled=false); it only pushes");
+            return;
+        }
         EngineHealth health = engine.health();
         if (!health.running()) {
             builder.outOfService().withDetail("node", health.node());

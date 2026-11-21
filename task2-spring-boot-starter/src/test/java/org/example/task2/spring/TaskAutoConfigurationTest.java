@@ -174,6 +174,32 @@ class TaskAutoConfigurationTest {
             });
     }
 
+    @Test
+    void with_task_enabled_false_the_node_only_pushes_and_others_process() {
+        postgres().withUserConfiguration(Modules.class).withPropertyValues("task.enabled=false").run(context -> {
+            assertThat(context).hasNotFailed();
+            TaskEngine engine = context.getBean(TaskEngine.class);
+            assertThat(engine.running()).isFalse();
+            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+            transaction.executeWithoutResult(status -> context.getBean(Tasks.class).push(NOTIFY, "anna", "pushed by the producer"));
+
+            Thread.sleep(300);
+            assertThat(database.count("SELECT count(*) FROM tasks.queue WHERE state = 'ready'")).as("nobody processes here").isEqualTo(1);
+            assertThat(database.count("SELECT count(*) FROM tasks.node")).as("no node row for a producer").isZero();
+            assertThat(new TaskHealthIndicator(engine, false).health().getStatus()).isEqualTo(org.springframework.boot.health.contributor.Status.UP);
+
+            List<String> handled = new CopyOnWriteArrayList<>();
+            try (TaskEngine consumer = TaskEngine.builder().dataSource(database.dataSource())
+                .configure("notify", tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> {
+                    handled.add(task.payload());
+                    return Decision.success();
+                })))
+                .build().start()) {
+                EngineFixture.await("a processing node to run it", Duration.ofSeconds(5), () -> handled.contains("pushed by the producer"));
+            }
+        });
+    }
+
     record Order(String id, int quantity) {
     }
 

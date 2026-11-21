@@ -126,7 +126,11 @@ public class TaskAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public TaskEngineLifecycle taskEngineLifecycle(TaskEngine engine, TaskProperties properties) {
-        return new TaskEngineLifecycle(engine, properties.shutdownTimeout());
+        if (!properties.enabled() && properties.store() == TaskProperties.Store.MEMORY) {
+            System.getLogger(TaskAutoConfiguration.class.getName()).log(System.Logger.Level.WARNING, "task.enabled=false with task.store=memory: "
+                + "this node keeps its tasks in its own memory and processes none of them, so what it pushes never runs");
+        }
+        return new TaskEngineLifecycle(engine, properties.shutdownTimeout(), properties.enabled());
     }
 
     /** Loaded only when task.store=memory, so task2-memory stays optional. */

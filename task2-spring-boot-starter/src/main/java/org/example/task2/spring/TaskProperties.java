@@ -22,6 +22,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *
  * A topic or limit that no configurer defines, or an unknown setting, fails startup.
  *
+ * @param enabled         false for a node that only pushes tasks: it applies the schema and
+ *                        registers its configured topics, so its pushes work whichever node starts
+ *                        first, but it processes nothing, runs no housekeeping and listens for no
+ *                        notifications. Other nodes, with it true, run the topics
  * @param store           where tasks live: {@code postgres} (the default, through the application's
  *                        DataSource) or {@code memory}, for local runs and tests. Memory is never
  *                        chosen on its own: without a DataSource, startup fails
@@ -45,6 +49,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  */
 @ConfigurationProperties("task")
 public record TaskProperties(
+    @DefaultValue("true") boolean enabled,
     @DefaultValue("postgres") Store store,
     @DefaultValue("migrate") String schemaMode,
     String node,

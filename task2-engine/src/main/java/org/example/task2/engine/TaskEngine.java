@@ -63,6 +63,7 @@ public final class TaskEngine implements AutoCloseable {
     private List<Recurring<?>> recurring = List.of();
     private String version;
     private volatile boolean started;
+    private boolean prepared;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
         this(store, settings, topics, List.of());
@@ -192,17 +193,21 @@ public final class TaskEngine implements AutoCloseable {
         return nodeId;
     }
 
-    public synchronized TaskEngine start() throws Exception {
-        if (started) {
-            throw new IllegalStateException("Already started");
+    /**
+     * Readies the store for this engine without processing anything: applies the schema (as the
+     * store's schema mode says), registers the configured topics with their retention and
+     * recurring tasks, and the rate limits. Enough for a node that only pushes, such as the
+     * Spring starter's {@code task.enabled=false}: its pushes work whichever node starts first,
+     * and the nodes that process the topics pick them up. {@link #start()} does this first.
+     */
+    public synchronized TaskEngine prepare() throws Exception {
+        if (prepared) {
+            return this;
         }
         store.prepare();
-        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version != null ? version : version()));
         List<RateLimit> configured = Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
             templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
         limits = new RateLimits(store, configured, this::limitChanged);
-        core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, limits, settings.observer());
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
@@ -220,6 +225,23 @@ public final class TaskEngine implements AutoCloseable {
             return null;
         });
         limits.refresh();
+        prepared = true;
+        return this;
+    }
+
+    /** Whether this engine processes tasks: started and not stopped. A node that only pushes never starts. */
+    public boolean running() {
+        return started;
+    }
+
+    public synchronized TaskEngine start() throws Exception {
+        if (started) {
+            throw new IllegalStateException("Already started");
+        }
+        prepare();
+        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version != null ? version : version()));
+        core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
+            held, () -> !started, limits, settings.observer());
         notifier = settings.notifier();
         if (notifier != null) {
             notifier.start(new Notifier.Listener() {
@@ -648,7 +670,7 @@ public final class TaskEngine implements AutoCloseable {
     /** The rate limits of this node's topics, and operators' runtime overrides of them. */
     public RateLimits limits() {
         if (limits == null) {
-            throw new IllegalStateException("Not started");
+            throw new IllegalStateException("Neither prepared nor started");
         }
         return limits;
     }

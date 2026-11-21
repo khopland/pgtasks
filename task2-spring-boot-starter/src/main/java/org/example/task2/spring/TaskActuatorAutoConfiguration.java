@@ -42,8 +42,8 @@ public class TaskActuatorAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean(name = "tasksHealthIndicator")
         @ConditionalOnEnabledHealthIndicator("tasks")
-        TaskHealthIndicator tasksHealthIndicator(TaskEngine engine) {
-            return new TaskHealthIndicator(engine);
+        TaskHealthIndicator tasksHealthIndicator(TaskEngine engine, TaskProperties properties) {
+            return new TaskHealthIndicator(engine, properties.enabled());
         }
     }
 }
