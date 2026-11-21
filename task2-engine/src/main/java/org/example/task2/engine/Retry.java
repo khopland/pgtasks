@@ -181,7 +181,9 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
     @SafeVarargs
     private static List<Class<? extends Throwable>> append(List<Class<? extends Throwable>> list, Class<? extends Throwable>... more) {
         List<Class<? extends Throwable>> all = new java.util.ArrayList<>(list);
-        all.addAll(List.of(more));
+        for (Class<? extends Throwable> type : more) {
+            all.add(Objects.requireNonNull(type, "type"));
+        }
         return all;
     }
 

@@ -173,10 +173,22 @@
           <version>3.16.0</version>
           <configuration>
             <compilerArgs>
-              <arg>-Xlint:all,-serial,-processing</arg>
+              <arg>-Xlint:all,-serial,-processing,-try</arg>
               <arg>-parameters</arg>
             </compilerArgs>
           </configuration>
+          <executions>
+            <!-- Javadoc is checked on every build: broken links, bad HTML and misused tags fail it. -->
+            <execution>
+              <id>default-compile</id>
+              <configuration>
+                <compilerArgs combine.children="append">
+                  <arg>-Xdoclint:all,-missing</arg>
+                  <arg>-Werror</arg>
+                </compilerArgs>
+              </configuration>
+            </execution>
+          </executions>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

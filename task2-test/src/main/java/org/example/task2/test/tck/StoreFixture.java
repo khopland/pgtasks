@@ -35,7 +35,7 @@ public abstract class StoreFixture implements AutoCloseable {
     public abstract void advance(Duration duration) throws Exception;
 
     @Override
-    public void close() throws Exception {
+    public void close() {
     }
 
     @FunctionalInterface

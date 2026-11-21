@@ -10,7 +10,7 @@ import org.example.task2.spi.TransactionBinding;
 
 /**
  * Node-wide settings and collaborators, as the builder resolves them from {@link TaskGlobals};
- * {@link #defaults()} holds the built-in defaults.
+ * {@link #defaults(String)} holds the built-in defaults.
  *
  * @param nodeName           shown in tasks.node and tasks.task_view
  * @param heartbeat          how often this node reports that it is alive
