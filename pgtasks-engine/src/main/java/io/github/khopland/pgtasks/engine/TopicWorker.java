@@ -16,6 +16,9 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The poll loop of one topic on this node. Takes a topic permit and a node permit, claims at
  * most a batch (and at most what the rate limit admits), and runs the batch on its own virtual
@@ -24,7 +27,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class TopicWorker<T> {
 
-    private static final System.Logger LOGGER = System.getLogger(TopicWorker.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(TopicWorker.class);
 
     private static final Duration FIRST_BACKOFF = Duration.ofMillis(100);
 
@@ -74,12 +77,12 @@ final class TopicWorker<T> {
     void recordResults(Map<Long, Boolean> results, boolean probe) {
         switch (breaker.record(results, probe)) {
             case OPENED -> {
-                LOGGER.log(System.Logger.Level.WARNING, "Most recent tasks in " + topic.ref() + " fail; this node stops claiming and probes with one task every "
-                    + topic.settings().breaker().probeEvery() + " (" + topic.settings().breaker().describe() + ")");
+                LOGGER.warn("Most recent tasks in {} fail; this node stops claiming and probes with one task every {} ({})",
+                    topic.ref(), topic.settings().breaker().probeEvery(), topic.settings().breaker().describe());
                 core.observer().breaker(topic.ref(), true);
             }
             case CLOSED -> {
-                LOGGER.log(System.Logger.Level.INFO, "A probe in " + topic.ref() + " succeeded; this node claims as usual again");
+                LOGGER.info("A probe in {} succeeded; this node claims as usual again", topic.ref());
                 core.observer().breaker(topic.ref(), false);
                 signal.signal();
             }
@@ -195,7 +198,7 @@ final class TopicWorker<T> {
                             try {
                                 run.run();
                             } catch (RuntimeException | Error e) {
-                                LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
+                                LOGGER.error("A batch in {} failed unexpectedly", topic.ref(), e);
                             } finally {
                                 runningBatches.decrementAndGet();
                                 permits.release();
@@ -255,7 +258,7 @@ final class TopicWorker<T> {
                 }
                 failures++;
                 Duration backoff = backoff(failures);
-                LOGGER.log(System.Logger.Level.WARNING, "Polling " + topic.ref() + " failed " + failures + " time(s) in a row, retrying in " + backoff, e);
+                LOGGER.warn("Polling {} failed {} time(s) in a row, retrying in {}", topic.ref(), failures, backoff, e);
                 try {
                     stopSignal.await(backoff);
                 } catch (InterruptedException interrupted) {
@@ -326,14 +329,14 @@ final class TopicWorker<T> {
             stopping = true;
             batches.shutdownNow();
             if (!batches.awaitTermination(PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
-                LOGGER.log(System.Logger.Level.WARNING, "Batches in " + topic.ref() + " ignored cancellation and are still running");
+                LOGGER.warn("Batches in {} ignored cancellation and are still running", topic.ref());
             }
         }
         // Past the deadline: a poller still waiting, for permits or the store, is interrupted.
         if (current != null && current.isAlive()) {
             current.interrupt();
             if (!current.join(PATIENCE)) {
-                LOGGER.log(System.Logger.Level.WARNING, "Polling " + topic.ref() + " ignored the stop and is still running");
+                LOGGER.warn("Polling {} ignored the stop and is still running", topic.ref());
             }
         }
     }

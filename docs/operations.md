@@ -130,7 +130,8 @@ connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
 
 ## Logging
 
-The library logs through `System.Logger`. In Spring Boot that reaches Logback through
-jul-to-slf4j without any setup. Elsewhere, add `org.slf4j:slf4j-jdk-platform-logging` to send
-it to SLF4J, or configure `java.util.logging`. Loggers are named after the classes, under
-`io.github.khopland.pgtasks`.
+The library logs through the SLF4J 2 API and brings no backend: Spring Boot's Logback picks it
+up without any setup, and elsewhere any SLF4J provider on the classpath does (without one, SLF4J
+prints a warning and drops the messages). Loggers are named after the classes, under
+`io.github.khopland.pgtasks`. INFO covers lifecycle events such as topics starting and
+stopping, schema migrations and lease changes.

@@ -17,6 +17,9 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The rate limits of this node's topics, and operators' overrides of them (plan section 08).
  * Overrides live in the store, which notifies every node of a change, so each applies it within
@@ -27,7 +30,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RateLimits {
 
-    private static final System.Logger LOGGER = System.getLogger(RateLimits.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(RateLimits.class);
 
     /**
      * One limit as this node sees it.
@@ -158,7 +161,7 @@ public final class RateLimits {
                 String why = override != null && override.activeAt(now)
                     ? ", overridden by " + override.updatedBy() + (override.until() == null ? "" : " until " + override.until())
                     : Objects.requireNonNull(configured.get(name)).windows().isEmpty() ? ", as configured" : ", by its time window";
-                LOGGER.log(System.Logger.Level.INFO, "Rate limit " + name + " is now " + Rate.perSecond(limit.perSecond()) + ", burst " + limit.burst() + why);
+                LOGGER.info("Rate limit {} is now {}, burst {}{}", name, Rate.perSecond(limit.perSecond()), limit.burst(), why);
                 changed.accept(name);
             }
         });

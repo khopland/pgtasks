@@ -14,6 +14,9 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * What every worker on this node shares. {@code held} maps the tasks this node is processing to
  * their attempt, so claims it lost track of can be found and released.
@@ -31,7 +34,7 @@ record EngineCore(
     TaskObserver observer
 ) {
 
-    private static final System.Logger LOGGER = System.getLogger(EngineCore.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(EngineCore.class);
     private static final Duration MAX_BACKOFF = Duration.ofSeconds(5);
 
     @FunctionalInterface
@@ -63,7 +66,7 @@ record EngineCore(
                 if (!Transient.is(e) || stopping.getAsBoolean()) {
                     throw e;
                 }
-                LOGGER.log(System.Logger.Level.WARNING, what + " failed on a transient error, retrying in " + backoff + ": " + e);
+                LOGGER.warn("{} failed on a transient error, retrying in {}: {}", what, backoff, e.toString());
                 try {
                     Thread.sleep(backoff);
                 } catch (InterruptedException interrupted) {

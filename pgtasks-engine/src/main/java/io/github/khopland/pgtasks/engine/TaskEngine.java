@@ -27,6 +27,9 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Processes topics on this node. On start it lets the store check or migrate its schema,
  * registers the node, creates every topic registered by name, and starts one poll loop per topic
@@ -43,7 +46,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class TaskEngine implements AutoCloseable {
 
-    private static final System.Logger LOGGER = System.getLogger(TaskEngine.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskEngine.class);
 
     private final TaskStore store;
     private final EngineSettings settings;
@@ -427,7 +430,7 @@ public final class TaskEngine implements AutoCloseable {
                 store.setRetention(transaction, info.id(), topic.settings().retention());
                 return null;
             });
-            LOGGER.log(System.Logger.Level.INFO, "Processing topic " + info.name() + " on this node");
+            LOGGER.info("Processing topic {} on this node", info.name());
         }
         directory.register(info.name(), info.id());
         TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), running(core));
@@ -442,7 +445,7 @@ public final class TaskEngine implements AutoCloseable {
         workersByName.remove(name, worker);
         workersById.remove(worker.topicId(), worker);
         worker.stopPolling();
-        LOGGER.log(System.Logger.Level.INFO, "Stopped processing topic " + name + " on this node; running batches finish");
+        LOGGER.info("Stopped processing topic {} on this node; running batches finish", name);
         Thread drain = Thread.ofVirtual().name("pgtasks-drain-" + name).unstarted(() -> {
             try {
                 worker.awaitBatches(System.nanoTime() + worker.topic().settings().batchDeadline().toNanos());
@@ -546,8 +549,8 @@ public final class TaskEngine implements AutoCloseable {
         String version = this.version;
         if (version == null) {
             if (topics.stream().anyMatch(topic -> topic.settings().deadLetters().reviveOnNewVersion())) {
-                LOGGER.log(System.Logger.Level.WARNING, "Some topics revive their dead letters on a new version, but the engine has no version; "
-                    + "set it with TaskEngineBuilder.version(...) (the Spring starter takes it from BuildProperties)");
+                LOGGER.warn("Some topics revive their dead letters on a new version, but the engine has no version; set it with "
+                    + "TaskEngineBuilder.version(...) (the Spring starter takes it from BuildProperties)");
             }
             return;
         }
@@ -559,10 +562,10 @@ public final class TaskEngine implements AutoCloseable {
                 int id = admin.topicId(topic.ref().name());
                 if (EngineCore.transact(store, transaction -> store.claimRevival(transaction, id, version))) {
                     int revived = admin.revive(topic.ref().name(), DeadLetterQuery.ALL);
-                    LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + topic.ref() + " for version " + version);
+                    LOGGER.info("Revived {} dead letter(s) of {} for version {}", revived, topic.ref(), version);
                 }
             } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "Could not revive the dead letters of " + topic.ref() + " for version " + version, e);
+                LOGGER.warn("Could not revive the dead letters of {} for version {}", topic.ref(), version, e);
             }
         }
     }
@@ -574,7 +577,7 @@ public final class TaskEngine implements AutoCloseable {
             if (every != null && EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, worker.topicId(), every))) {
                 int revived = admin.revive(worker.topic().ref().name(), DeadLetterQuery.ALL);
                 if (revived > 0) {
-                    LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + worker.topic().ref() + ", as it does every " + every);
+                    LOGGER.info("Revived {} dead letter(s) of {}, as it does every {}", revived, worker.topic().ref(), every);
                 }
             }
         }
@@ -635,7 +638,7 @@ public final class TaskEngine implements AutoCloseable {
         for (Map.Entry<Integer, List<TaskStore.Completion>> entry : orphans.entrySet()) {
             int released = EngineCore.transact(store, transaction -> store.release(transaction, entry.getKey(), nodeId, entry.getValue()));
             if (released > 0) {
-                LOGGER.log(System.Logger.Level.WARNING, "Released " + released + " task(s) this node held but wasn't processing");
+                LOGGER.warn("Released {} task(s) this node held but wasn't processing", released);
                 wakeById(entry.getKey());
             }
         }
@@ -698,7 +701,7 @@ public final class TaskEngine implements AutoCloseable {
             try {
                 releaseOrphans(Duration.ZERO);
             } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "Could not hand back the tasks this node still holds; they are requeued once it counts as dead", e);
+                LOGGER.warn("Could not hand back the tasks this node still holds; they are requeued once it counts as dead", e);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

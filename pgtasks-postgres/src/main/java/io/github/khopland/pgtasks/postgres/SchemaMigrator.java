@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The built-in runner. Takes a session advisory lock, keeps its history in
  * {@code tasks.schema_history}, runs each versioned file once in its own transaction, re-runs
@@ -21,7 +24,7 @@ import java.util.Optional;
  */
 final class SchemaMigrator {
 
-    private static final System.Logger LOGGER = System.getLogger(SchemaMigrator.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(SchemaMigrator.class);
 
     private static final String LOCK = "SELECT pg_advisory_lock(hashtextextended('tasks.schema_history', 0))";
     private static final String UNLOCK = "SELECT pg_advisory_unlock(hashtextextended('tasks.schema_history', 0))";
@@ -98,8 +101,8 @@ final class SchemaMigrator {
             if (meta.isPresent() && meta.get().version() > latest()) {
                 // A newer node has migrated already. Never downgrade its functions or views.
                 TaskSchema.Status status = TaskSchema.check(meta, latest(), List.of());
-                LOGGER.log(System.Logger.Level.INFO, "The tasks schema is at version " + status.version() + ", ahead of this library's "
-                    + latest() + " and compatible with it; leaving it as it is");
+                LOGGER.info("The tasks schema is at version {}, ahead of this library's {} and compatible with it; leaving it as it is",
+                    status.version(), latest());
                 return status;
             }
             List<String> applied = new ArrayList<>();
@@ -116,7 +119,7 @@ final class SchemaMigrator {
                 }
             }
             if (!applied.isEmpty()) {
-                LOGGER.log(System.Logger.Level.INFO, "Applied to the tasks schema: " + String.join(", ", applied));
+                LOGGER.info("Applied to the tasks schema: {}", String.join(", ", applied));
             }
             return TaskSchema.check(TaskSchema.readMeta(connection), latest(), applied);
         } finally {

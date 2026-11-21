@@ -31,6 +31,9 @@ import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * One claimed batch, from decoding to completion:
  *
@@ -49,7 +52,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class BatchRun<T> {
 
-    private static final System.Logger LOGGER = System.getLogger(BatchRun.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(BatchRun.class);
 
     private static final Resolution RELEASE = new Resolution.Waiting(WaitState.RETRYING, Duration.ZERO, false, null);
 
@@ -273,7 +276,7 @@ final class BatchRun<T> {
                 return null;
             });
         } catch (StaleClaimException stale) {
-            LOGGER.log(System.Logger.Level.WARNING, "Discarded the completion of a batch in " + topic.ref() + ": " + stale.getMessage());
+            LOGGER.warn("Discarded the completion of a batch in {}: {}", topic.ref(), stale.getMessage());
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
             observation.released();
             returnProbe();
@@ -282,7 +285,7 @@ final class BatchRun<T> {
             if (e instanceof VirtualMachineError vm) {
                 fatal = vm;
             }
-            LOGGER.log(System.Logger.Level.WARNING, "The completion of a batch in " + topic.ref() + " failed and was rolled back", e);
+            LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
@@ -290,7 +293,7 @@ final class BatchRun<T> {
                 observation.completed(results(failures));
                 worker.recordResults(breakerResults(failures), probe);
             } catch (Exception recording) {
-                LOGGER.log(System.Logger.Level.ERROR, "Could not record the failure; the tasks stay active until this node's claims expire", recording);
+                LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
                 returnProbe();
             }
             return;
@@ -302,7 +305,7 @@ final class BatchRun<T> {
             try {
                 afterCommit(resource.getKey(), resource.getValue(), decisions);
             } catch (RuntimeException e) {
-                LOGGER.log(System.Logger.Level.WARNING, "afterCommit of " + resource.getKey() + " failed after the completion committed", e);
+                LOGGER.warn("afterCommit of {} failed after the completion committed", resource.getKey(), e);
             }
         }
         targets.forEach(core.wake());
@@ -383,7 +386,7 @@ final class BatchRun<T> {
         try {
             core.transactRetrying("Releasing tasks in " + worker.topic().ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), releases));
         } catch (Exception e) {
-            LOGGER.log(System.Logger.Level.WARNING, "Could not release tasks " + ids + "; they stay active until this node's claims expire", e);
+            LOGGER.warn("Could not release tasks {}; they stay active until this node's claims expire", ids, e);
         }
     }
 
@@ -472,7 +475,7 @@ final class BatchRun<T> {
             try {
                 closeable.close();
             } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "Could not close a batch resource", e);
+                LOGGER.warn("Could not close a batch resource", e);
             }
         }
     }

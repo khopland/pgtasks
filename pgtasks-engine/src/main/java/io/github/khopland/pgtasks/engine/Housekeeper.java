@@ -18,6 +18,9 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Housekeeping on one node. Every node heartbeats, renews or takes the housekeeping lease, and
  * releases claims it lost track of. The node holding the lease also runs the cluster-wide jobs:
@@ -33,7 +36,7 @@ final class Housekeeper {
 
     static final String LEASE = "housekeeping";
 
-    private static final System.Logger LOGGER = System.getLogger(Housekeeper.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(Housekeeper.class);
     private static final int BATCH = 1_000;
     /**
      * A task whose node dies under it waits 30 s, then 60 s, before it runs again, and the third
@@ -136,7 +139,7 @@ final class Housekeeper {
             try {
                 job.run();
             } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "The " + name + " job failed; it runs again in " + interval, e);
+                LOGGER.warn("The {} job failed; it runs again in {}", name, interval, e);
             }
         }, 0, interval.toNanos(), TimeUnit.NANOSECONDS);
     }
@@ -150,7 +153,7 @@ final class Housekeeper {
                 if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
                     executor.shutdownNow();
                     if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
-                        LOGGER.log(System.Logger.Level.WARNING, "A housekeeping job ignored the stop and is still running");
+                        LOGGER.warn("A housekeeping job ignored the stop and is still running");
                     }
                 }
             }
@@ -170,7 +173,7 @@ final class Housekeeper {
                     return null;
                 });
             } catch (Exception e) {
-                LOGGER.log(System.Logger.Level.WARNING, "Could not give up the housekeeping lease; another node takes over when its term runs out", e);
+                LOGGER.warn("Could not give up the housekeeping lease; another node takes over when its term runs out", e);
             }
         }
     }
@@ -205,7 +208,7 @@ final class Housekeeper {
             leaseEnds = held ? asked.plus(term) : null;
         }
         if (held != was) {
-            LOGGER.log(System.Logger.Level.INFO, held ? "This node now runs the cluster-wide housekeeping" : "Another node now runs the cluster-wide housekeeping");
+            LOGGER.info(held ? "This node now runs the cluster-wide housekeeping" : "Another node now runs the cluster-wide housekeeping");
         }
     }
 
@@ -257,8 +260,8 @@ final class Housekeeper {
                         next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).following(now);
                     } catch (RuntimeException e) {
                         // Written by a node with another idea of cron; try again in an hour rather than every second.
-                        LOGGER.log(System.Logger.Level.WARNING, "Recurring task " + schedule.name() + " of " + schedule.topic()
-                            + " has a schedule this node can't read, '" + schedule.cron() + "' in " + schedule.zone() + "; skipped for an hour", e);
+                        LOGGER.warn("Recurring task {} of {} has a schedule this node can't read, '{}' in {}; skipped for an hour",
+                            schedule.name(), schedule.topic(), schedule.cron(), schedule.zone(), e);
                         store.scheduleFired(transaction, schedule.id(), now, now.plus(Duration.ofHours(1)));
                         continue;
                     }
@@ -305,7 +308,7 @@ final class Housekeeper {
                     deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic, kept.getKey(), cutoff, BATCH));
                     if (System.nanoTime() > deadline) {
                         purgeStoppedAt = topic;
-                        LOGGER.log(System.Logger.Level.INFO, "Retention used its " + purgeBudget + " for this run; it goes on in " + settings.purgeInterval());
+                        LOGGER.info("Retention used its {} for this run; it goes on in {}", purgeBudget, settings.purgeInterval());
                         return;
                     }
                 } while (deleted == BATCH && leading());

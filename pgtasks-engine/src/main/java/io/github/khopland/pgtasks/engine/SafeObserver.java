@@ -10,10 +10,13 @@ import io.github.khopland.pgtasks.TopicRef;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /** Wraps an observer so its failures are logged and never reach the engine's work. */
 final class SafeObserver implements TaskObserver {
 
-    private static final System.Logger LOGGER = System.getLogger(SafeObserver.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(SafeObserver.class);
 
     private final TaskObserver observer;
 
@@ -94,7 +97,7 @@ final class SafeObserver implements TaskObserver {
             V value = call.get();
             return value == null ? fallback : value;
         } catch (RuntimeException e) {
-            LOGGER.log(System.Logger.Level.WARNING, "A task observer failed", e);
+            LOGGER.warn("A task observer failed", e);
             return fallback;
         }
     }
@@ -103,7 +106,7 @@ final class SafeObserver implements TaskObserver {
         try {
             call.run();
         } catch (RuntimeException e) {
-            LOGGER.log(System.Logger.Level.WARNING, "A task observer failed", e);
+            LOGGER.warn("A task observer failed", e);
         }
     }
 }

@@ -8,6 +8,9 @@ import javax.sql.DataSource;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The notifier's long-lived connection. Taken from the application's pool, it would hold one of
  * the pool's connections for as long as the engine runs, so it is opened directly when the pool
@@ -16,7 +19,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class NotifierConnections implements PostgresNotifier.ConnectionFactory {
 
-    private static final System.Logger LOGGER = System.getLogger(NotifierConnections.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(NotifierConnections.class);
 
     private final DataSource dataSource;
     private final PoolInfo.@Nullable Direct direct;
@@ -31,8 +34,8 @@ final class NotifierConnections implements PostgresNotifier.ConnectionFactory {
     static NotifierConnections of(DataSource dataSource) {
         PoolInfo.Direct direct = PoolInfo.direct(dataSource).orElse(null);
         if (direct == null && !PoolInfo.unpooled(dataSource)) {
-            LOGGER.log(System.Logger.Level.INFO, "Notifications listen on a connection from " + dataSource.getClass().getSimpleName()
-                + ", which holds one of its connections while the engine runs; size the pool for it");
+            LOGGER.info("Notifications listen on a connection from {}, which holds one of its connections while the engine runs; size the "
+                + "pool for it", dataSource.getClass().getSimpleName());
         }
         return new NotifierConnections(dataSource, direct);
     }
@@ -53,8 +56,8 @@ final class NotifierConnections implements PostgresNotifier.ConnectionFactory {
                     throw e; // unreachable: the notifier retries
                 }
                 fromPool = true;
-                LOGGER.log(System.Logger.Level.INFO, "Could not open the notification connection outside the pool (" + e.getMessage()
-                    + "); it holds one of the pool's connections instead");
+                LOGGER.info("Could not open the notification connection outside the pool ({}); it holds one of the pool's connections "
+                    + "instead", e.getMessage());
             }
         }
         return dataSource.getConnection();

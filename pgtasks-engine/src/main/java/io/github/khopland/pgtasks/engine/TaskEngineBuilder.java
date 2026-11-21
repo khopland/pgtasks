@@ -36,6 +36,9 @@ import io.github.khopland.pgtasks.spi.TransactionBinding;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Builds an engine from configurers. Settings come in layers, each overriding the one before:
  * built-in defaults, global defaults, the module's defaults, the topic's options, and overrides
@@ -52,7 +55,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class TaskEngineBuilder {
 
-    private static final System.Logger LOGGER = System.getLogger(TaskEngineBuilder.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskEngineBuilder.class);
 
     static final String NO_STORE = "No task store. Give the builder a DataSource for Postgres (with pgtasks-postgres on the "
         + "classpath), or choose the in-memory store explicitly with .store(new InMemoryTaskStore()); in Spring, "
@@ -669,13 +672,13 @@ public final class TaskEngineBuilder {
             int fitted = Math.clamp(pool / 2, 1, global.settings.maxInFlightBatches());
             if (fitted != global.settings.maxInFlightBatches()) {
                 global.settings = global.settings.withMaxInFlightBatches(fitted);
-                LOGGER.log(System.Logger.Level.INFO, "At most " + fitted + " batches claim or complete at once on this node, half the pool's "
-                    + pool + " connections; set maxInFlightBatches in TaskGlobals to change it");
+                LOGGER.info("At most {} batches claim or complete at once on this node, half the pool's {} connections; set "
+                    + "maxInFlightBatches in TaskGlobals to change it", fitted, pool);
             }
         } else if (global.settings.maxInFlightBatches() + HOUSEKEEPING_CONNECTIONS > pool) {
-            LOGGER.log(System.Logger.Level.WARNING, "maxInFlightBatches is " + global.settings.maxInFlightBatches() + ", and housekeeping needs up to "
-                + HOUSEKEEPING_CONNECTIONS + " more connections, but the pool has " + pool + ": heartbeats may wait for a connection, "
-                + "and the application's own work too. Lower maxInFlightBatches or grow the pool");
+            LOGGER.warn("maxInFlightBatches is {}, and housekeeping needs up to {} more connections, but the pool has {}: heartbeats may "
+                + "wait for a connection, and the application's own work too. Lower maxInFlightBatches or grow the pool",
+                global.settings.maxInFlightBatches(), HOUSEKEEPING_CONNECTIONS, pool);
         }
     }
 

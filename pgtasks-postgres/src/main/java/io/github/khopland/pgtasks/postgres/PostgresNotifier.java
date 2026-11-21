@@ -13,6 +13,9 @@ import org.postgresql.PGNotification;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * LISTENs for the notifications that the queue triggers send when tasks become ready, and that
  * changes to topics and rate limit overrides send. Uses one
@@ -21,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class PostgresNotifier implements Notifier {
 
-    private static final System.Logger LOGGER = System.getLogger(PostgresNotifier.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(PostgresNotifier.class);
 
     /** Opens the listening connection. It should not come from the application's pool. */
     @FunctionalInterface
@@ -93,7 +96,7 @@ public final class PostgresNotifier implements Notifier {
                 if (!running.get()) {
                     return;
                 }
-                LOGGER.log(System.Logger.Level.WARNING, "Lost the notification connection, reconnecting in " + backoff, e);
+                LOGGER.warn("Lost the notification connection, reconnecting in {}", backoff, e);
                 first = false;
                 try {
                     Thread.sleep(backoff);

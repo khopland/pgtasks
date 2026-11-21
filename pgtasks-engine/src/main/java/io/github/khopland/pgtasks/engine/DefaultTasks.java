@@ -24,6 +24,9 @@ import io.github.khopland.pgtasks.spi.TransactionBinding;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Transaction-aware enqueue. Only {@link #independently()} ever commits on its own. With a store
  * that keeps its tasks outside the application's database, {@link #push} holds the pushes back
@@ -31,7 +34,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class DefaultTasks implements Tasks {
 
-    private static final System.Logger LOGGER = System.getLogger(DefaultTasks.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultTasks.class);
 
     /**
      * Sees pushes once they are committed, for tests that capture pushes. Pushes on an explicit
@@ -95,9 +98,9 @@ final class DefaultTasks implements Tasks {
                 + "use tasks.on(connection) to push on an explicit connection, or tasks.independently() to commit on its own."
         ));
         if (handler != null && warnedHandlers.add(handler + " -> " + topic.name())) {
-            LOGGER.log(System.Logger.Level.WARNING, "A handler of " + handler + " pushed to " + topic + " in a transaction of its own, which commits "
-                + "before the task completes: if the task fails or its completion is lost, the retry pushes again. Stage downstream work "
-                + "with task.push(...) unless that is what you want. (Logged once.)");
+            LOGGER.warn("A handler of {} pushed to {} in a transaction of its own, which commits before the task completes: if the task "
+                + "fails or its completion is lost, the retry pushes again. Stage downstream work with task.push(...) unless that is what "
+                + "you want. (Logged once.)", handler, topic);
         }
         if (store.joinsApplicationTransactions()) {
             Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
@@ -120,7 +123,7 @@ final class DefaultTasks implements Tasks {
             try {
                 independently().push(topic, insertion, held);
             } catch (RuntimeException e) {
-                LOGGER.log(System.Logger.Level.ERROR, "Could not store pushes to " + topic + " after the transaction committed", e);
+                LOGGER.error("Could not store pushes to {} after the transaction committed", topic, e);
                 throw e;
             }
         });
@@ -176,7 +179,7 @@ final class DefaultTasks implements Tasks {
         try {
             observer.pushed(topic, insertion, creations, results);
         } catch (RuntimeException e) {
-            LOGGER.log(System.Logger.Level.WARNING, "A push observer failed", e);
+            LOGGER.warn("A push observer failed", e);
         }
     }
 

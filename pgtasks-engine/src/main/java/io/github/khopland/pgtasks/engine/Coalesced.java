@@ -5,6 +5,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Runs a job soon on a virtual thread of its own, for notifications, which mustn't wait on the
  * store. Requests that arrive before the job starts are served by that one run; one that arrives
@@ -12,7 +15,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class Coalesced {
 
-    private static final System.Logger LOGGER = System.getLogger(Coalesced.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(Coalesced.class);
 
     private final String thread;
     private final String what;
@@ -39,7 +42,7 @@ final class Coalesced {
                     job.run();
                 } catch (Exception e) {
                     if (!stopped) {
-                        LOGGER.log(System.Logger.Level.WARNING, "Could not reload the " + what + "; the next heartbeat tries again", e);
+                        LOGGER.warn("Could not reload the {}; the next heartbeat tries again", what, e);
                     }
                 }
             });
@@ -62,7 +65,7 @@ final class Coalesced {
         if (current != null && current.isAlive()) {
             current.interrupt();
             if (!current.join(patience)) {
-                LOGGER.log(System.Logger.Level.WARNING, "Reloading the " + what + " ignored the stop and is still running");
+                LOGGER.warn("Reloading the {} ignored the stop and is still running", what);
             }
         }
     }

@@ -23,6 +23,9 @@ import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks, dead letters
  * and retention. Everything here reads or changes the store directly, so it works on a node that
@@ -31,6 +34,8 @@ import io.github.khopland.pgtasks.spi.TaskStore;
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  */
 public final class TaskAdmin {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskAdmin.class);
 
     private static final int BATCH = 1_000;
 
@@ -81,8 +86,7 @@ public final class TaskAdmin {
                 throw new IllegalStateException("Topic " + name + " got new tasks while it was being deleted; it stays");
             }
             if (engine.registersByName(name)) {
-                System.getLogger(TaskAdmin.class.getName()).log(System.Logger.Level.WARNING, "Deleted topic " + name
-                    + ", which this node's configuration registers: it is created again when this node starts");
+                LOGGER.warn("Deleted topic {}, which this node's configuration registers: it is created again when this node starts", name);
             }
             engine.reconcileTopics();
             return deleted;

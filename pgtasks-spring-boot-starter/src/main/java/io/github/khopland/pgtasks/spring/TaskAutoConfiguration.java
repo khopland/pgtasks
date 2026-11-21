@@ -26,6 +26,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.util.ClassUtils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * One engine from every {@link TaskConfigurer} bean and at most one {@link TaskGlobals} bean,
  * with the {@code pgtasks.*} overrides on top (see {@link TaskProperties}). All configurers are merged
@@ -38,6 +41,8 @@ import org.springframework.util.ClassUtils;
 })
 @EnableConfigurationProperties(TaskProperties.class)
 public class TaskAutoConfiguration {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskAutoConfiguration.class);
 
     static final String NO_DATA_SOURCE = "pgtasks keeps its tasks in Postgres, through the application's DataSource, "
         + "and there is no DataSource bean. Configure spring.datasource.*, or set pgtasks.store=memory (with pgtasks-memory "
@@ -155,8 +160,8 @@ public class TaskAutoConfiguration {
     @ConditionalOnMissingBean
     public TaskEngineLifecycle taskEngineLifecycle(TaskEngine engine, TaskProperties properties) {
         if (!properties.enabled() && properties.store() == TaskProperties.Store.MEMORY) {
-            System.getLogger(TaskAutoConfiguration.class.getName()).log(System.Logger.Level.WARNING, "pgtasks.enabled=false with pgtasks.store=memory: "
-                + "this node keeps its tasks in its own memory and processes none of them, so what it pushes never runs");
+            LOGGER.warn("pgtasks.enabled=false with pgtasks.store=memory: this node keeps its tasks in its own memory and processes none of "
+                + "them, so what it pushes never runs");
         }
         return new TaskEngineLifecycle(engine, properties.shutdownTimeout(), properties.enabled());
     }

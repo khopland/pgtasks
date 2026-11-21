@@ -24,6 +24,11 @@
       <groupId>io.github.khopland.pgtasks</groupId>
       <artifactId>pgtasks-spi</artifactId>
     </dependency>
+    <!-- Logging: the application picks the backend. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
 
     <dependency>
       <groupId>io.github.khopland.pgtasks</groupId>

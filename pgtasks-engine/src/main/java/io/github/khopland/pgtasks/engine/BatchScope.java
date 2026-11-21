@@ -9,6 +9,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * The scope of one batch. Work forked into it runs on virtual threads and cannot outlive the
  * batch: closing the scope cancels and joins whatever is left. Stands in for
@@ -16,7 +19,7 @@ import java.util.concurrent.TimeoutException;
  */
 final class BatchScope implements AutoCloseable {
 
-    private static final System.Logger LOGGER = System.getLogger(BatchScope.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(BatchScope.class);
 
     private final String name;
     private final ExecutorService executor;
@@ -67,17 +70,17 @@ final class BatchScope implements AutoCloseable {
             if (executor.awaitTermination(1, TimeUnit.SECONDS)) {
                 return;
             }
-            LOGGER.log(System.Logger.Level.WARNING, "Work in " + name + " ignored cancellation and is still running; its tasks stay claimed until it ends");
+            LOGGER.warn("Work in {} ignored cancellation and is still running; its tasks stay claimed until it ends", name);
             long waited = 1;
             while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
                 waited++;
                 if (stopping.getAsBoolean()) {
                     abandoned = true;
-                    LOGGER.log(System.Logger.Level.WARNING, "Gave up waiting for " + name + " as the engine stops; its tasks stay claimed until this node expires");
+                    LOGGER.warn("Gave up waiting for {} as the engine stops; its tasks stay claimed until this node expires", name);
                     return;
                 }
                 if (waited % 60 == 0) {
-                    LOGGER.log(System.Logger.Level.WARNING, "Work in " + name + " still runs " + waited + " s after it was cancelled");
+                    LOGGER.warn("Work in {} still runs {} s after it was cancelled", name, waited);
                 }
             }
         } catch (InterruptedException e) {

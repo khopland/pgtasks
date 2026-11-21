@@ -24,6 +24,9 @@ import io.micrometer.core.instrument.binder.MeterBinder;
 
 import org.jspecify.annotations.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Queue gauges per topic, from the counts the housekeeping leader snapshots (every minute by
  * default), so a scrape never counts the queue. Snapshots are read at most once per
@@ -62,7 +65,7 @@ public final class TaskMetrics implements MeterBinder {
     public static final String LIMIT_RATE = "pgtasks.limit.rate";
     public static final String LIMIT_BURST = "pgtasks.limit.burst";
 
-    private static final System.Logger LOGGER = System.getLogger(TaskMetrics.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskMetrics.class);
     private static final Map<String, ToDoubleFunction<QueueCounts>> STATES = Map.of(
         "scheduled", QueueCounts::scheduled,
         "retrying", QueueCounts::retrying,
@@ -154,7 +157,7 @@ public final class TaskMetrics implements MeterBinder {
             snapshots.call().forEach(snapshot -> read.put(snapshot.topic(), snapshot));
             latest = Map.copyOf(read);
         } catch (Exception e) {
-            LOGGER.log(System.Logger.Level.WARNING, "Could not read the queue snapshots; the gauges keep the last ones", e);
+            LOGGER.warn("Could not read the queue snapshots; the gauges keep the last ones", e);
         }
         latest.keySet().stream().filter(registered::add).forEach(this::register);
     }
