@@ -3,22 +3,16 @@ package org.example.task2.engine;
 import java.util.Objects;
 
 /**
- * A cluster-wide cap on how many tasks are claimed. Strict, the default, keeps one token bucket in
- * the store, charged in the claiming transaction: over any interval t, at most
- * {@code burst + perSecond * t} tasks are claimed across every node. Approximate splits the rate
- * across live nodes, each with a bucket of its own: no write per claim, but it can overshoot while
- * nodes join or leave. Permits are taken before polling, and empty polls aren't charged.
+ * A cluster-wide cap on how many tasks are claimed: one token bucket in the store, charged in the
+ * claiming transaction, so over any interval t at most {@code burst + perSecond * t} tasks are
+ * claimed across every node. Permits are taken before polling, and empty polls aren't charged.
  *
  * @param name      a limit can be shared by several topics, named after a topic or a downstream system
  * @param perSecond the rate until one of the windows has fired
  * @param windows   rates for times of day or week: each applies from when its cron fires until
  *                  another one fires; see {@link #at(java.time.Instant)}
  */
-public record RateLimit(String name, double perSecond, int burst, boolean approximate, java.util.List<RateWindow> windows) {
-
-    public RateLimit(String name, double perSecond, int burst, boolean approximate) {
-        this(name, perSecond, burst, approximate, java.util.List.of());
-    }
+public record RateLimit(String name, double perSecond, int burst, java.util.List<RateWindow> windows) {
 
     public RateLimit {
         Objects.requireNonNull(name, "name");
@@ -32,11 +26,11 @@ public record RateLimit(String name, double perSecond, int burst, boolean approx
     }
 
     public static RateLimit perSecond(String name, double perSecond, int burst) {
-        return new RateLimit(name, perSecond, burst, false);
+        return new RateLimit(name, perSecond, burst, java.util.List.of());
     }
 
     public RateLimit withRate(double perSecond, int burst) {
-        return new RateLimit(name, perSecond, burst, approximate, windows);
+        return new RateLimit(name, perSecond, burst, windows);
     }
 
     /**

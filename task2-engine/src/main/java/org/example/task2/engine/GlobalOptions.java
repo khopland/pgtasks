@@ -46,15 +46,6 @@ public interface GlobalOptions {
         default LimitOptions window(String from, Rate rate) {
             return window(Cron.parse(from), rate);
         }
-
-        /**
-         * Splits the rate across live nodes instead of keeping one bucket in the database. Saves
-         * a write per claim, but can overshoot while nodes join or leave. Strict is the default.
-         *
-         * <p>Not built yet: the limit is still enforced strictly. Deferred until someone needs
-         * rates where one write per claimed batch is too much.
-         */
-        LimitOptions approximate();
     }
 
     interface HousekeepingOptions {

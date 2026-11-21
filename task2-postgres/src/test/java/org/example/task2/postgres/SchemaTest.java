@@ -86,7 +86,7 @@ class SchemaTest {
         database.execute("GRANT USAGE ON SCHEMA tasks TO task_runtime");
         database.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA tasks TO task_runtime");
         database.execute("GRANT USAGE ON ALL SEQUENCES IN SCHEMA tasks TO task_runtime");
-        database.execute("GRANT EXECUTE ON FUNCTION tasks.create_topic(text, text, jsonb) TO task_runtime");
+        database.execute("GRANT EXECUTE ON FUNCTION tasks.create_topic(text) TO task_runtime");
         PGSimpleDataSource runtimeUser = new PGSimpleDataSource();
         runtimeUser.setURL(database.jdbcUrl());
         runtimeUser.setUser("task_runtime");

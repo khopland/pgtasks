@@ -1,4 +1,4 @@
--- Broadcasts new topics, and topics paused, resumed or changing state, so every node starts or
+-- Broadcasts new topics, and topics paused or resumed, so every node starts or
 -- stops processing them without waiting for its next heartbeat. The payload is the topic's name;
 -- nodes compare all topics with what they run on any notification. Also covers topics registered
 -- or paused by hand in SQL. Other changes, such as retention, aren't broadcast. Repeatable.
@@ -21,7 +21,7 @@ AS $$
 BEGIN
     PERFORM pg_notify('tasks_topic', changed.name)
     FROM (SELECT n.name FROM new_rows n JOIN old_rows o ON o.id = n.id
-          WHERE n.paused IS DISTINCT FROM o.paused OR n.state IS DISTINCT FROM o.state) AS changed;
+          WHERE n.paused IS DISTINCT FROM o.paused) AS changed;
     RETURN NULL;
 END
 $$;

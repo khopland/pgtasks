@@ -75,7 +75,7 @@ class ShutdownTest {
                 });
             }).with(TopicSettings.defaults().withBatchSize(5).withConcurrency(2)),
             Topic.of(LIMITED, batch -> batch.decide(task -> Decision.success()))
-                .with(TopicSettings.defaults().withRateLimit(new RateLimit("downstream", 50, 5, false))),
+                .with(TopicSettings.defaults().withRateLimit(RateLimit.perSecond("downstream", 50, 5))),
             Topic.of(PAUSED, batch -> batch.decide(task -> Decision.success())));
     }
 

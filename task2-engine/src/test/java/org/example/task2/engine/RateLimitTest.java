@@ -24,7 +24,7 @@ class RateLimitTest {
     static PostgresExtension postgres = EngineFixture.extension();
 
     private static final TopicRef<String> TOPIC = TopicRef.of("topic", String.class);
-    private static final RateLimit ONE_A_MINUTE = new RateLimit("downstream", 1.0 / 60, 1, false);
+    private static final RateLimit ONE_A_MINUTE = RateLimit.perSecond("downstream", 1.0 / 60, 1);
 
     private final MemoryEngines engines = new MemoryEngines();
     private EngineFixture fixture;

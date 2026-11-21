@@ -182,14 +182,14 @@ class SchemaMigratorTest {
         SchemaScript concurrently = SchemaScript.of(next("index_concurrently"), """
             -- Builds an index without blocking writers.
             %s
-            CREATE INDEX CONCURRENTLY IF NOT EXISTS topic_family_idx ON tasks.topic (family);
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS topic_created_idx ON tasks.topic (created_at);
             INSERT INTO tasks.meta (singleton, version, compatible_from) VALUES (true, %d, 1)
             ON CONFLICT (singleton) DO UPDATE SET version = excluded.version, compatible_from = excluded.compatible_from, updated_at = now();
             """.formatted(SchemaScript.NO_TRANSACTION, NEXT));
         assertThat(concurrently.transactional()).isFalse();
 
         assertThat(migrate(database, with(concurrently)).applied()).containsExactly(next("index_concurrently"));
-        assertThat(database.count("SELECT count(*) FROM pg_indexes WHERE indexname = 'topic_family_idx'")).isEqualTo(1);
+        assertThat(database.count("SELECT count(*) FROM pg_indexes WHERE indexname = 'topic_created_idx'")).isEqualTo(1);
     }
 
     @Test

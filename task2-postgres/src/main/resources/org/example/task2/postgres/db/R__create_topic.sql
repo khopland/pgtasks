@@ -7,7 +7,10 @@
 -- fixed search_path keeps it from resolving names through the caller's path. Repeatable:
 -- re-applied whenever this file changes.
 
-CREATE OR REPLACE FUNCTION tasks.create_topic(topic_name text, topic_family text DEFAULT NULL, topic_variables jsonb DEFAULT NULL)
+-- The family arguments went with topic families.
+DROP FUNCTION IF EXISTS tasks.create_topic(text, text, jsonb);
+
+CREATE OR REPLACE FUNCTION tasks.create_topic(topic_name text)
 RETURNS integer
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -20,8 +23,8 @@ BEGIN
     IF FOUND THEN
         RETURN v_id;
     END IF;
-    INSERT INTO tasks.topic (name, family, variables)
-    VALUES (topic_name, topic_family, topic_variables)
+    INSERT INTO tasks.topic (name)
+    VALUES (topic_name)
     ON CONFLICT (name) DO NOTHING
     RETURNING id INTO v_id;
     IF v_id IS NULL THEN
@@ -32,4 +35,4 @@ BEGIN
 END
 $$;
 
-REVOKE ALL ON FUNCTION tasks.create_topic(text, text, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION tasks.create_topic(text) FROM PUBLIC;

@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class RateWindowTest {
 
     private static final ZoneId OSLO = ZoneId.of("Europe/Oslo");
-    private static final RateLimit OFFICE_HOURS = new RateLimit("register", 100, 10, false, List.of(
+    private static final RateLimit OFFICE_HOURS = new RateLimit("register", 100, 10, List.of(
         new RateWindow(Cron.parse("0 7 * * MON-FRI", OSLO), Rate.perSecond(50)),
         new RateWindow(Cron.parse("0 17 * * MON-FRI", OSLO), Rate.perSecond(200))));
 
@@ -32,7 +32,7 @@ class RateWindowTest {
         assertThat(rate(OFFICE_HOURS, "2026-11-23T16:00:00Z")).as("Monday 17:00").isEqualTo(200);
         assertThat(rate(OFFICE_HOURS, "2026-11-21T12:00:00Z")).as("Saturday, since Friday 17:00").isEqualTo(200);
         assertThat(OFFICE_HOURS.at(Instant.parse("2026-11-23T06:30:00Z")).burst()).as("windows change the rate only").isEqualTo(10);
-        assertThat(new RateLimit("plain", 100, 10, false).at(Instant.now()).perSecond()).isEqualTo(100);
+        assertThat(RateLimit.perSecond("plain", 100, 10).at(Instant.now()).perSecond()).isEqualTo(100);
     }
 
     @Test

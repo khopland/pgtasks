@@ -16,7 +16,6 @@ CREATE SCHEMA IF NOT EXISTS tasks;
 -- failed:    dead letter, out of attempts.
 CREATE TYPE tasks.queue_state AS ENUM ('scheduled', 'retrying', 'ready', 'active', 'suspended', 'failed');
 CREATE TYPE tasks.task_outcome AS ENUM ('succeeded', 'filtered', 'failed', 'redundant', 'recreated');
-CREATE TYPE tasks.topic_state AS ENUM ('active', 'sealed', 'archived');
 
 -- One row: the schema version, and the oldest library schema version that can still run
 -- against it. Lets old and new nodes share the schema during a rolling deploy.
@@ -30,9 +29,6 @@ CREATE TABLE tasks.meta (
 CREATE TABLE tasks.topic (
     id          integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        text NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 200),
-    family      text,
-    variables   jsonb,
-    state       tasks.topic_state NOT NULL DEFAULT 'active',
     paused      boolean NOT NULL DEFAULT false,
     -- How long finished tasks are kept per outcome, as ISO periods: {"succeeded": "P30D"}. Set by
     -- the nodes that run the topic, so whichever node leads housekeeping applies it. NULL: kept forever.

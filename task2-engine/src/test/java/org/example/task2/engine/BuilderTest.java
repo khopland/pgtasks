@@ -171,7 +171,7 @@ class BuilderTest {
             .build();
 
         Topic<?> assessment = engine.topics().stream().filter(topic -> topic.ref().name().equals("assessment")).findFirst().orElseThrow();
-        assertThat(assessment.settings().rateLimit()).isEqualTo(new RateLimit("folkeregister", 200, 10, false));
+        assertThat(assessment.settings().rateLimit()).isEqualTo(RateLimit.perSecond("folkeregister", 200, 10));
         assertThat(assessment.settings().retention()).containsEntry(Outcome.SUCCEEDED, Period.ofDays(90)).doesNotContainKey(Outcome.FAILED);
     }
 

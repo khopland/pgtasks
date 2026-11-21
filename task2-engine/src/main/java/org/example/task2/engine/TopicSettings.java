@@ -36,16 +36,6 @@ public record TopicSettings(
     DeadLetterPolicy deadLetters
 ) {
 
-    public TopicSettings(int batchSize, int concurrency, Ordering ordering, Retry retry, Duration batchDeadline, Duration pollInterval,
-                         RateLimit rateLimit, Map<Outcome, Period> retention, Breaker breaker) {
-        this(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker, DeadLetterPolicy.KEEP);
-    }
-
-    public TopicSettings(int batchSize, int concurrency, Ordering ordering, Retry retry, Duration batchDeadline, Duration pollInterval,
-                         RateLimit rateLimit, Map<Outcome, Period> retention) {
-        this(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, Breaker.standard());
-    }
-
     /** Succeeded 30 days, filtered, redundant and recreated 7 days, failed forever. */
     public static final Map<Outcome, Period> DEFAULT_RETENTION = Map.of(
         Outcome.SUCCEEDED, Period.ofDays(30),
