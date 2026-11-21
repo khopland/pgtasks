@@ -1,0 +1,34 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.java]
+# A guide, not a limit: some lines run longer where breaking them reads worse.
+max_line_length = 150
+ij_continuation_indent_size = 4
+# Imports: java and javax, then pgtasks, then everything else, then static imports, each group
+# sorted with a blank line between, and never a wildcard.
+ij_java_imports_layout = java.**, javax.**, |, io.github.khopland.**, |, *, |, $*
+ij_java_layout_static_imports_separately = true
+ij_java_class_count_to_use_import_on_demand = 999
+ij_java_names_count_to_use_import_on_demand = 999
+ij_java_use_fq_class_names = false
+ij_java_insert_inner_class_imports = false
+
+[*.sql]
+max_line_length = 150
+
+[{*.xml,*.yml,*.yaml,*.json}]
+indent_size = 2
+
+[*.md]
+# Markdown ends a line with two spaces for a hard break, and tables and links run long.
+trim_trailing_whitespace = false
+max_line_length = off
