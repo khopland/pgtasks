@@ -208,6 +208,9 @@ class EngineTest {
         Map<String, List<Long>> succeeded = new ConcurrentHashMap<>();
         List<String> violations = new CopyOnWriteArrayList<>();
         Set<String> nodes = ConcurrentHashMap.newKeySet();
+        // At most four identifiers per node at a time (two batches of two), so no node can hold all
+        // eight and leave the others nothing for good: finishing a task makes no row newly ready, so
+        // nothing would wake them before their next poll.
         for (String node : List.of("node-a", "node-b", "node-c")) {
             engines.start(node, List.of(Topic.of(TOPIC, batch -> batch.decide(task -> {
                 nodes.add(node);
@@ -224,7 +227,7 @@ class EngineTest {
                 } finally {
                     running.get(task.identifier()).decrementAndGet();
                 }
-            })).with(TopicSettings.defaults().withOrdering(ordering).withConcurrency(3).withBatchSize(4))));
+            })).with(TopicSettings.defaults().withOrdering(ordering).withConcurrency(2).withBatchSize(2).withPollInterval(Duration.ofMillis(50)))));
         }
         TaskTester tester = engines.tester();
         List<Long> ids = pushAll(120);
