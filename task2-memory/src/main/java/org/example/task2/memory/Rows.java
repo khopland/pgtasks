@@ -54,27 +54,28 @@ final class Rows {
         String output,
         String error,
         int attempts,
-        Instant completedAt
+        Instant completedAt,
+        String traceContext
     ) {
 
         Task finish(String outcome, String output, int attempts, Instant now) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                outcome, previousOutcome, output, error, attempts, now);
+                outcome, previousOutcome, output, error, attempts, now, traceContext);
         }
 
         Task redundant(Instant now) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                "redundant", previousOutcome, output, error, attempts, now);
+                "redundant", previousOutcome, output, error, attempts, now, traceContext);
         }
 
         Task replaced() {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                "redundant", outcome, output, error, attempts, completedAt);
+                "redundant", outcome, output, error, attempts, completedAt, traceContext);
         }
 
         Task failed(String error, int attempts) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                outcome, previousOutcome, output, error, attempts, completedAt);
+                outcome, previousOutcome, output, error, attempts, completedAt, traceContext);
         }
     }
 

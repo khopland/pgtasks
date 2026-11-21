@@ -9,6 +9,7 @@ import org.example.task2.engine.TaskConfigurer;
 import org.example.task2.engine.TaskEngine;
 import org.example.task2.engine.TaskEngineBuilder;
 import org.example.task2.engine.TaskGlobals;
+import org.example.task2.engine.TaskObserver;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.spi.TaskStore;
 import org.springframework.beans.factory.ListableBeanFactory;
@@ -42,7 +43,7 @@ public class TaskAutoConfiguration {
     @Bean(destroyMethod = "") // the lifecycle drains it; close() would drain it a second time
     @ConditionalOnMissingBean
     public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ListableBeanFactory beans,
-                                 Environment environment) {
+                                 Environment environment, ObjectProvider<TaskObserver> observer) {
         TaskEngineBuilder builder = TaskEngine.builder()
             .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
             .notifications(properties.notifications())
@@ -61,6 +62,7 @@ public class TaskAutoConfiguration {
         }
         beans.getBeansOfType(TaskConfigurer.class).forEach(builder::configure);
         beans.getBeansOfType(TaskGlobals.class).forEach(builder::globals);
+        observer.ifUnique(builder::observer);
         return builder.build();
     }
 

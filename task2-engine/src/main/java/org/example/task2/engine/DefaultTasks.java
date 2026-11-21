@@ -46,6 +46,7 @@ final class DefaultTasks implements Tasks {
     private final Map<Class<?>, PayloadCodec<?>> typeCodecs;
     private final TransactionBinding transactions;
     private final Consumer<String> wakeLocally;
+    private final TaskObserver taskObserver;
     private volatile Observer observer = (topic, insertion, creations, results) -> { };
 
     DefaultTasks(
@@ -55,7 +56,8 @@ final class DefaultTasks implements Tasks {
         List<TopicTemplate<?>> templates,
         Map<Class<?>, PayloadCodec<?>> typeCodecs,
         TransactionBinding transactions,
-        Consumer<String> wakeLocally
+        Consumer<String> wakeLocally,
+        TaskObserver taskObserver
     ) {
         this.store = store;
         this.topics = topics;
@@ -64,6 +66,7 @@ final class DefaultTasks implements Tasks {
         this.typeCodecs = Map.copyOf(typeCodecs);
         this.transactions = transactions;
         this.wakeLocally = wakeLocally;
+        this.taskObserver = taskObserver;
     }
 
     void observe(Observer observer) {
@@ -149,6 +152,7 @@ final class DefaultTasks implements Tasks {
     }
 
     void observed(TopicRef<?> topic, Insertion insertion, List<? extends Creation<?>> creations, List<Pushed> results) {
+        taskObserver.pushed(topic, results);
         try {
             observer.pushed(topic, insertion, creations, results);
         } catch (RuntimeException e) {
@@ -174,6 +178,12 @@ final class DefaultTasks implements Tasks {
         }
         PayloadCodec<T> codec = codec(topic);
         int topicId = topics.id(transaction, topic.name());
+        try (TaskObserver.PushObservation observation = taskObserver.pushing(topic, creations.size())) {
+            return store.push(transaction, topicId, insertion, newTasks(codec, creations, parents, observation.traceContext()));
+        }
+    }
+
+    private static <T> List<TaskStore.NewTask> newTasks(PayloadCodec<T> codec, List<Creation<T>> creations, List<? extends Task<?>> parents, String traceContext) {
         List<TaskStore.NewTask> tasks = new ArrayList<>(creations.size());
         for (int index = 0; index < creations.size(); index++) {
             Creation<T> creation = creations.get(index);
@@ -188,10 +198,11 @@ final class DefaultTasks implements Tasks {
                 creation.priority(),
                 creation.dedupKey(),
                 parent == null ? null : parent.id(),
-                parent == null ? null : parent.flowRootId()
+                parent == null ? null : parent.flowRootId(),
+                traceContext
             ));
         }
-        return store.push(transaction, topicId, insertion, tasks);
+        return tasks;
     }
 
     int topicId(StoreTransaction transaction, String topic) throws SQLException {

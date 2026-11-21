@@ -64,6 +64,7 @@ public final class TaskEngineBuilder {
     private final List<Named<TaskGlobals>> globals = new ArrayList<>();
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
+    private TaskObserver observer = TaskObserver.NONE;
     private boolean notifications = true;
     private Notifier notifier;
     private final Map<Class<?>, PayloadCodec<?>> codecs = new HashMap<>();
@@ -131,6 +132,12 @@ public final class TaskEngineBuilder {
 
     public TaskEngineBuilder transactions(TransactionBinding transactions) {
         this.transactions = Objects.requireNonNull(transactions);
+        return this;
+    }
+
+    /** Sees pushes and batches, for metrics and tracing, such as task2-micrometer's. */
+    public TaskEngineBuilder observer(TaskObserver observer) {
+        this.observer = Objects.requireNonNull(observer);
         return this;
     }
 
@@ -298,7 +305,7 @@ public final class TaskEngineBuilder {
         @Override
         public GlobalOptions node(String name) {
             settings = new EngineSettings(name, settings.heartbeat(), settings.expiry(), settings.promoteInterval(), settings.maxInFlightBatches(),
-                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval(), settings.purgeInterval());
+                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval(), settings.purgeInterval(), settings.observer());
             return this;
         }
 
@@ -510,7 +517,7 @@ public final class TaskEngineBuilder {
         } else if (wakeUps == null && notifications) {
             wakeUps = notifierOf(chosen);
         }
-        EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs);
+        EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
         return new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective);
     }
 

@@ -19,6 +19,8 @@ import java.util.OptionalLong;
  * @param rootId    the first task of the flow this one belongs to, if it has a parent
  * @param createdAt when the task was pushed
  * @param claimedAt when this attempt was claimed
+ * @param traceContext the trace of the code that pushed the task, as a W3C {@code traceparent},
+ *                  or {@code null} if none was recorded
  */
 public record Task<T>(
     TopicRef<T> topic,
@@ -30,7 +32,8 @@ public record Task<T>(
     Long parentId,
     Long rootId,
     Instant createdAt,
-    Instant claimedAt
+    Instant claimedAt,
+    String traceContext
 ) {
 
     public Task {
@@ -48,6 +51,10 @@ public record Task<T>(
 
     public Optional<String> findReference() {
         return Optional.ofNullable(reference);
+    }
+
+    public Optional<String> findTraceContext() {
+        return Optional.ofNullable(traceContext);
     }
 
     public OptionalLong findParentId() {

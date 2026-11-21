@@ -65,6 +65,7 @@ final class BatchRun<T> {
         Topic<T> topic = worker.topic();
         Map<Long, ClaimedTask> claims = new LinkedHashMap<>();
         List<Task<T>> runnable = new ArrayList<>();
+        List<Task<?>> all = new ArrayList<>(claimed.size());
         Decisions.Builder early = Decisions.builder();
         for (ClaimedTask claim : claimed) {
             claims.put(claim.id(), claim);
@@ -72,10 +73,13 @@ final class BatchRun<T> {
             try {
                 payload = claim.payload() == null ? null : topic.codec().decode(claim.payload());
             } catch (RuntimeException e) {
-                early.decide(task(claim, null), Decision.failed(new IllegalStateException("Could not decode the payload", e)));
+                Task<T> undecoded = task(claim, null);
+                all.add(undecoded);
+                early.decide(undecoded, Decision.failed(new IllegalStateException("Could not decode the payload", e)));
                 continue;
             }
             Task<T> task = task(claim, payload);
+            all.add(task);
             if (claim.attempt() > topic.settings().retry().maxAttempts()) {
                 early.decide(task, Decision.failed("No attempts left; the last one expired"));
             } else {
@@ -83,21 +87,27 @@ final class BatchRun<T> {
             }
         }
         Map<BatchResource<?>, Object> opened = new LinkedHashMap<>();
+        TaskObserver.BatchObservation observation = core.observer().batch(topic.ref(), all);
         try {
-            runBatch(topic, claims, runnable, early.build(), opened);
+            runBatch(topic, claims, runnable, early.build(), opened, observation);
         } finally {
             opened.values().forEach(BatchRun::closeQuietly);
             claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
+            observation.close();
         }
     }
 
-    private void runBatch(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, Decisions early, Map<BatchResource<?>, Object> opened) {
-        Decisions decisions = runnable.isEmpty() ? Decisions.builder().build() : process(topic, runnable, opened);
+    private void runBatch(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, Decisions early, Map<BatchResource<?>, Object> opened,
+                          TaskObserver.BatchObservation observation) {
+        Decisions decisions = runnable.isEmpty() ? Decisions.builder().build() : process(topic, runnable, opened, observation);
         if (decisions == null) {
             release(claims, claimed.stream().map(ClaimedTask::id).toList());
+            observation.released();
             return;
         }
-        complete(topic, claims, decisions, early, opened);
+        try (TaskObserver.Scope ignored = observation.open()) {
+            complete(topic, claims, decisions, early, opened, observation);
+        }
     }
 
     /** Hands every claimed task back without running it or counting the attempt. */
@@ -112,32 +122,39 @@ final class BatchRun<T> {
 
     private Task<T> task(ClaimedTask claim, T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
-            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt());
+            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.traceContext());
     }
 
     /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop. */
-    private Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened) {
+    private Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened, TaskObserver.BatchObservation observation) {
         List<Task<?>> tasks = List.copyOf(runnable);
         try (BatchScope scope = new BatchScope("task2-" + topic.ref().name() + "-batch")) {
             for (BatchResource<?> resource : topic.resources()) {
                 opened.put(resource, resource.open(topic.ref(), tasks));
             }
             DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened);
-            Decisions handled = covering(scope.call(() -> topic.handler().handle(batch), topic.settings().batchDeadline()), runnable);
+            Decisions handled = covering(scope.call(() -> {
+                try (TaskObserver.Scope ignored = observation.open()) {
+                    return topic.handler().handle(batch);
+                }
+            }, topic.settings().batchDeadline()), runnable);
             Decisions merged = handled;
             for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                 merged = merged.merge(review(resource.getKey(), resource.getValue(), handled));
             }
             return merged;
         } catch (TimeoutException e) {
+            observation.error(e);
             return Decisions.all(runnable, Decision.failed("Batch deadline of " + topic.settings().batchDeadline() + " exceeded"));
         } catch (InterruptedException | CancellationException e) {
             if (worker.stopping()) {
                 Thread.interrupted();
                 return null;
             }
+            observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         } catch (Exception e) {
+            observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         }
     }
@@ -178,7 +195,8 @@ final class BatchRun<T> {
         resource.afterCommit((R) value, decisions);
     }
 
-    private void complete(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened) {
+    private void complete(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
+                          TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
         decisions.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
@@ -199,17 +217,21 @@ final class BatchRun<T> {
         } catch (StaleClaimException stale) {
             LOGGER.log(System.Logger.Level.WARNING, "Discarded the completion of a batch in " + topic.ref() + ": " + stale.getMessage());
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
+            observation.released();
             return;
         } catch (Exception e) {
             LOGGER.log(System.Logger.Level.WARNING, "The completion of a batch in " + topic.ref() + " failed and was rolled back", e);
+            observation.error(e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
+                observation.completed(results(failures));
             } catch (Exception recording) {
                 LOGGER.log(System.Logger.Level.ERROR, "Could not record the failure; the tasks stay active until this node's claims expire", recording);
             }
             return;
         }
+        observation.completed(results(completions));
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -311,6 +333,24 @@ final class BatchRun<T> {
             }
         };
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
+    }
+
+    /** How many of the completions ended in each result. */
+    private static Map<TaskObserver.Result, Integer> results(List<Completion> completions) {
+        Map<TaskObserver.Result, Integer> results = new java.util.EnumMap<>(TaskObserver.Result.class);
+        for (Completion completion : completions) {
+            TaskObserver.Result result = switch (completion.resolution()) {
+                case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;
+                case Resolution.Waiting waiting -> switch (waiting.state()) {
+                    case SUSPENDED -> TaskObserver.Result.SUSPENDED;
+                    case SCHEDULED -> TaskObserver.Result.DELAYED;
+                    case RETRYING -> waiting.counted() ? TaskObserver.Result.RETRYING : TaskObserver.Result.THROTTLED;
+                    case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
+                };
+            };
+            results.merge(result, 1, Integer::sum);
+        }
+        return results;
     }
 
     private static void closeQuietly(Object value) {

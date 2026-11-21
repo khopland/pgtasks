@@ -76,7 +76,8 @@ public final class TaskEngine implements AutoCloseable {
             topicsByName.put(topic.ref().name(), topic);
         }
         this.directory = new TopicDirectory(store);
-        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake);
+        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake,
+            settings.observer());
     }
 
     /** Builds an engine from configurers, with defaults for everything they don't set. */
@@ -116,7 +117,7 @@ public final class TaskEngine implements AutoCloseable {
             templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
         limits = new RateLimits(store, configured, this::limitChanged);
         core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, limits);
+            held, () -> !started, limits, settings.observer());
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
@@ -281,6 +282,15 @@ public final class TaskEngine implements AutoCloseable {
             throw new IllegalArgumentException("Unknown topic '" + topic + "'");
         }
         reconcileTopics();
+    }
+
+    /**
+     * Every topic's queue counts as the housekeeping leader last recorded them, by topic name. They
+     * are at most one snapshot interval old (a minute by default), so dashboards and health checks
+     * can read them as often as they like without counting the queue.
+     */
+    public List<TaskStore.TopicSnapshot> snapshots() throws Exception {
+        return EngineCore.transact(store, store::snapshots);
     }
 
     /** The topics this node is processing now. */

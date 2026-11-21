@@ -36,7 +36,7 @@ class ClaimPlanTest {
             assertThat(fixture.claim(topic, node, ordering, 100)).isEmpty();
         }
         TaskStore.NewTask[] burst = Arrays.stream(StoreFixture.many("t", 10_000))
-            .map(task -> new TaskStore.NewTask("id-" + (task.identifier().hashCode() & 0x3ff), null, null, null, null, false, 0, null, null, null))
+            .map(task -> new TaskStore.NewTask("id-" + (task.identifier().hashCode() & 0x3ff), null, null, null, null, false, 0, null, null, null, null))
             .toArray(TaskStore.NewTask[]::new);
         fixture.push(topic, Insertion.APPEND, burst);
 

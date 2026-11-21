@@ -1,0 +1,110 @@
+package org.example.task2.engine;
+
+import java.util.List;
+import java.util.Map;
+
+import org.example.task2.Pushed;
+import org.example.task2.Task;
+import org.example.task2.TopicRef;
+
+/**
+ * Sees what the engine does, for metrics, tracing and logging context, without the engine
+ * depending on any of them. {@code task2-micrometer} implements it with Micrometer.
+ *
+ * <p>Counts are only reported for committed changes: {@link #pushed} once the push's transaction
+ * has committed, {@link BatchObservation#completed} once the batch's completion has. Every method
+ * runs on the thread doing the work, so it must be quick. A method that throws is logged and
+ * otherwise ignored.
+ */
+public interface TaskObserver {
+
+    TaskObserver NONE = new TaskObserver() {
+    };
+
+    /**
+     * Tasks are about to be written to a topic, inside the pushing transaction. The returned
+     * observation's {@link PushObservation#traceContext()} is stored with each task, and is closed
+     * once the write is done, whether the transaction commits or not.
+     */
+    default PushObservation pushing(TopicRef<?> topic, int tasks) {
+        return PushObservation.NONE;
+    }
+
+    /** A push has committed, with one result per creation. */
+    default void pushed(TopicRef<?> topic, List<Pushed> results) {
+    }
+
+    /**
+     * A claimed batch is about to run. The engine opens the observation on the thread running the
+     * handler and again on the thread completing the batch, so downstream pushes see it as the
+     * current trace, and closes it once the batch is done.
+     */
+    default BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
+        return BatchObservation.NONE;
+    }
+
+    /** What became of a task when its batch completed. */
+    enum Result {
+        SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED, RETRYING, DEAD_LETTERED
+    }
+
+    /** Something made current on a thread until closed. */
+    interface Scope extends AutoCloseable {
+
+        Scope NONE = () -> {
+        };
+
+        @Override
+        void close();
+    }
+
+    interface PushObservation extends AutoCloseable {
+
+        PushObservation NONE = new PushObservation() {
+            @Override
+            public String traceContext() {
+                return null;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+
+        /** The pushing code's trace as a W3C {@code traceparent}, or null. */
+        String traceContext();
+
+        @Override
+        void close();
+    }
+
+    interface BatchObservation {
+
+        BatchObservation NONE = new BatchObservation() {
+        };
+
+        /** Makes the batch current on this thread until the scope is closed. */
+        default Scope open() {
+            return Scope.NONE;
+        }
+
+        /**
+         * The handler threw, timed out, or the completion failed. Called at most once, and may be
+         * followed by {@link #completed} if the tasks' failure was recorded.
+         */
+        default void error(Throwable error) {
+        }
+
+        /** The batch's results committed: how many tasks ended up in each result. */
+        default void completed(Map<Result, Integer> results) {
+        }
+
+        /** The batch was handed back unprocessed, because the engine is stopping or its claim was lost. */
+        default void released() {
+        }
+
+        /** The batch is done. Called last, exactly once. */
+        default void close() {
+        }
+    }
+}

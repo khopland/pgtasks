@@ -187,7 +187,10 @@ public interface TaskStore {
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
 
-    /** A task to store. Payload and type are already encoded. */
+    /**
+     * A task to store. Payload and type are already encoded. {@code traceContext} is the pushing
+     * code's trace, as a W3C {@code traceparent}, or null.
+     */
     record NewTask(
         String identifier,
         String payload,
@@ -198,7 +201,8 @@ public interface TaskStore {
         int priority,
         String dedupKey,
         Long parentId,
-        Long rootId
+        Long rootId,
+        String traceContext
     ) {
         public NewTask {
             Objects.requireNonNull(identifier, "identifier");
@@ -266,7 +270,8 @@ public interface TaskStore {
         Long parentId,
         Long rootId,
         Instant createdAt,
-        Instant claimedAt
+        Instant claimedAt,
+        String traceContext
     ) {
     }
 
@@ -357,9 +362,12 @@ public interface TaskStore {
 
     /**
      * Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has
-     * come; {@code nextRunAt} is the earliest time one of them is due, if any.
+     * come; {@code nextRunAt} is the earliest time one of them is due, if any. {@code oldestReadyAt}
+     * is when the oldest ready task (the lowest id) was pushed, if any are ready: how long the
+     * topic's work has been waiting. A delayed task's delay counts in it.
      */
-    record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt) {
+    record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
+                       Instant oldestReadyAt) {
 
         public long total() {
             return scheduled + retrying + ready + active + suspended + failed;

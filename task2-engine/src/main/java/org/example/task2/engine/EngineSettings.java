@@ -22,6 +22,7 @@ import org.example.task2.spi.TransactionBinding;
  * @param codecs             codecs for payload types of topics this node only pushes to
  * @param snapshotInterval   how often the housekeeping leader snapshots queue counts
  * @param purgeInterval      how often the housekeeping leader deletes finished tasks past their retention
+ * @param observer           sees pushes and batches, for metrics and tracing
  */
 public record EngineSettings(
     String nodeName,
@@ -33,7 +34,8 @@ public record EngineSettings(
     TransactionBinding transactions,
     Map<Class<?>, PayloadCodec<?>> codecs,
     Duration snapshotInterval,
-    Duration purgeInterval
+    Duration purgeInterval,
+    TaskObserver observer
 ) {
 
     public EngineSettings {
@@ -44,6 +46,7 @@ public record EngineSettings(
         Objects.requireNonNull(transactions, "transactions");
         Objects.requireNonNull(snapshotInterval, "snapshotInterval");
         Objects.requireNonNull(purgeInterval, "purgeInterval");
+        observer = SafeObserver.of(Objects.requireNonNull(observer, "observer"));
         codecs = Map.copyOf(codecs);
         if (maxInFlightBatches < 1) {
             throw new IllegalArgumentException("maxInFlightBatches must be at least 1");
@@ -59,7 +62,7 @@ public record EngineSettings(
      */
     public static EngineSettings defaults(String nodeName) {
         return new EngineSettings(nodeName, Duration.ofSeconds(15), Duration.ofMinutes(10), Duration.ofSeconds(1), 8, null, TransactionBinding.none(), Map.of(),
-            Duration.ofMinutes(1), Duration.ofMinutes(1));
+            Duration.ofMinutes(1), Duration.ofMinutes(1), TaskObserver.NONE);
     }
 
     /** How long the housekeeping lease lasts unless renewed: four heartbeats. */
@@ -68,34 +71,38 @@ public record EngineSettings(
     }
 
     public EngineSettings withHeartbeat(Duration heartbeat, Duration expiry) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withPromoteInterval(Duration promoteInterval) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withMaxInFlightBatches(int maxInFlightBatches) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withNotifier(Notifier notifier) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withTransactions(TransactionBinding transactions) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withSnapshotInterval(Duration snapshotInterval) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withPurgeInterval(Duration purgeInterval) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 
     public EngineSettings withCodecs(Map<Class<?>, PayloadCodec<?>> codecs) {
-        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval);
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
+    }
+
+    public EngineSettings withObserver(TaskObserver observer) {
+        return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer);
     }
 }

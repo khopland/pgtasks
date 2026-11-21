@@ -212,7 +212,7 @@ public final class InMemoryTaskStore implements TaskStore {
             }
             long id = nextTask++;
             Rows.Task row = new Rows.Task(topicId, id, task.identifier(), task.reference(), task.payload(), task.payloadType(),
-                task.parentId(), task.rootId(), now, null, null, null, null, 0, null);
+                task.parentId(), task.rootId(), now, null, null, null, null, 0, null, task.traceContext());
             if (superseded) {
                 memory.put(tasks, id, row.redundant(now));
                 results.add(new Pushed(task.identifier(), Pushed.Status.REDUNDANT, id));
@@ -319,7 +319,7 @@ public final class InMemoryTaskStore implements TaskStore {
             putQueued(memory, active);
             Rows.Task task = tasks.get(row.taskId());
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
-                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now));
+                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext()));
         }
         if (admission != null && !claimed.isEmpty()) {
             Rows.Bucket bucket = buckets.get(admission.name());
@@ -637,18 +637,23 @@ public final class InMemoryTaskStore implements TaskStore {
         long[] counts = new long[State.values().length];
         long due = 0;
         Instant next = null;
+        Long oldestReady = null;
         for (Rows.Queued row : queue.values()) {
             if (row.topicId() != topicId) {
                 continue;
             }
             counts[row.state().ordinal()]++;
+            if (row.state() == State.READY && (oldestReady == null || row.taskId() < oldestReady)) {
+                oldestReady = row.taskId();
+            }
             if (row.runAt() != null) {
                 due += row.runAt().isAfter(now) ? 0 : 1;
                 next = next == null || row.runAt().isBefore(next) ? row.runAt() : next;
             }
         }
         return new QueueCounts(counts[State.SCHEDULED.ordinal()], counts[State.RETRYING.ordinal()], counts[State.READY.ordinal()],
-            counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due, next);
+            counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due, next,
+            oldestReady == null ? null : tasks.get(oldestReady).createdAt());
     }
 
     @Override

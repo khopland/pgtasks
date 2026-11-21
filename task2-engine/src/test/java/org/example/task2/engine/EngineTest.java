@@ -436,7 +436,7 @@ class EngineTest {
         // Claimed for this node in the store, but the engine never saw the claim.
         try (var transaction = engines.store.begin()) {
             int topicId = engines.store.findTopic(transaction, TOPIC.name()).orElseThrow();
-            id = engines.store.push(transaction, topicId, Insertion.APPEND, List.of(new TaskStore.NewTask("lost", null, null, null, null, false, 0, null, null, null))).getFirst().id();
+            id = engines.store.push(transaction, topicId, Insertion.APPEND, List.of(new TaskStore.NewTask("lost", null, null, null, null, false, 0, null, null, null, null))).getFirst().id();
             engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1, null));
             transaction.commit();
         }

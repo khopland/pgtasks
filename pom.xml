@@ -17,6 +17,7 @@
     <module>task2-postgres</module>
     <module>task2-memory</module>
     <module>task2-engine</module>
+    <module>task2-micrometer</module>
     <module>task2-spring-boot-starter</module>
   </modules>
   <profiles>

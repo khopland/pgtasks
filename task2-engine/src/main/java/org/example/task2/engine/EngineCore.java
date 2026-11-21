@@ -25,7 +25,8 @@ record EngineCore(
     Consumer<String> wake,
     Map<Long, Integer> held,
     BooleanSupplier stopping,
-    RateLimits limits
+    RateLimits limits,
+    TaskObserver observer
 ) {
 
     private static final System.Logger LOGGER = System.getLogger(EngineCore.class.getName());

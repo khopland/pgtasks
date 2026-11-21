@@ -244,7 +244,8 @@ public final class PostgresTaskStore implements TaskStore {
                    count(*) FILTER (WHERE state = 'suspended'),
                    count(*) FILTER (WHERE state = 'failed'),
                    count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp()),
-                   min(run_at)
+                   min(run_at),
+                   (SELECT created_at FROM tasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at
             FROM tasks.queue
             WHERE topic_id = :topic::integer
             """);
@@ -297,7 +298,8 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM tasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
-            INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at)
+            INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
+                                           oldest_ready_at)
             SELECT t.id, now(),
                    count(q.task_id) FILTER (WHERE q.state = 'scheduled'),
                    count(q.task_id) FILTER (WHERE q.state = 'retrying'),
@@ -306,13 +308,14 @@ public final class PostgresTaskStore implements TaskStore {
                    count(q.task_id) FILTER (WHERE q.state = 'suspended'),
                    count(q.task_id) FILTER (WHERE q.state = 'failed'),
                    count(q.task_id) FILTER (WHERE q.state IN ('scheduled', 'retrying') AND q.run_at <= now()),
-                   min(q.run_at)
+                   min(q.run_at),
+                   (SELECT created_at FROM tasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready'))
             FROM tasks.topic t
             LEFT JOIN tasks.queue q ON q.topic_id = t.id
             GROUP BY t.id
             ON CONFLICT (topic_id) DO UPDATE SET taken_at = excluded.taken_at, scheduled = excluded.scheduled, retrying = excluded.retrying,
                 ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
-                due = excluded.due, next_run_at = excluded.next_run_at
+                due = excluded.due, next_run_at = excluded.next_run_at, oldest_ready_at = excluded.oldest_ready_at
             """);
         // Takes a lease nobody holds or whose term ran out, or renews this node's own. Two nodes
         // asking at once serialize on the row; the second sees the first's fresh term and gets nothing.
@@ -328,7 +331,8 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         resign = sql("DELETE FROM tasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
-            SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at
+            SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at,
+                   c.oldest_ready_at
             FROM tasks.topic_count c
             JOIN tasks.topic tp ON tp.id = c.topic_id
             ORDER BY tp.name
@@ -465,9 +469,9 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT nextval('tasks.task_id_seq') AS id, i.*
                 FROM unnest(:identifiers::text[], :payloads::text[], :types::text[], :references::text[],
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
-                            :priorities::integer[], :dedup::text[])
+                            :priorities::integer[], :dedup::text[], :traces::text[])
                     WITH ORDINALITY AS i(identifier, payload, payload_type, reference, parent_id, root_id,
-                                         state, delay_ms, priority, dedup_key, ord)
+                                         state, delay_ms, priority, dedup_key, trace_context, ord)
             ),
             queued AS (
                 INSERT INTO tasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
@@ -481,8 +485,9 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING task_id, identifier
             ),
             stored AS (
-                INSERT INTO tasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, outcome, completed_at)
-                SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id,
+                INSERT INTO tasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, trace_context,
+                                        outcome, completed_at)
+                SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id, trace_context,
                        CASE WHEN state IS NULL THEN 'redundant'::tasks.task_outcome END,
                        CASE WHEN state IS NULL THEN now() END
                 FROM input
@@ -582,7 +587,7 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at
             )
             SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at,
-                   t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at
+                   t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.trace_context
             FROM claimed c
             JOIN tasks.task t ON t.id = c.task_id
             WHERE t.topic_id = :topic::integer
@@ -657,6 +662,7 @@ public final class PostgresTaskStore implements TaskStore {
         int size = stored.size();
         Object[] identifiers = new Object[size], payloads = new Object[size], types = new Object[size], references = new Object[size];
         Object[] parents = new Object[size], roots = new Object[size], delays = new Object[size], priorities = new Object[size], dedup = new Object[size];
+        Object[] traces = new Object[size];
         for (int index = 0; index < size; index++) {
             NewTask task = stored.get(index);
             identifiers[index] = task.identifier();
@@ -668,6 +674,7 @@ public final class PostgresTaskStore implements TaskStore {
             delays[index] = task.delay() == null ? null : task.delay().toMillis();
             priorities[index] = task.priority();
             dedup[index] = task.dedupKey();
+            traces[index] = task.traceContext();
         }
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
@@ -680,7 +687,8 @@ public final class PostgresTaskStore implements TaskStore {
             .array("states", "text", states.toArray())
             .array("delays", "bigint", delays)
             .array("priorities", "integer", priorities)
-            .array("dedup", "text", dedup);
+            .array("dedup", "text", dedup)
+            .array("traces", "text", traces);
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = pushes.get(insertion).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
@@ -746,7 +754,8 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getObject("parent_id", Long.class),
                     resultSet.getObject("root_id", Long.class),
                     instant(resultSet, "created_at"),
-                    instant(resultSet, "claimed_at")
+                    instant(resultSet, "claimed_at"),
+                    resultSet.getString("trace_context")
                 ));
             }
         }
@@ -975,7 +984,8 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 result.add(new TopicSnapshot(resultSet.getString(1), new QueueCounts(resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
-                    resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), resultSet.getLong(8), instant(resultSet, "next_run_at")),
+                    resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), resultSet.getLong(8), instant(resultSet, "next_run_at"),
+                    instant(resultSet, "oldest_ready_at")),
                     instant(resultSet, "taken_at")));
             }
         }
@@ -1142,7 +1152,7 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
             return new QueueCounts(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
-                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"));
+                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"), instant(resultSet, "oldest_ready_at"));
         }
     }
 

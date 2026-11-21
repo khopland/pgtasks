@@ -157,7 +157,7 @@ public abstract class HousekeepingTck extends StoreTck {
         int topic = fixture.topic("busy");
         fixture.topic("idle");
         int node = fixture.node("node-a");
-        fixture.push(topic, Insertion.APPEND, StoreFixture.many("t", 3));
+        List<org.example.task2.Pushed> pushed = fixture.push(topic, Insertion.APPEND, StoreFixture.many("t", 3));
         fixture.claim(topic, node, org.example.task2.Ordering.FIFO, 1);
 
         fixture.inTransaction(transaction -> {
@@ -174,5 +174,8 @@ public abstract class HousekeepingTck extends StoreTck {
         assertThat(snapshots.getFirst().counts().active()).isEqualTo(1);
         assertThat(snapshots.get(1).counts().total()).isZero();
         assertThat(snapshots.getFirst().takenAt()).isNotNull();
+        // The first task is claimed, so the oldest ready one is the second.
+        assertThat(snapshots.getFirst().counts().oldestReadyAt()).isEqualTo(fixture.view(pushed.get(1).id()).orElseThrow().createdAt());
+        assertThat(snapshots.get(1).counts().oldestReadyAt()).isNull();
     }
 }

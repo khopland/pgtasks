@@ -65,23 +65,23 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     public static NewTask task(String identifier) {
-        return new NewTask(identifier, "payload-" + identifier, null, null, null, false, 0, null, null, null);
+        return new NewTask(identifier, "payload-" + identifier, null, null, null, false, 0, null, null, null, null);
     }
 
     public static NewTask delayed(String identifier, Duration delay) {
-        return new NewTask(identifier, null, null, null, delay, false, 0, null, null, null);
+        return new NewTask(identifier, null, null, null, delay, false, 0, null, null, null, null);
     }
 
     public static NewTask suspended(String identifier) {
-        return new NewTask(identifier, null, null, null, null, true, 0, null, null, null);
+        return new NewTask(identifier, null, null, null, null, true, 0, null, null, null, null);
     }
 
     public static NewTask prioritized(String identifier, int priority) {
-        return new NewTask(identifier, null, null, null, null, false, priority, null, null, null);
+        return new NewTask(identifier, null, null, null, null, false, priority, null, null, null, null);
     }
 
     public static NewTask deduplicated(String identifier, String key) {
-        return new NewTask(identifier, null, null, null, null, false, 0, key, null, null);
+        return new NewTask(identifier, null, null, null, null, false, 0, key, null, null, null);
     }
 
     public static NewTask[] many(String prefix, int count) {

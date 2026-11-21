@@ -162,7 +162,7 @@ public abstract class PollOrderingTck extends StoreTck {
     @Test
     void a_claim_carries_payload_and_lineage() throws SQLException {
         StoreFixture fixture = setUp();
-        fixture.push(topic, Insertion.APPEND, new TaskStore.NewTask("x", "body", "v2", "ref", null, false, 0, null, 3L, 1L));
+        fixture.push(topic, Insertion.APPEND, new TaskStore.NewTask("x", "body", "v2", "ref", null, false, 0, null, 3L, 1L, TRACE));
 
         ClaimedTask claimed = fixture.claim(topic, node).getFirst();
 
@@ -172,7 +172,10 @@ public abstract class PollOrderingTck extends StoreTck {
         assertThat(claimed.parentId()).isEqualTo(3L);
         assertThat(claimed.rootId()).isEqualTo(1L);
         assertThat(claimed.createdAt()).isNotNull();
+        assertThat(claimed.traceContext()).isEqualTo(TRACE);
     }
+
+    private static final String TRACE = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 
     @Test
     void concurrent_claimers_never_share_a_task() throws Exception {

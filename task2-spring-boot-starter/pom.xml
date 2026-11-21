@@ -40,6 +40,11 @@
       <groupId>org.example.task2</groupId>
       <artifactId>task2-postgres</artifactId>
     </dependency>
+    <!-- Metrics and tracing; on when the app has Micrometer set up, as Actuator does. -->
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-micrometer</artifactId>
+    </dependency>
     <!-- task.store=memory, for local runs and tests; the app adds it. -->
     <dependency>
       <groupId>org.example.task2</groupId>
@@ -80,6 +85,11 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

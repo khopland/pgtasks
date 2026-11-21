@@ -169,16 +169,18 @@ CREATE TABLE tasks.schedule (
 -- Queue counts per topic, snapshotted by the housekeeping leader, so dashboards and health
 -- checks don't count live.
 CREATE TABLE tasks.topic_count (
-    topic_id     integer PRIMARY KEY REFERENCES tasks.topic (id),
-    taken_at     timestamptz NOT NULL,
-    scheduled    bigint NOT NULL,
-    retrying     bigint NOT NULL,
-    ready        bigint NOT NULL,
-    active       bigint NOT NULL,
-    suspended    bigint NOT NULL,
-    failed       bigint NOT NULL,
-    due          bigint NOT NULL,
-    next_run_at  timestamptz
+    topic_id         integer PRIMARY KEY REFERENCES tasks.topic (id),
+    taken_at         timestamptz NOT NULL,
+    scheduled        bigint NOT NULL,
+    retrying         bigint NOT NULL,
+    ready            bigint NOT NULL,
+    active           bigint NOT NULL,
+    suspended        bigint NOT NULL,
+    failed           bigint NOT NULL,
+    due              bigint NOT NULL,
+    next_run_at      timestamptz,
+    -- When the oldest ready task was pushed: how long the topic's work has been waiting.
+    oldest_ready_at  timestamptz
 );
 
 -- Leases on cluster-wide jobs, such as housekeeping. A node holds a lease by renewing it within

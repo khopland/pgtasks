@@ -62,8 +62,9 @@ public abstract class PushTck extends StoreTck {
         assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
             .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
         TaskStore.QueueCounts counts = fixture.counts(topic);
-        assertThat(counts).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt()));
+        assertThat(counts).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt()));
         assertThat(counts.nextRunAt()).isEqualTo(fixture.view(pushed.getFirst().id()).orElseThrow().runAt());
+        assertThat(counts.oldestReadyAt()).isEqualTo(fixture.view(pushed.get(2).id()).orElseThrow().createdAt());
     }
 
     @Test
@@ -203,7 +204,7 @@ public abstract class PushTck extends StoreTck {
     @Test
     void lineage_and_reference_are_stored() throws SQLException {
         StoreFixture fixture = setUp();
-        var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L);
+        var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L, null);
         long id = fixture.push(topic, Insertion.APPEND, child).getFirst().id();
 
         TaskView view = fixture.view(id).orElseThrow();

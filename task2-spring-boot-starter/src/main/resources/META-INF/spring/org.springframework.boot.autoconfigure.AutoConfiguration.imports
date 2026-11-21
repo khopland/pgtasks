@@ -1,1 +1,2 @@
 org.example.task2.spring.TaskAutoConfiguration
+org.example.task2.spring.TaskMicrometerAutoConfiguration
