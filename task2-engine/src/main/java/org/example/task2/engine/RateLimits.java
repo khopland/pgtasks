@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import org.example.task2.spi.TaskStore;
@@ -43,7 +42,7 @@ public final class RateLimits {
     private final TaskStore store;
     private final Map<String, RateLimit> configured = new TreeMap<>();
     private final Consumer<String> changed;
-    private final AtomicBoolean refreshPending = new AtomicBoolean();
+    private final Coalesced refreshSoon = new Coalesced("rate limit overrides", this::refresh);
     private volatile Map<String, LimitOverride> overrides = Map.of();
     private Map<String, RateLimit> lastEffective = Map.of();
 
@@ -157,16 +156,7 @@ public final class RateLimits {
 
     /** Reloads the overrides soon, on another thread: for notifications, which mustn't wait on the store. */
     void refreshSoon() {
-        if (refreshPending.compareAndSet(false, true)) {
-            Thread.ofVirtual().name("task2-limits").start(() -> {
-                refreshPending.set(false);
-                try {
-                    refresh();
-                } catch (Exception e) {
-                    LOGGER.log(System.Logger.Level.WARNING, "Could not reload the rate limit overrides; the next heartbeat tries again", e);
-                }
-            });
-        }
+        refreshSoon.request();
     }
 
     @Override

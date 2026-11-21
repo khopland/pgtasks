@@ -60,6 +60,17 @@ public interface TaskStore {
 
     OptionalInt findTopic(StoreTransaction transaction, String name) throws SQLException;
 
+    /** Every registered topic, by id. Nodes compare it with the topics they run on every heartbeat. */
+    List<TopicInfo> topics(StoreTransaction transaction) throws SQLException;
+
+    /**
+     * Pauses or resumes a topic on every node: a paused topic still takes pushes, but no node
+     * claims from it. Once committed, every node is notified.
+     *
+     * @return whether the topic exists
+     */
+    boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException;
+
     /** Pushes all tasks in one step, in order, applying the insertion policy. */
     List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks) throws SQLException;
 
@@ -208,6 +219,9 @@ public interface TaskStore {
                 throw new IllegalArgumentException("burst must be at least 1");
             }
         }
+    }
+
+    record TopicInfo(int id, String name, boolean paused) {
     }
 
     /**

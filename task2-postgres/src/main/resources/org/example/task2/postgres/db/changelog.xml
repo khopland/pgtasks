@@ -31,6 +31,10 @@
         <sqlFile path="R__notify_ready.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
+    <changeSet id="tasks-R__notify_topic" author="task2" runOnChange="true">
+        <sqlFile path="R__notify_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
+    </changeSet>
+
     <changeSet id="tasks-R__task_view" author="task2" runOnChange="true">
         <sqlFile path="R__task_view.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>

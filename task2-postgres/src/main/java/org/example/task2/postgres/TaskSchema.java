@@ -63,6 +63,7 @@ public final class TaskSchema {
         "R__create_topic.sql",
         "R__notify_limit.sql",
         "R__notify_ready.sql",
+        "R__notify_topic.sql",
         "R__task_view.sql"
     );
 

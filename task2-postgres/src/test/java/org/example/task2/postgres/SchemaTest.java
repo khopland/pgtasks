@@ -32,6 +32,7 @@ class SchemaTest {
             Arrays.asList(null, "R__create_topic.sql"),
             Arrays.asList(null, "R__notify_limit.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
+            Arrays.asList(null, "R__notify_topic.sql"),
             Arrays.asList(null, "R__task_view.sql")
         );
     }

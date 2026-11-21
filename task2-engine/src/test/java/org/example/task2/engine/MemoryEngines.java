@@ -34,6 +34,12 @@ final class MemoryEngines implements AutoCloseable {
         return engine;
     }
 
+    /** An engine built elsewhere, stopped with the others. */
+    TaskEngine add(TaskEngine engine) {
+        engines.add(engine);
+        return engine;
+    }
+
     TaskTester tester() {
         return TaskTester.of(engines);
     }

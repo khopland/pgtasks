@@ -42,7 +42,7 @@ final class Housekeeper {
     private final int nodeId;
     private final IntConsumer wake;
     private final Job sweepOrphans;
-    private final Job reloadLimits;
+    private final Job reconcile;
     private final Object leadership = new Object();
     private Instant leaseEnds;
     private ScheduledExecutorService executor;
@@ -50,23 +50,23 @@ final class Housekeeper {
     /**
      * @param wake         wakes this node's worker for a topic id
      * @param sweepOrphans releases tasks this node holds but isn't processing
-     * @param reloadLimits reloads the rate limit overrides, in case a notification was lost or an
-     *                     override lapsed
+     * @param reconcile    brings this node in line with the store, in case a notification was
+     *                     lost: the topics it runs and paused, the rate limit overrides
      */
-    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reloadLimits) {
+    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reconcile) {
         this.store = store;
         this.settings = settings;
         this.nodeId = nodeId;
         this.wake = wake;
         this.sweepOrphans = sweepOrphans;
-        this.reloadLimits = reloadLimits;
+        this.reconcile = reconcile;
     }
 
     void start() {
         executor = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name("task2-housekeeping-", 0).factory());
         schedule("heartbeat", settings.heartbeat(), this::heartbeat);
         schedule("orphan sweep", settings.heartbeat(), sweepOrphans);
-        schedule("limit reload", settings.heartbeat(), reloadLimits);
+        schedule("reconcile", settings.heartbeat(), reconcile);
         schedule("expiry", settings.heartbeat(), () -> {
             if (leading()) {
                 expire();

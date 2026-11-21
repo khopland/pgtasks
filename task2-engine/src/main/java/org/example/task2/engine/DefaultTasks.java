@@ -42,6 +42,7 @@ final class DefaultTasks implements Tasks {
     private final TaskStore store;
     private final TopicDirectory topics;
     private final Map<String, PayloadCodec<?>> topicCodecs;
+    private final List<TopicTemplate<?>> templates;
     private final Map<Class<?>, PayloadCodec<?>> typeCodecs;
     private final TransactionBinding transactions;
     private final Consumer<String> wakeLocally;
@@ -51,6 +52,7 @@ final class DefaultTasks implements Tasks {
         TaskStore store,
         TopicDirectory topics,
         Map<String, PayloadCodec<?>> topicCodecs,
+        List<TopicTemplate<?>> templates,
         Map<Class<?>, PayloadCodec<?>> typeCodecs,
         TransactionBinding transactions,
         Consumer<String> wakeLocally
@@ -58,6 +60,7 @@ final class DefaultTasks implements Tasks {
         this.store = store;
         this.topics = topics;
         this.topicCodecs = Map.copyOf(topicCodecs);
+        this.templates = List.copyOf(templates);
         this.typeCodecs = Map.copyOf(typeCodecs);
         this.transactions = transactions;
         this.wakeLocally = wakeLocally;
@@ -198,6 +201,9 @@ final class DefaultTasks implements Tasks {
     @SuppressWarnings("unchecked")
     <T> PayloadCodec<T> codec(TopicRef<T> topic) {
         PayloadCodec<?> codec = topicCodecs.get(topic.name());
+        if (codec == null) {
+            codec = templates.stream().filter(template -> template.matches(topic.name())).map(TopicTemplate::codec).findFirst().orElse(null);
+        }
         if (codec == null) {
             codec = typeCodecs.get(topic.payloadType());
         }

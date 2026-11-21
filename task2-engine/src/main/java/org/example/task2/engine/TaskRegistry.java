@@ -37,6 +37,17 @@ public interface TaskRegistry {
         return topics(names, type, handler, options -> { });
     }
 
+    /**
+     * Every topic whose name matches the pattern, such as {@code assessment-*}, including topics
+     * created later at runtime: they run with this handler and these options. Overrides address
+     * the pattern, as in {@code topics.assessment-*.concurrency}. See {@link TopicTemplate}.
+     */
+    <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler, Consumer<TopicOptions> options);
+
+    default <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler) {
+        return topicsMatching(pattern, type, handler, options -> { });
+    }
+
     /** How payloads of this type are stored, for this module's topics and pushes. */
     <T> TaskRegistry codec(Class<T> type, PayloadCodec<T> codec);
 }

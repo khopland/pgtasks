@@ -1,5 +1,6 @@
 -- Registers a topic. Idempotent: returns the existing topic's id if it is registered already.
--- Sends NOTIFY tasks_topic when it registers a new one, so every node can start processing it.
+-- A new topic is broadcast by the trigger on tasks.topic (R__notify_topic.sql), so every node
+-- that has a handler for it starts processing it.
 --
 -- A topic is a row, not a table, so creating one takes no DDL rights and no lock on tasks.task:
 -- the function runs with the caller's rights, which need INSERT and SELECT on tasks.topic. The
@@ -26,8 +27,6 @@ BEGIN
     IF v_id IS NULL THEN
         -- Another transaction registered it at the same time.
         SELECT id INTO v_id FROM tasks.topic WHERE name = topic_name;
-    ELSE
-        PERFORM pg_notify('tasks_topic', topic_name);
     END IF;
     RETURN v_id;
 END

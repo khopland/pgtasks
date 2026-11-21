@@ -6,19 +6,28 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.random.RandomGenerator;
+import java.util.stream.Stream;
 
 import org.example.task2.PayloadCodec;
 import org.example.task2.Tasks;
+import org.example.task2.TopicRef;
 import org.example.task2.spi.Notifier;
 import org.example.task2.spi.TaskStore;
 
 /**
  * Processes topics on this node. On start it lets the store check or migrate its schema,
- * registers the node, creates every registered topic, and starts one poll loop per topic plus
- * the {@link Housekeeper}.
+ * registers the node, creates every topic registered by name, and starts one poll loop per topic
+ * it runs, plus the {@link Housekeeper}.
+ *
+ * <p>Which topics it runs follows the store: every topic registered by name or matching one of its
+ * {@link TopicTemplate}s, unless paused. A topic created, paused or resumed on any node is
+ * broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
+ * so a lost notification delays a change by at most one heartbeat. A paused topic's running
+ * batches finish; nothing is claimed from it until it is resumed.
  *
  * <p>Wiring is plain constructor arguments for now; the configuration model with defaults,
  * per-module configurers and overrides comes in a later phase.
@@ -30,11 +39,19 @@ public final class TaskEngine implements AutoCloseable {
     private final TaskStore store;
     private final EngineSettings settings;
     private final List<Topic<?>> topics;
+    private final Map<String, Topic<?>> topicsByName = new LinkedHashMap<>();
+    private final List<TopicTemplate<?>> templates;
     private final TopicDirectory directory;
     private final DefaultTasks tasks;
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
     private final Map<Integer, TopicWorker<?>> workersById = new ConcurrentHashMap<>();
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
+    /** Guards starting and stopping workers. */
+    private final Object topicsLock = new Object();
+    /** Workers of topics paused or gone, finishing their running batches. */
+    private final Set<TopicWorker<?>> draining = ConcurrentHashMap.newKeySet();
+    private final Coalesced reconcileSoon = new Coalesced("topics", this::reconcileTopics);
+    private EngineCore core;
     private Housekeeper housekeeper;
     private RateLimits limits;
     private Notifier notifier;
@@ -43,17 +60,23 @@ public final class TaskEngine implements AutoCloseable {
     private volatile boolean started;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
+        this(store, settings, topics, List.of());
+    }
+
+    public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics, List<TopicTemplate<?>> templates) {
         this.store = Objects.requireNonNull(store, "store");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.topics = List.copyOf(topics);
+        this.templates = List.copyOf(templates);
         Map<String, PayloadCodec<?>> codecs = new LinkedHashMap<>();
         for (Topic<?> topic : this.topics) {
             if (codecs.put(topic.ref().name(), topic.codec()) != null) {
                 throw new IllegalArgumentException("Topic " + topic.ref() + " is registered twice");
             }
+            topicsByName.put(topic.ref().name(), topic);
         }
         this.directory = new TopicDirectory(store);
-        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wake);
+        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake);
     }
 
     /** Builds an engine from configurers, with defaults for everything they don't set. */
@@ -89,27 +112,25 @@ public final class TaskEngine implements AutoCloseable {
         }
         store.prepare();
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version()));
-        limits = new RateLimits(store, topics.stream().map(topic -> topic.settings().rateLimit()).filter(Objects::nonNull).toList(), this::limitChanged);
-        EngineCore core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
+        List<RateLimit> configured = Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
+            templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
+        limits = new RateLimits(store, configured, this::limitChanged);
+        core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, limits);
-        Map<Topic<?>, Integer> ids = new HashMap<>();
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
                 store.setRetention(transaction, created, topic.settings().retention());
-                if (topic.settings().rateLimit() != null) {
-                    store.ensureAdmission(transaction, topic.settings().rateLimit().name(), topic.settings().rateLimit().burst());
-                }
                 return created;
             });
             directory.register(topic.ref().name(), id);
-            ids.put(topic, id);
         }
-        for (Topic<?> topic : topics) {
-            TopicWorker<?> worker = new TopicWorker<>(topic, ids.get(topic), core);
-            workersByName.put(topic.ref().name(), worker);
-            workersById.put(ids.get(topic), worker);
-        }
+        EngineCore.transact(store, transaction -> {
+            for (RateLimit limit : configured) {
+                store.ensureAdmission(transaction, limit.name(), limit.burst());
+            }
+            return null;
+        });
         limits.refresh();
         notifier = settings.notifier();
         if (notifier != null) {
@@ -123,6 +144,11 @@ public final class TaskEngine implements AutoCloseable {
                 }
 
                 @Override
+                public void topicChanged(String name) {
+                    reconcileSoon.request();
+                }
+
+                @Override
                 public void limitChanged(String name) {
                     limits.refreshSoon();
                 }
@@ -130,15 +156,140 @@ public final class TaskEngine implements AutoCloseable {
                 @Override
                 public void missed() {
                     workersById.values().forEach(TopicWorker::wake);
+                    reconcileSoon.request();
                     limits.refreshSoon();
                 }
             });
         }
-        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans, limits::refresh);
+        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans, () -> {
+            reconcileTopics();
+            limits.refresh();
+        });
         housekeeper.start();
-        workersByName.values().forEach(TopicWorker::start);
         started = true;
+        try {
+            reconcileTopics();
+        } catch (Exception | Error e) {
+            stop(Duration.ZERO);
+            throw e;
+        }
         return this;
+    }
+
+    /**
+     * Brings the workers in line with the store: starts a worker for every topic this node runs
+     * that isn't paused, and stops the workers of topics paused or gone, letting their running
+     * batches finish. On start, on every heartbeat, and when a topic changes anywhere.
+     */
+    void reconcileTopics() throws Exception {
+        if (!started) {
+            return;
+        }
+        List<TaskStore.TopicInfo> registered = EngineCore.transact(store, store::topics);
+        synchronized (topicsLock) {
+            if (!started) {
+                return;
+            }
+            Map<String, TaskStore.TopicInfo> wanted = new HashMap<>();
+            for (TaskStore.TopicInfo info : registered) {
+                if (!info.paused() && topicFor(info.name()) != null) {
+                    wanted.put(info.name(), info);
+                }
+            }
+            for (TopicWorker<?> worker : List.copyOf(workersByName.values())) {
+                TaskStore.TopicInfo info = wanted.get(worker.topic().ref().name());
+                if (info == null || info.id() != worker.topicId()) {
+                    retire(worker);
+                }
+            }
+            for (TaskStore.TopicInfo info : wanted.values()) {
+                if (!workersByName.containsKey(info.name())) {
+                    launch(info);
+                }
+            }
+        }
+    }
+
+    /** The topic registered by name, or else made from the first template that matches; null if neither. */
+    private Topic<?> topicFor(String name) {
+        Topic<?> topic = topicsByName.get(name);
+        if (topic != null) {
+            return topic;
+        }
+        return templates.stream().filter(template -> template.matches(name)).findFirst().map(template -> template.instantiate(name)).orElse(null);
+    }
+
+    private void launch(TaskStore.TopicInfo info) throws Exception {
+        Topic<?> topic = topicFor(info.name());
+        if (!topicsByName.containsKey(info.name())) {
+            // Topics registered by name record their retention at start; these show up later.
+            EngineCore.transact(store, transaction -> {
+                store.setRetention(transaction, info.id(), topic.settings().retention());
+                return null;
+            });
+            LOGGER.log(System.Logger.Level.INFO, "Processing topic " + info.name() + " on this node");
+        }
+        directory.register(info.name(), info.id());
+        TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), core);
+        workersByName.put(info.name(), worker);
+        workersById.put(info.id(), worker);
+        worker.start();
+    }
+
+    /** Stops polling a topic; its running batches finish within the topic's batch deadline. */
+    private void retire(TopicWorker<?> worker) {
+        String name = worker.topic().ref().name();
+        workersByName.remove(name, worker);
+        workersById.remove(worker.topicId(), worker);
+        worker.stopPolling();
+        draining.add(worker);
+        LOGGER.log(System.Logger.Level.INFO, "Stopped processing topic " + name + " on this node; running batches finish");
+        Thread.ofVirtual().name("task2-drain-" + name).start(() -> {
+            try {
+                worker.awaitBatches(System.nanoTime() + worker.topic().settings().batchDeadline().toNanos());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                draining.remove(worker);
+            }
+        });
+    }
+
+    /**
+     * Registers a topic, so every node with a handler for it starts processing it: one registered
+     * by name, or matching a {@link TopicTemplate}. Idempotent.
+     */
+    public void createTopic(String name) throws Exception {
+        TopicRef.of(name, Object.class);
+        EngineCore.transact(store, transaction -> store.createTopic(transaction, name));
+        reconcileTopics();
+    }
+
+    /** Pauses a topic on every node: pushes are still taken, nothing is claimed. Running batches finish. */
+    public void pause(String topic) throws Exception {
+        setPaused(topic, true);
+    }
+
+    /** Resumes a paused topic on every node. */
+    public void resume(String topic) throws Exception {
+        setPaused(topic, false);
+    }
+
+    private void setPaused(String topic, boolean paused) throws Exception {
+        if (!EngineCore.transact(store, transaction -> store.setPaused(transaction, topic, paused))) {
+            throw new IllegalArgumentException("Unknown topic '" + topic + "'");
+        }
+        reconcileTopics();
+    }
+
+    /** The topics this node is processing now. */
+    public Set<String> processing() {
+        return started ? Set.copyOf(workersByName.keySet()) : Set.of();
+    }
+
+    /** The topic patterns this engine processes; see {@link TopicTemplate}. */
+    public List<TopicTemplate<?>> templates() {
+        return templates;
     }
 
     TaskStore store() {
@@ -238,9 +389,14 @@ public final class TaskEngine implements AutoCloseable {
         }
         started = false;
         long deadline = System.nanoTime() + timeout.toNanos();
+        List<TopicWorker<?>> all = new java.util.ArrayList<>();
+        synchronized (topicsLock) {
+            all.addAll(workersByName.values());
+            all.addAll(draining);
+        }
         try {
-            workersByName.values().forEach(TopicWorker::stopPolling);
-            for (TopicWorker<?> worker : workersByName.values()) {
+            all.forEach(TopicWorker::stopPolling);
+            for (TopicWorker<?> worker : all) {
                 worker.awaitBatches(deadline);
             }
         } catch (InterruptedException e) {

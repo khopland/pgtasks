@@ -1,8 +1,9 @@
 package org.example.task2.spi;
 
 /**
- * Delivers wake-ups when a topic gets ready work, and news of changed rate limits. Notifications
- * are hints: polling still finds the work, and each heartbeat reloads the limits, if one is lost.
+ * Delivers wake-ups when a topic gets ready work, and news of changed topics and rate limits.
+ * Notifications are hints: if one is lost, polling still finds the work, and each heartbeat
+ * reloads the topics and limits.
  */
 public interface Notifier extends AutoCloseable {
 
@@ -10,6 +11,10 @@ public interface Notifier extends AutoCloseable {
 
         /** A topic got ready work. */
         void ready(int topicId);
+
+        /** A topic was registered, paused or resumed. */
+        default void topicChanged(String name) {
+        }
 
         /** An operator changed the override of a rate limit. */
         default void limitChanged(String name) {

@@ -21,10 +21,14 @@ final class Rows {
     }
 
     /** @param retention per outcome, or null if no node set it */
-    record Topic(int id, String name, Instant createdAt, Map<Outcome, Period> retention) {
+    record Topic(int id, String name, Instant createdAt, boolean paused, Map<Outcome, Period> retention) {
 
         Topic withRetention(Map<Outcome, Period> retention) {
-            return new Topic(id, name, createdAt, Map.copyOf(retention));
+            return new Topic(id, name, createdAt, paused, Map.copyOf(retention));
+        }
+
+        Topic withPaused(boolean paused) {
+            return new Topic(id, name, createdAt, paused, retention);
         }
     }
 

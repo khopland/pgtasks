@@ -115,6 +115,12 @@ public final class InMemoryTaskStore implements TaskStore {
         }
     }
 
+    void notifyTopics(Set<String> names) {
+        for (String name : names) {
+            listeners.forEach(listener -> listener.topicChanged(name));
+        }
+    }
+
     void notifyLimits(Set<String> names) {
         for (String name : names) {
             listeners.forEach(listener -> listener.limitChanged(name));
@@ -147,8 +153,29 @@ public final class InMemoryTaskStore implements TaskStore {
             return existing.getAsInt();
         }
         int id = nextTopic++;
-        memory.put(topics, id, new Rows.Topic(id, name, now(), null));
+        memory.put(topics, id, new Rows.Topic(id, name, now(), false, null));
+        memory.topicChanged(name);
         return id;
+    }
+
+    @Override
+    public List<TopicInfo> topics(StoreTransaction transaction) {
+        memory(transaction);
+        return topics.values().stream().map(topic -> new TopicInfo(topic.id(), topic.name(), topic.paused())).toList();
+    }
+
+    @Override
+    public boolean setPaused(StoreTransaction transaction, String name, boolean paused) {
+        MemoryTransaction memory = memory(transaction);
+        Optional<Rows.Topic> topic = topics.values().stream().filter(candidate -> candidate.name().equals(name)).findFirst();
+        if (topic.isEmpty()) {
+            return false;
+        }
+        if (topic.get().paused() != paused) {
+            memory.put(topics, topic.get().id(), topic.get().withPaused(paused));
+            memory.topicChanged(name);
+        }
+        return true;
     }
 
     @Override

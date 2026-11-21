@@ -13,7 +13,7 @@ import org.postgresql.PGNotification;
 
 /**
  * LISTENs for the notifications that the queue triggers send when tasks become ready, and that
- * changes to rate limit overrides send. Uses one
+ * changes to topics and rate limit overrides send. Uses one
  * long-lived connection; on any error it reconnects with backoff and reports
  * {@link Listener#missed()}, so the engine polls every topic once.
  */
@@ -29,6 +29,7 @@ public final class PostgresNotifier implements Notifier {
 
     private static final String READY = "tasks_ready";
     private static final String LIMIT = "tasks_limit";
+    private static final String TOPIC = "tasks_topic";
 
     private final ConnectionFactory connections;
     private final AtomicBoolean running = new AtomicBoolean();
@@ -54,6 +55,7 @@ public final class PostgresNotifier implements Notifier {
                 try (Statement statement = connection.createStatement()) {
                     statement.execute("LISTEN " + READY);
                     statement.execute("LISTEN " + LIMIT);
+                    statement.execute("LISTEN " + TOPIC);
                 }
                 if (!first) {
                     listener.missed();
@@ -69,6 +71,10 @@ public final class PostgresNotifier implements Notifier {
                     for (PGNotification notification : notifications) {
                         if (LIMIT.equals(notification.getName())) {
                             listener.limitChanged(notification.getParameter());
+                            continue;
+                        }
+                        if (TOPIC.equals(notification.getName())) {
+                            listener.topicChanged(notification.getParameter());
                             continue;
                         }
                         try {

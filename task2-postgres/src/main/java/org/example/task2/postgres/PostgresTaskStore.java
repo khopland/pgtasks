@@ -44,7 +44,7 @@ public final class PostgresTaskStore implements TaskStore {
 
     private final DataSource dataSource;
     private final SchemaMode mode;
-    private final NamedSql createTopic, findTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
+    private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
@@ -72,6 +72,9 @@ public final class PostgresTaskStore implements TaskStore {
         // while empty.
         createTopic = sql("SELECT tasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM tasks.topic WHERE name = :name");
+        listTopics = sql("SELECT id, name, paused FROM tasks.topic ORDER BY id");
+        // The topic triggers notify every node when paused actually changes (R__notify_topic.sql).
+        pauseTopic = sql("UPDATE tasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
         registerNode = sql("INSERT INTO tasks.node (name, version) VALUES (:name, :version) RETURNING id");
         heartbeat = sql("UPDATE tasks.node SET heartbeat_at = now() WHERE id = :node");
         ensureAdmission = sql("""
@@ -603,6 +606,26 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = findTopic.prepare(connection, NamedSql.parameters().set("name", name));
              ResultSet resultSet = statement.executeQuery()) {
             return resultSet.next() ? OptionalInt.of(resultSet.getInt(1)) : OptionalInt.empty();
+        }
+    }
+
+    @Override
+    public List<TopicInfo> topics(StoreTransaction transaction) throws SQLException {
+        List<TopicInfo> topics = new ArrayList<>();
+        try (PreparedStatement statement = listTopics.prepare(transaction.connection(), NamedSql.parameters());
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                topics.add(new TopicInfo(resultSet.getInt(1), resultSet.getString(2), resultSet.getBoolean(3)));
+            }
+        }
+        return topics;
+    }
+
+    @Override
+    public boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException {
+        try (PreparedStatement statement = pauseTopic.prepare(transaction.connection(), NamedSql.parameters().set("name", name).set("paused", paused));
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next();
         }
     }
 
