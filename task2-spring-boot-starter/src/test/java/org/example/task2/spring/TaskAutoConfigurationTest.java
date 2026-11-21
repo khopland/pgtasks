@@ -232,7 +232,7 @@ class TaskAutoConfigurationTest {
     void a_configurer_whose_handler_uses_a_service_that_pushes_is_not_left_out() {
         memory().withUserConfiguration(HandlerUsingAPushingService.class).run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(TaskEngine.class).topics()).extracting(topic -> topic.ref().name()).containsExactly("notify");
+            assertThat(context.getBean(TaskEngine.class).effectiveSettings()).extracting(EffectiveSettings::topic).containsExactly("notify");
             context.getBean(OrderService.class).tasks.independently().push(NOTIFY, "anna", "pushed by the service");
             EngineFixture.await("the task ran", Duration.ofSeconds(5),
                 () -> context.getBean(OrderService.class).handled.contains("pushed by the service"));

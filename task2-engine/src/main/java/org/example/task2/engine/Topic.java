@@ -12,7 +12,7 @@ import org.example.task2.TopicRef;
  * A topic this node processes: its reference, handler, codec, settings and batch resources.
  * Resources review in the order given, and write in that order too.
  */
-public record Topic<T>(
+record Topic<T>(
     TopicRef<T> ref,
     BatchHandler<T> handler,
     PayloadCodec<T> codec,

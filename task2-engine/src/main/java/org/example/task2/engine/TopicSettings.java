@@ -23,7 +23,7 @@ import org.example.task2.Outcome;
  * @param breaker       when the topic stops claiming because most recent tasks fail
  * @param deadLetters   whether dead letters are revived on a new version or every so often
  */
-public record TopicSettings(
+record TopicSettings(
     int batchSize,
     int concurrency,
     Ordering ordering,

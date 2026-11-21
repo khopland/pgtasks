@@ -1,4 +1,4 @@
-package org.example.task2.chaos;
+package org.example.task2.engine;
 
 import java.io.PrintWriter;
 import java.sql.Connection;

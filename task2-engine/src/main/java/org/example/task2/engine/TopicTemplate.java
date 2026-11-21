@@ -17,7 +17,7 @@ import org.example.task2.TopicRef;
  * <p>A template never creates or destroys topics. A topic that matches both a template and a topic
  * registered by name runs as the named one.
  */
-public record TopicTemplate<T>(
+record TopicTemplate<T>(
     String pattern,
     Class<T> payloadType,
     BatchHandler<T> handler,

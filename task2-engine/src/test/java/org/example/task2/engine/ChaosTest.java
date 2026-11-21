@@ -1,4 +1,4 @@
-package org.example.task2.chaos;
+package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.example.task2.engine.EngineFixture.await;
@@ -20,11 +20,6 @@ import org.example.task2.Decision;
 import org.example.task2.Insertion;
 import org.example.task2.TopicRef;
 import org.example.task2.Work;
-import org.example.task2.engine.EngineFixture;
-import org.example.task2.engine.EngineSettings;
-import org.example.task2.engine.TaskEngine;
-import org.example.task2.engine.Topic;
-import org.example.task2.engine.TopicSettings;
 import org.example.task2.postgres.PostgresTaskStore;
 import org.example.task2.test.PostgresDatabase;
 import org.example.task2.test.PostgresExtension;

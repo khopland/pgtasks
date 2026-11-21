@@ -1,4 +1,4 @@
-package org.example.task2.slice;
+package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.example.task2.engine.EngineFixture.await;
@@ -29,14 +29,15 @@ import org.example.task2.Insertion;
 import org.example.task2.Ordering;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
-import org.example.task2.engine.EngineFixture;
-import org.example.task2.engine.RateLimit;
-import org.example.task2.engine.Retry;
-import org.example.task2.engine.TaskEngine;
-import org.example.task2.engine.Topic;
-import org.example.task2.engine.TopicSettings;
 import org.example.task2.test.PostgresDatabase;
 import org.example.task2.test.PostgresExtension;
+import org.example.task2.slice.AssessmentHandler;
+import org.example.task2.slice.AssessmentLedger;
+import org.example.task2.slice.FeedPublisher;
+import org.example.task2.slice.IncomeFeed;
+import org.example.task2.slice.NoticeHandler;
+import org.example.task2.slice.PartsRegister;
+import org.example.task2.slice.Slice;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

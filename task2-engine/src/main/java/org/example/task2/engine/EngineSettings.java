@@ -9,8 +9,8 @@ import org.example.task2.spi.Notifier;
 import org.example.task2.spi.TransactionBinding;
 
 /**
- * Node-wide settings and collaborators. A placeholder for the configuration model of a later
- * phase; {@link #defaults()} matches the plan's defaults.
+ * Node-wide settings and collaborators, as the builder resolves them from {@link TaskGlobals};
+ * {@link #defaults()} holds the built-in defaults.
  *
  * @param nodeName           shown in tasks.node and tasks.task_view
  * @param heartbeat          how often this node reports that it is alive
@@ -28,7 +28,7 @@ import org.example.task2.spi.TransactionBinding;
  * @param expiries           what happens to a task whose node dies under it: how long it waits,
  *                           and at which expiry it is dead-lettered
  */
-public record EngineSettings(
+record EngineSettings(
     String nodeName,
     Duration heartbeat,
     Duration expiry,

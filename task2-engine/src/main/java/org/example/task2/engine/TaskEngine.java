@@ -28,10 +28,10 @@ import org.example.task2.spi.TaskStore;
 /**
  * Processes topics on this node. On start it lets the store check or migrate its schema,
  * registers the node, creates every topic registered by name, and starts one poll loop per topic
- * it runs, plus the {@link Housekeeper}.
+ * it runs, plus housekeeping.
  *
  * <p>Which topics it runs follows the store: every topic registered by name or matching one of its
- * {@link TopicTemplate}s, unless paused. A topic created, paused or resumed on any node is
+ * patterns ({@link TaskRegistry#topicsMatching}), unless paused. A topic created, paused or resumed on any node is
  * broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
  * so a lost notification delays a change by at most one heartbeat. A paused topic's running
  * batches finish; nothing is claimed from it until it is resumed.
@@ -77,11 +77,11 @@ public final class TaskEngine implements AutoCloseable {
     /** How long one retention run may take; shorter in tests. */
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
-    public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
+    TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
         this(store, settings, topics, List.of());
     }
 
-    public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics, List<TopicTemplate<?>> templates) {
+    TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics, List<TopicTemplate<?>> templates) {
         this.store = Objects.requireNonNull(store, "store");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.topics = List.copyOf(topics);
@@ -466,8 +466,8 @@ public final class TaskEngine implements AutoCloseable {
         return started ? Set.copyOf(workersByName.keySet()) : Set.of();
     }
 
-    /** The topic patterns this engine processes; see {@link TopicTemplate}. */
-    public List<TopicTemplate<?>> templates() {
+    /** The topic patterns this engine processes. */
+    List<TopicTemplate<?>> templates() {
         return templates;
     }
 
@@ -479,8 +479,8 @@ public final class TaskEngine implements AutoCloseable {
         return settings;
     }
 
-    /** The topics this engine processes. */
-    public List<Topic<?>> topics() {
+    /** The topics this engine registers by name. */
+    List<Topic<?>> topics() {
         return topics;
     }
 
