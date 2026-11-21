@@ -71,27 +71,27 @@ final class Rows {
         @Nullable String error,
         int attempts,
         @Nullable Instant completedAt,
-        @Nullable String traceContext
+        Map<String, String> headers
     ) {
 
         Task finish(String outcome, @Nullable String output, int attempts, Instant now) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                outcome, previousOutcome, output, error, attempts, now, traceContext);
+                outcome, previousOutcome, output, error, attempts, now, headers);
         }
 
         Task redundant(Instant now) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                "redundant", previousOutcome, output, error, attempts, now, traceContext);
+                "redundant", previousOutcome, output, error, attempts, now, headers);
         }
 
         Task replaced() {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                "redundant", outcome, output, error, attempts, completedAt, traceContext);
+                "redundant", outcome, output, error, attempts, completedAt, headers);
         }
 
         Task failed(String error, int attempts) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
-                outcome, previousOutcome, output, error, attempts, completedAt, traceContext);
+                outcome, previousOutcome, output, error, attempts, completedAt, headers);
         }
     }
 

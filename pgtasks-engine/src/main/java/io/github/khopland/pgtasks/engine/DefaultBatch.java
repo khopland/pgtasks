@@ -12,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 import io.github.khopland.pgtasks.Batch;
 import io.github.khopland.pgtasks.BatchResource;
@@ -33,16 +34,17 @@ final class DefaultBatch<T> implements Batch<T> {
     /** Checks a staged push's or junction's target topic; see {@link DefaultTasks#checkTarget}. */
     private final BiConsumer<TopicRef<?>, Boolean> targets;
 
-    DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources) {
-        this(topic, tasks, resources, (target, codec) -> { });
-    }
+    /** Each task's own observation, opened around its decider; see {@link TaskObserver.BatchObservation#task}. */
+    private final Function<Task<?>, TaskObserver.TaskObservation> observations;
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources,
-                 BiConsumer<TopicRef<?>, Boolean> targets) {
+                 BiConsumer<TopicRef<?>, Boolean> targets,
+                 Function<Task<?>, TaskObserver.TaskObservation> observations) {
         this.topic = topic;
         this.tasks = List.copyOf(tasks);
         this.resources = resources;
         this.targets = targets;
+        this.observations = observations;
     }
 
     @Override
@@ -72,7 +74,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 throw new CancellationException("Batch cancelled");
             }
             StagedWork<T> work = new StagedWork<>(task, targets);
-            decisions.decide(task, decideOne(topic.name(), decider, work), work.pushes, work.junctions);
+            decisions.decide(task, decideOne(topic.name(), decider, work, observations.apply(task)), work.pushes, work.junctions);
         }
         return decisions.build();
     }
@@ -92,7 +94,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 running.acquire();
                 futures.add(executor.submit(() -> {
                     try {
-                        return decideOne(topic.name(), decider, work);
+                        return decideOne(topic.name(), decider, work, observations.apply(work.task));
                     } finally {
                         running.release();
                     }
@@ -127,19 +129,26 @@ final class DefaultBatch<T> implements Batch<T> {
         }
     }
 
-    /** One task's decision: an exception or Error from the decider fails only this task. */
-    private static <T> Decision decideOne(String topic, Decider<T> decider, StagedWork<T> work) {
-        try {
+    /**
+     * One task's decision: an exception or Error from the decider fails only this task. The task's
+     * observation is current while the decider runs, and is closed when it returns.
+     */
+    private static <T> Decision decideOne(String topic, Decider<T> decider, StagedWork<T> work, TaskObserver.TaskObservation observation) {
+        try (TaskObserver.Scope ignored = observation.open()) {
             // Each task's own thread under decideConcurrently: marked as a handler's too.
             return Objects.requireNonNull(HandlerThread.run(topic, () -> decider.decide(work)), "decider returned null");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CancellationException("Batch cancelled");
         } catch (VirtualMachineError e) {
+            observation.error(e);
             throw e;
         } catch (Throwable e) {
             // An Error, such as NoClassDefFoundError, fails the task like an exception does.
+            observation.error(e);
             return Decision.failed(e);
+        } finally {
+            observation.close();
         }
     }
 

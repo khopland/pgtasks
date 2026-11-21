@@ -275,7 +275,7 @@ public final class PostgresTaskStore implements TaskStore {
                    coalesce(q.attempt, t.attempts) AS attempt, q.run_at, coalesce(q.priority, 0) AS priority, q.node_id,
                    coalesce(q.failures, 0) AS failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
-                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
+                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at, t.headers::text AS headers
             FROM tasks.task t
             JOIN tasks.topic tp ON tp.id = t.topic_id
             LEFT JOIN tasks.queue q ON q.task_id = t.id
@@ -286,7 +286,7 @@ public final class PostgresTaskStore implements TaskStore {
             SELECT tp.name AS topic, t.id, t.identifier, q.state::text AS state, false AS finished,
                    q.attempt, q.run_at, q.priority, q.node_id, q.failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
-                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
+                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at, t.headers::text AS headers
             FROM tasks.queue q
             JOIN tasks.task t ON t.id = q.task_id
             JOIN tasks.topic tp ON tp.id = q.topic_id
@@ -670,9 +670,9 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT nextval('tasks.task_id_seq') AS id, i.*
                 FROM unnest(:identifiers::text[], :payloads::text[], :types::text[], :references::text[],
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
-                            :priorities::integer[], :dedup::text[], :traces::text[])
+                            :priorities::integer[], :dedup::text[], :headers::text[])
                     WITH ORDINALITY AS i(identifier, payload, payload_type, reference, parent_id, root_id,
-                                         state, delay_ms, priority, dedup_key, trace_context, ord)
+                                         state, delay_ms, priority, dedup_key, headers, ord)
             ),
             queued AS (
                 INSERT INTO tasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
@@ -686,9 +686,9 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING task_id, identifier
             ),
             stored AS (
-                INSERT INTO tasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, trace_context,
+                INSERT INTO tasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, headers,
                                         outcome, completed_at)
-                SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id, trace_context,
+                SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id, headers::jsonb,
                        CASE WHEN state IS NULL THEN 'redundant'::tasks.task_outcome END,
                        CASE WHEN state IS NULL THEN now() END
                 FROM input
@@ -788,7 +788,7 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at, q.failures, q.first_failed_at
             )
             SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at, c.failures, c.first_failed_at,
-                   t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.trace_context
+                   t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.headers::text AS headers
             FROM claimed c
             JOIN tasks.task t ON t.id = c.task_id
             WHERE t.topic_id = :topic::integer
@@ -863,7 +863,7 @@ public final class PostgresTaskStore implements TaskStore {
         int size = stored.size();
         @Nullable Object[] identifiers = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], references = new @Nullable Object[size];
         @Nullable Object[] parents = new @Nullable Object[size], roots = new @Nullable Object[size], delays = new @Nullable Object[size], priorities = new @Nullable Object[size], dedup = new @Nullable Object[size];
-        @Nullable Object[] traces = new @Nullable Object[size];
+        @Nullable Object[] headers = new @Nullable Object[size];
         for (int index = 0; index < size; index++) {
             NewTask task = stored.get(index);
             identifiers[index] = task.identifier();
@@ -875,7 +875,7 @@ public final class PostgresTaskStore implements TaskStore {
             delays[index] = task.delay() == null ? null : task.delay().toMillis();
             priorities[index] = task.priority();
             dedup[index] = task.dedupKey();
-            traces[index] = task.traceContext();
+            headers[index] = HeaderJson.write(task.headers());
         }
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
@@ -889,7 +889,7 @@ public final class PostgresTaskStore implements TaskStore {
             .array("delays", "bigint", delays)
             .array("priorities", "integer", priorities)
             .array("dedup", "text", dedup)
-            .array("traces", "text", traces);
+            .array("headers", "text", headers);
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = Objects.requireNonNull(pushes.get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
@@ -956,7 +956,7 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getObject("root_id", Long.class),
                     requiredInstant(resultSet, "created_at"),
                     requiredInstant(resultSet, "claimed_at"),
-                    resultSet.getString("trace_context"),
+                    HeaderJson.read(resultSet.getString("headers")),
                     resultSet.getInt("failures"),
                     instant(resultSet, "first_failed_at")
                 ));
@@ -1548,7 +1548,8 @@ public final class PostgresTaskStore implements TaskStore {
             requiredInstant(resultSet, "created_at"),
             instant(resultSet, "completed_at"),
             resultSet.getInt("failures"),
-            instant(resultSet, "first_failed_at")
+            instant(resultSet, "first_failed_at"),
+            HeaderJson.read(resultSet.getString("headers"))
         );
     }
 

@@ -33,14 +33,22 @@ or a payload type without a codec all fail the build with a message that names t
 
 A task has an identifier: the application's key, such as a person or a tax return. Ordering and
 insertion policies work per identifier within a topic. A push can also give a delay, a
-suspension, a priority, a reference for correlation, and a dedup key:
+suspension, a priority, a reference for correlation, a dedup key, and headers:
 
 ```java
 tasks.push(ASSESSMENT, Insertion.SUPERSEDE, Creation.of(returnId, request)
     .withDelay(Duration.ofMinutes(5))
     .withPriority(10)
-    .withDedupKey("assess:" + returnId + ":" + version));
+    .withDedupKey("assess:" + returnId + ":" + version)
+    .withHeader("source", "self-service"));
 ```
+
+Headers are names and values stored with the task and given back on `task.headers()` and
+`task.header(name)`. Observers add their own when the task is pushed: the tracer's propagation
+headers, and the MDC keys named in `pgtasks.mdc-headers`, such as a correlation id (see
+[operations](operations.md#tracing-and-correlation)). A creation's own headers win over theirs.
+The reference is one indexed value to look a task up by; headers are context that travels with
+it.
 
 `push` returns one `Pushed` per creation: `QUEUED`, `REDUNDANT` (a later creation in the same
 push has the same identifier), `DUPLICATE` (an unfinished task has the dedup key), or `PENDING`

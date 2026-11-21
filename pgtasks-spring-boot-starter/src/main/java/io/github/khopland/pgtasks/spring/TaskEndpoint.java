@@ -407,6 +407,9 @@ public class TaskEndpoint {
         task.put("firstFailedAt", text(view.firstFailedAt()));
         task.put("createdAt", text(view.createdAt()));
         task.put("completedAt", text(view.completedAt()));
+        Map<String, String> headers = new TreeMap<>();
+        view.headers().forEach((name, value) -> headers.put(name, shown ? value : HIDDEN));
+        task.put("headers", headers);
         return task;
     }
 

@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Decision;
@@ -99,8 +100,8 @@ class RecurringTest {
                 public PushObservation pushing(TopicRef<?> topic, int tasks) {
                     return new PushObservation() {
                         @Override
-                        public String traceContext() {
-                            return "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+                        public Map<String, String> headers() {
+                            return Map.of("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
                         }
 
                         @Override
@@ -115,7 +116,7 @@ class RecurringTest {
                 }
             })
             .configure("reporting", tasks -> tasks
-                .eachTask(REPORTS, task -> traces.add(task.task().traceContext()))
+                .eachTask(REPORTS, task -> traces.add(task.task().headers().get("traceparent")))
                 .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *"), "nightly-report", "full"))
             .build().start();
         engines.add(engine);

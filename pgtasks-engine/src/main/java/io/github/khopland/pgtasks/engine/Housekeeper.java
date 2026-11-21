@@ -274,7 +274,7 @@ final class Housekeeper {
                     List<Pushed> results;
                     try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
                         results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
-                            schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.traceContext())));
+                            schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.headers())));
                     }
                     committed.add(() -> settings.observer().pushed(topic, results));
                     store.scheduleFired(transaction, schedule.id(), now, next);

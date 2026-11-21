@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.postgres;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Map;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
@@ -37,7 +38,7 @@ class ClaimPlanTest {
             assertThat(fixture.claim(topic, node, ordering, 100)).isEmpty();
         }
         TaskStore.NewTask[] burst = Arrays.stream(StoreFixture.many("t", 10_000))
-            .map(task -> new TaskStore.NewTask("id-" + (task.identifier().hashCode() & 0x3ff), null, null, null, null, false, 0, null, null, null, null))
+            .map(task -> new TaskStore.NewTask("id-" + (task.identifier().hashCode() & 0x3ff), null, null, null, null, false, 0, null, null, null, Map.of()))
             .toArray(TaskStore.NewTask[]::new);
         fixture.push(topic, Insertion.APPEND, burst);
 

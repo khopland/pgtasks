@@ -30,27 +30,37 @@ import org.slf4j.MDC;
  * The engine's observer for Micrometer.
  *
  * <ul>
- *   <li>An Observation {@value #PUSH} for every push, a producer: with tracing, its span's
- *       {@code traceparent} is stored with the pushed tasks.</li>
- *   <li>An Observation {@value #BATCH} for every batch, a consumer that continues the trace
- *       stored with the batch's first task that has one. A batch of one task (or of tasks pushed
- *       together) continues exactly its trace; a larger batch of tasks from different traces
- *       continues the first one's. Pushes made while handling or completing the batch are its
- *       children, so a trace follows the work from topic to topic.</li>
+ *   <li>An Observation {@value #PUSH} for every push, a producer: with tracing, every header the
+ *       tracer's propagator writes ({@code traceparent} and {@code tracestate}, {@code baggage},
+ *       {@code b3}, ...) is stored with the pushed tasks. Downstream work of a batch is pushed
+ *       from the task that staged it.</li>
+ *   <li>An Observation {@value #BATCH} for every batch, a consumer. If every task of the batch
+ *       has the same headers, such as a batch of one or of tasks pushed together, it continues
+ *       their trace; otherwise it starts a trace of its own.</li>
+ *   <li>An Observation {@value #TASK} for each task the handler decides with
+ *       {@code batch.decide}, {@code decideConcurrently} or {@code eachTask}, and for each task
+ *       with downstream work, current while its decider runs and while its downstream work is
+ *       written. It is a child of the batch if the batch continues the task's trace, and
+ *       otherwise continues the trace the task was pushed from, so a batch of tasks from many
+ *       traces continues each of them. Pushes made there are its children, so a trace follows
+ *       the work from topic to topic.</li>
  *   <li>Counters, if a meter registry is given: {@value #PUSHED} by topic and status, and
  *       {@value #COMPLETED} by topic and result, both counted only once committed. The
  *       observations' own timers come from the registry's observation handlers.</li>
- *   <li>The logging MDC, while the batch runs and completes: {@value #MDC_TOPIC}, and for a
- *       batch of one task {@value #MDC_ID} and {@value #MDC_IDENTIFIER}.</li>
+ *   <li>The logging MDC: {@value #MDC_TOPIC} while the batch runs and completes, and
+ *       {@value #MDC_ID} and {@value #MDC_IDENTIFIER} for a batch of one, and while each task's
+ *       own observation is current.</li>
  * </ul>
  *
- * The trace is stored as a W3C {@code traceparent}, so it needs a tracer that propagates W3C
- * headers, which is Micrometer Tracing's default with OpenTelemetry and Spring Boot's with Brave.
+ * The headers are written and read by the tracer's propagator, so any format it propagates
+ * works: W3C, which is Micrometer Tracing's default with OpenTelemetry and Spring Boot's with
+ * Brave, B3, and remote baggage fields.
  */
 public final class TaskObservations implements TaskObserver {
 
     public static final String PUSH = "pgtasks.push";
     public static final String BATCH = "pgtasks.batch";
+    public static final String TASK = "pgtasks.task";
     public static final String PUSHED = "pgtasks.pushed";
     public static final String COMPLETED = "pgtasks.completed";
     public static final String BREAKER = "pgtasks.breaker.open";
@@ -58,7 +68,6 @@ public final class TaskObservations implements TaskObserver {
     public static final String MDC_TOPIC = "task.topic";
     public static final String MDC_ID = "task.id";
     public static final String MDC_IDENTIFIER = "task.identifier";
-    static final String TRACEPARENT = "traceparent";
 
     private final ObservationRegistry observations;
     private final @Nullable MeterRegistry meters;
@@ -102,7 +111,10 @@ public final class TaskObservations implements TaskObserver {
         }
     }
 
-    /** What a batch observation sees: the topic, the batch's tasks, and the stored trace it continues. */
+    /**
+     * What a batch observation sees: the topic, the batch's tasks, and the headers it continues
+     * the trace from, which are empty unless every task has the same.
+     */
     public static final class BatchContext extends ReceiverContext<Map<String, String>> {
 
         private final TopicRef<?> topic;
@@ -112,10 +124,7 @@ public final class TaskObservations implements TaskObserver {
             super(Map::get, Kind.CONSUMER);
             this.topic = topic;
             this.tasks = List.copyOf(tasks);
-            Map<String, String> carrier = new HashMap<>();
-            this.tasks.stream().map(Task::traceContext).filter(Objects::nonNull).findFirst()
-                .ifPresent(traceparent -> carrier.put(TRACEPARENT, traceparent));
-            setCarrier(carrier);
+            setCarrier(shared(this.tasks));
             setRemoteServiceName("tasks");
         }
 
@@ -125,6 +134,54 @@ public final class TaskObservations implements TaskObserver {
 
         public List<Task<?>> tasks() {
             return tasks;
+        }
+
+        /** Whether this batch continues the trace of the task: whether they have the same headers. */
+        boolean continues(Task<?> task) {
+            Map<String, String> carrier = getCarrier();
+            return carrier != null && carrier.equals(task.headers());
+        }
+
+        private static Map<String, String> shared(List<Task<?>> tasks) {
+            if (tasks.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> first = tasks.getFirst().headers();
+            return tasks.stream().allMatch(task -> task.headers().equals(first)) ? first : Map.of();
+        }
+    }
+
+    /** What a task observation sees when it is a child of the batch's: the task. */
+    public static final class TaskContext extends Observation.Context {
+
+        private final Task<?> task;
+
+        TaskContext(Task<?> task) {
+            this.task = task;
+        }
+
+        public Task<?> task() {
+            return task;
+        }
+    }
+
+    /**
+     * What a task observation sees when it continues the trace the task was pushed from, because
+     * the batch doesn't: the task, and its headers to continue the trace from.
+     */
+    public static final class TracedTaskContext extends ReceiverContext<Map<String, String>> {
+
+        private final Task<?> task;
+
+        TracedTaskContext(Task<?> task) {
+            super(Map::get, Kind.CONSUMER);
+            this.task = task;
+            setCarrier(task.headers());
+            setRemoteServiceName("tasks");
+        }
+
+        public Task<?> task() {
+            return task;
         }
     }
 
@@ -138,9 +195,9 @@ public final class TaskObservations implements TaskObserver {
             .start();
         return new PushObservation() {
             @Override
-            public @Nullable String traceContext() {
+            public Map<String, String> headers() {
                 Map<String, String> carrier = context.getCarrier();
-                return carrier == null ? null : carrier.get(TRACEPARENT);
+                return carrier == null ? Map.of() : Map.copyOf(carrier);
             }
 
             @Override
@@ -205,21 +262,36 @@ public final class TaskObservations implements TaskObserver {
             @Override
             public Scope open() {
                 Observation.Scope scope = observation.openScope();
-                Map<String, @Nullable String> previous = new HashMap<>();
-                put(previous, MDC_TOPIC, topic.name());
-                if (single != null) {
-                    put(previous, MDC_ID, Long.toString(single.id()));
-                    put(previous, MDC_IDENTIFIER, single.identifier());
-                }
+                Scope mdc = mdc(topic, single);
                 return () -> {
-                    previous.forEach((key, value) -> {
-                        if (value == null) {
-                            MDC.remove(key);
-                        } else {
-                            MDC.put(key, value);
-                        }
-                    });
+                    mdc.close();
                     scope.close();
+                };
+            }
+
+            @Override
+            public TaskObservation task(Task<?> task) {
+                Observation each = taskObservation(topic, task, context, observation);
+                return new TaskObservation() {
+                    @Override
+                    public Scope open() {
+                        Observation.Scope scope = each.openScope();
+                        Scope mdc = mdc(topic, task);
+                        return () -> {
+                            mdc.close();
+                            scope.close();
+                        };
+                    }
+
+                    @Override
+                    public void error(Throwable error) {
+                        each.error(error);
+                    }
+
+                    @Override
+                    public void close() {
+                        each.stop();
+                    }
                 };
             }
 
@@ -243,6 +315,41 @@ public final class TaskObservations implements TaskObserver {
                 observation.stop();
             }
         };
+    }
+
+    /**
+     * A task's own observation: a child of the batch if the batch continues the task's trace, or
+     * if the task has no headers to continue one from; otherwise it continues the task's trace.
+     */
+    private Observation taskObservation(TopicRef<?> topic, Task<?> task, BatchContext batch, Observation parent) {
+        boolean ownTrace = !batch.continues(task) && !task.headers().isEmpty();
+        Observation.Context context = ownTrace ? new TracedTaskContext(task) : new TaskContext(task);
+        Observation observation = Observation.createNotStarted(TASK, () -> context, observations)
+            .contextualName("handle " + topic.name())
+            .lowCardinalityKeyValue("task.topic", topic.name())
+            .highCardinalityKeyValue("task.id", Long.toString(task.id()))
+            .highCardinalityKeyValue("task.identifier", task.identifier());
+        if (!ownTrace) {
+            observation.parentObservation(parent);
+        }
+        return observation.start();
+    }
+
+    /** The MDC for a batch, and for a task if there is one, until closed. */
+    private static Scope mdc(TopicRef<?> topic, @Nullable Task<?> task) {
+        Map<String, @Nullable String> previous = new HashMap<>();
+        put(previous, MDC_TOPIC, topic.name());
+        if (task != null) {
+            put(previous, MDC_ID, Long.toString(task.id()));
+            put(previous, MDC_IDENTIFIER, task.identifier());
+        }
+        return () -> previous.forEach((key, value) -> {
+            if (value == null) {
+                MDC.remove(key);
+            } else {
+                MDC.put(key, value);
+            }
+        });
     }
 
     private static void put(Map<String, @Nullable String> previous, String key, String value) {

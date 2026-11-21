@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.spring;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -84,8 +85,11 @@ public class TaskAutoConfiguration {
         Map<String, String> modules = ModuleNames.of(beans, List.copyOf(configurers.keySet()));
         configurers.forEach((name, configurer) -> builder.configure(modules.getOrDefault(name, name), configurer));
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
-        // Every observer bean, such as pgtasks-micrometer's and the application's own.
-        List<TaskObserver> observers = observer.orderedStream().toList();
+        // Every observer bean, such as pgtasks-micrometer's and the application's own, and the MDC keys to carry.
+        List<TaskObserver> observers = new ArrayList<>(observer.orderedStream().toList());
+        if (!properties.mdcHeaders().isEmpty()) {
+            observers.add(TaskObserver.mdc(properties.mdcHeaders()));
+        }
         if (!observers.isEmpty()) {
             builder.observer(TaskObserver.composite(observers));
         }

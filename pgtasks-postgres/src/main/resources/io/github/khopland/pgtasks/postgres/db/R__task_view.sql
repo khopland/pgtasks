@@ -21,7 +21,8 @@ SELECT tp.name AS topic,
        t.payload_type,
        t.payload,
        t.output,
-       t.error
+       t.error,
+       t.headers
 FROM tasks.task t
 JOIN tasks.topic tp ON tp.id = t.topic_id
 LEFT JOIN tasks.queue q ON q.task_id = t.id

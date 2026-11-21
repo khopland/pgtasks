@@ -60,7 +60,9 @@ CREATE TABLE tasks.task (
     payload_type      text,
     parent_id         bigint,
     root_id           bigint,
-    trace_context     text,
+    -- Names and values pushed with the task: the creation's own and the observers', such as
+    -- trace propagation headers or MDC values. NULL when there are none.
+    headers           jsonb,
     created_at        timestamptz NOT NULL DEFAULT now(),
     outcome           tasks.task_outcome,
     previous_outcome  tasks.task_outcome,

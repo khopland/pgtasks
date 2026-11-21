@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +15,7 @@ class DecisionsTest {
     private static final TopicRef<String> CHILD = TopicRef.of("child", String.class);
 
     private static Task<String> task(long id) {
-        return new Task<>(TOPIC, id, "id-" + id, null, 1, null, null, null, null, null, null);
+        return new Task<>(TOPIC, id, "id-" + id, null, 1, null, null, null, null, null, Map.of());
     }
 
     @Test

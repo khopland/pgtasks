@@ -34,8 +34,8 @@ class ObserverTest {
             events.add("pushing " + topic.name() + " " + tasks);
             return new PushObservation() {
                 @Override
-                public String traceContext() {
-                    return TRACE;
+                public Map<String, String> headers() {
+                    return Map.of("traceparent", TRACE);
                 }
 
                 @Override
@@ -52,7 +52,7 @@ class ObserverTest {
 
         @Override
         public BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
-            tasks.forEach(task -> traces.add(task.traceContext()));
+            tasks.forEach(task -> traces.add(task.headers().get("traceparent")));
             return new BatchObservation() {
                 @Override
                 public void error(Throwable error) {
@@ -192,8 +192,8 @@ class ObserverTest {
             public PushObservation pushing(TopicRef<?> topic, int tasks) {
                 return new PushObservation() {
                     @Override
-                    public String traceContext() {
-                        return TRACE;
+                    public Map<String, String> headers() {
+                        return Map.of("traceparent", TRACE);
                     }
 
                     @Override
@@ -210,7 +210,7 @@ class ObserverTest {
         List<String> traces = new CopyOnWriteArrayList<>();
         try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
             .observer(throwing).observer(tracing)
-            .configure("work", tasks -> tasks.eachTask(WORK, task -> traces.add(task.task().traceContext())))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> traces.add(task.task().headers().get("traceparent"))))
             .build().start()) {
             engine.tasks().independently().push(WORK, "a", "payload");
             TaskTester.of(engine).awaitIdle();

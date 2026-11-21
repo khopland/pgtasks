@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.admin;
 
 import java.time.Instant;
+import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
 
@@ -14,6 +15,7 @@ import org.jspecify.annotations.Nullable;
  * @param error           the last recorded failure as JSON, kept from the first failure on
  * @param failures        failed runs in a row while unfinished, counted or not
  * @param firstFailedAt   when the first of those failed, or null
+ * @param headers         the headers the task was pushed with
  */
 public record TaskView(
     String topic,
@@ -36,6 +38,11 @@ public record TaskView(
     Instant createdAt,
     @Nullable Instant completedAt,
     int failures,
-    @Nullable Instant firstFailedAt
+    @Nullable Instant firstFailedAt,
+    Map<String, String> headers
 ) {
+
+    public TaskView {
+        headers = Map.copyOf(headers);
+    }
 }
