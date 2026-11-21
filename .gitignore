@@ -1,16 +1,14 @@
-*.uuid
+target/
+
+# IDEs
+.idea/
 *.iml
-*.idea*
-*.class
-logs/*
-dokumentasjon/wiki/
-*.~lock.*
-wiki/*
-lastknownstate*.xml
+.vscode/
 .classpath
 .factorypath
 .project
-.settings
-target/
-.flattened-pom.xml
+.settings/
+
+# OS and JVM
+.DS_Store
 .attach_pid*
