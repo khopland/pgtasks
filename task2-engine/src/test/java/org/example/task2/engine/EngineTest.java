@@ -275,6 +275,9 @@ class EngineTest {
         })), succeeding(FIRST)));
         TaskTester tester = engines.tester();
         engines.clock.advance(Duration.ofMinutes(11));
+        // Expired: it waits out the expiry backoff before another node may run it.
+        EngineFixture.await("the task to expire", Duration.ofSeconds(10), () -> "retrying".equals(tester.find(id).orElseThrow().state()));
+        engines.clock.advance(Duration.ofMinutes(1));
         EngineFixture.await("node B to finish the reclaimed task", Duration.ofSeconds(10),
             () -> "succeeded".equals(tester.find(id).orElseThrow().state()));
 

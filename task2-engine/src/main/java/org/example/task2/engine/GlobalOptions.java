@@ -67,5 +67,12 @@ public interface GlobalOptions {
 
         /** How often finished tasks past their retention are deleted. */
         HousekeepingOptions purgeEvery(Duration interval);
+
+        /**
+         * A task whose node dies under it waits {@code backoff} before it runs again, twice as
+         * long the next time, and the {@code deadLetterAt}-th time it is dead-lettered, whatever
+         * its retry policy. By default 30 s and the third time.
+         */
+        HousekeepingOptions expiries(int deadLetterAt, Duration backoff);
     }
 }

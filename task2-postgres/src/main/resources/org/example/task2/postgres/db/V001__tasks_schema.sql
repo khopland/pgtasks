@@ -100,6 +100,8 @@ CREATE TABLE tasks.queue (
     -- doesn't use up attempts still backs off. first_failed_at is when the first of them failed.
     failures         integer NOT NULL DEFAULT 0,
     first_failed_at  timestamptz,
+    -- Times the task's node died under it: requeued with a backoff, dead-lettered at the third.
+    expiries         integer NOT NULL DEFAULT 0,
     CHECK ((state = 'active') = (node_id IS NOT NULL)),
     CHECK ((state IN ('scheduled', 'retrying')) = (run_at IS NOT NULL))
 ) WITH (

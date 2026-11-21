@@ -31,6 +31,12 @@ final class Housekeeper {
 
     private static final System.Logger LOGGER = System.getLogger(Housekeeper.class.getName());
     private static final int BATCH = 1_000;
+    /**
+     * A task whose node dies under it waits 30 s, then 60 s, before it runs again, and the third
+     * time it is dead-lettered whatever its retry policy says, even forever(): a task that crashes
+     * the JVM would otherwise go from node to node, taking each one down.
+     */
+    static final TaskStore.Expiries EXPIRIES = new TaskStore.Expiries(3, Duration.ofSeconds(30));
 
     @FunctionalInterface
     interface Job {
@@ -186,7 +192,7 @@ final class Housekeeper {
     }
 
     private void expire() throws Exception {
-        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry())).forEach(wake::accept);
+        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry(), settings.expiries())).forEach(wake::accept);
     }
 
     /** Promotes everything due, a batch per transaction, for as long as batches come back full. */

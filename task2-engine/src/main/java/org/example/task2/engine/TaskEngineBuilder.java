@@ -327,7 +327,8 @@ public final class TaskEngineBuilder {
         @Override
         public GlobalOptions node(String name) {
             settings = new EngineSettings(name, settings.heartbeat(), settings.expiry(), settings.promoteInterval(), settings.maxInFlightBatches(),
-                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval(), settings.purgeInterval(), settings.observer());
+                settings.notifier(), settings.transactions(), settings.codecs(), settings.snapshotInterval(), settings.purgeInterval(), settings.observer(),
+                settings.expiries());
             return this;
         }
 
@@ -395,6 +396,12 @@ public final class TaskEngineBuilder {
         @Override
         public HousekeepingOptions purgeEvery(Duration interval) {
             settings = settings.withPurgeInterval(interval);
+            return this;
+        }
+
+        @Override
+        public HousekeepingOptions expiries(int deadLetterAt, Duration backoff) {
+            settings = settings.withExpiries(new org.example.task2.spi.TaskStore.Expiries(deadLetterAt, backoff));
             return this;
         }
     }

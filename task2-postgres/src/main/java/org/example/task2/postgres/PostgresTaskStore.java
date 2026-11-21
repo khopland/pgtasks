@@ -225,11 +225,29 @@ public final class PostgresTaskStore implements TaskStore {
                   AND o.node_id IN (SELECT id FROM tasks.node WHERE heartbeat_at < now() - :expiry::bigint * interval '1 millisecond')
                 FOR UPDATE OF o SKIP LOCKED
             ),
+            -- Each expiry backs off a little longer, and the deadLetterAt-th one dead-letters the task:
+            -- a task that takes its node down can't move from node to node forever.
             requeued AS (
                 UPDATE tasks.queue q
-                SET state = 'ready', node_id = NULL, claimed_at = NULL
+                SET state = CASE WHEN q.expiries + 1 >= :dead_at::integer THEN 'failed'
+                                 WHEN :backoff::bigint = 0 THEN 'ready' ELSE 'retrying' END::tasks.queue_state,
+                    run_at = CASE WHEN q.expiries + 1 >= :dead_at::integer OR :backoff::bigint = 0 THEN NULL
+                                  ELSE now() + :backoff::bigint * power(2, least(q.expiries, 20)) * interval '1 millisecond' END,
+                    node_id = NULL, claimed_at = NULL,
+                    expiries = q.expiries + 1,
+                    failures = q.failures + 1,
+                    first_failed_at = coalesce(q.first_failed_at, now())
                 WHERE q.ctid = ANY (ARRAY(SELECT row FROM stale))
-                RETURNING q.task_id, q.topic_id
+                RETURNING q.task_id, q.topic_id, q.state, q.attempt, q.expiries
+            ),
+            last_error AS (
+                UPDATE tasks.task t
+                SET error = jsonb_build_object('message', CASE WHEN r.state = 'failed'
+                        THEN 'Expired ' || r.expiries || ' times: the node running it stopped every time'
+                        ELSE 'Expired: the node running it stopped' END, 'type', 'expired'),
+                    attempts = r.attempt
+                FROM requeued r
+                WHERE t.id = r.task_id AND t.topic_id = r.topic_id
             ),
             logged AS (
                 INSERT INTO tasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
@@ -277,7 +295,7 @@ public final class PostgresTaskStore implements TaskStore {
         // The statement trigger on tasks.queue wakes the workers.
         revive = sql(pickDeadLetters + """
             UPDATE tasks.queue q
-            SET state = 'ready', attempt = 0, run_at = NULL, failures = 0, first_failed_at = NULL
+            SET state = 'ready', attempt = 0, run_at = NULL, failures = 0, first_failed_at = NULL, expiries = 0
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
             """);
@@ -1005,9 +1023,10 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry) throws SQLException {
+    public List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry, Expiries expiries) throws SQLException {
         Connection connection = transaction.connection();
-        return topics(expire, connection, NamedSql.parameters().set("node", nodeId).set("expiry", expiry.toMillis()));
+        return topics(expire, connection, NamedSql.parameters().set("node", nodeId).set("expiry", expiry.toMillis())
+            .set("dead_at", expiries.deadLetterAt()).set("backoff", expiries.backoff().toMillis()));
     }
 
     private static List<Integer> topics(NamedSql sql, Connection connection, NamedSql.Parameters parameters) throws SQLException {

@@ -318,6 +318,36 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void each_expiry_backs_off_longer_and_the_last_one_dead_letters_the_task() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        TaskStore.Expiries expiries = new TaskStore.Expiries(3, Duration.ofSeconds(30));
+        for (int expiry = 1; expiry <= 3; expiry++) {
+            int crashed = fixture.node("crashed-" + expiry);
+            fixture.claim(topic, crashed);
+            fixture.advance(Duration.ofHours(1));
+            fixture.heartbeat(node);
+            Instant now = fixture.store().clock().instant();
+            assertThat(fixture.requeueExpired(node, Duration.ofMinutes(10), expiries)).containsExactly(topic);
+
+            TaskView view = fixture.view(id).orElseThrow();
+            assertThat(view.failures()).isEqualTo(expiry);
+            assertThat(view.error()).contains("Expired");
+            if (expiry < 3) {
+                assertThat(view.state()).isEqualTo("retrying");
+                Duration backoff = Duration.ofSeconds(30L << (expiry - 1));
+                assertThat(view.runAt()).isBetween(now.plus(backoff).minusSeconds(5), now.plus(backoff).plusSeconds(5));
+                fixture.advance(backoff);
+                fixture.promoteDue();
+            } else {
+                assertThat(view.state()).as("dead letter at the third expiry").isEqualTo("failed");
+                assertThat(view.error()).contains("Expired 3 times");
+            }
+        }
+        assertThat(fixture.attempts(id)).extracting(AttemptView::result).containsOnly("expired");
+    }
+
+    @Test
     void a_fresh_heartbeat_prevents_expiry() throws Exception {
         StoreFixture fixture = setUp();
         fixture.push(topic, "a");

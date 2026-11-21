@@ -118,7 +118,27 @@ public interface TaskStore {
      * Requeues the active tasks of other nodes whose heartbeat is older than {@code expiry}.
      * The attempt is kept, so the expired run counts. Returns the affected topics.
      */
-    List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry) throws SQLException;
+    List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry, Expiries expiries) throws SQLException;
+
+    /**
+     * What an expiry does to a task, apart from its retry policy, so a task that takes its node
+     * down can't do so forever. Each expiry counts as a failure and keeps the attempt.
+     *
+     * @param deadLetterAt the expiry that dead-letters the task, such as the third
+     * @param backoff      how long the first expiry waits before the task is ready again, doubling
+     *                     with each further one; zero makes it ready at once
+     */
+    record Expiries(int deadLetterAt, Duration backoff) {
+        /** Ready at once, never dead-lettered: how expiry worked before it was counted. */
+        public static final Expiries UNCOUNTED = new Expiries(Integer.MAX_VALUE, Duration.ZERO);
+
+        public Expiries {
+            Objects.requireNonNull(backoff, "backoff");
+            if (deadLetterAt < 1) {
+                throw new IllegalArgumentException("deadLetterAt must be at least 1");
+            }
+        }
+    }
 
     /**
      * The tasks this node holds active. A node compares them with what it is actually processing,

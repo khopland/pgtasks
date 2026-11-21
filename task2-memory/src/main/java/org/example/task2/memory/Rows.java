@@ -99,21 +99,29 @@ final class Rows {
         Instant claimedAt,
         String dedupKey,
         int failures,
-        Instant firstFailedAt
+        Instant firstFailedAt,
+        int expiries
     ) {
 
         Queued with(State state, Instant runAt, int attempt, Integer nodeId, Instant claimedAt) {
-            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures, firstFailedAt);
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures, firstFailedAt, expiries);
         }
 
         /** One more failed run, counted or not. */
         Queued failedAt(Instant now) {
             return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures + 1,
-                firstFailedAt == null ? now : firstFailedAt);
+                firstFailedAt == null ? now : firstFailedAt, expiries);
+        }
+
+        /** Its node died under it: a failure, and one more expiry. */
+        Queued expiredAt(Instant now) {
+            Queued failed = failedAt(now);
+            return new Queued(taskId, topicId, identifier, failed.state, priority, failed.runAt, attempt, failed.nodeId, failed.claimedAt, dedupKey,
+                failed.failures, failed.firstFailedAt, expiries + 1);
         }
 
         Queued withoutFailures() {
-            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null);
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null, 0);
         }
     }
 

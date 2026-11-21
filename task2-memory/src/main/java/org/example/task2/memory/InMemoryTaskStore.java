@@ -228,7 +228,7 @@ public final class InMemoryTaskStore implements TaskStore {
             State state = task.suspended() ? State.SUSPENDED : task.delay() != null && !task.delay().isZero() ? State.SCHEDULED : State.READY;
             memory.put(tasks, id, row);
             putQueued(memory, new Rows.Queued(id, topicId, task.identifier(), state, task.priority(),
-                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey(), 0, null));
+                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey(), 0, null, 0));
             queuedIdentifiers.add(task.identifier());
             results.add(new Pushed(task.identifier(), Pushed.Status.QUEUED, id));
         }
@@ -455,7 +455,7 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry) {
+    public List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry, Expiries expiries) {
         MemoryTransaction memory = memory(transaction);
         Instant now = now();
         Set<Integer> stale = new HashSet<>();
@@ -467,7 +467,13 @@ public final class InMemoryTaskStore implements TaskStore {
         Set<Integer> requeued = new LinkedHashSet<>();
         for (Rows.Queued row : List.copyOf(queue.values())) {
             if (row.state() == State.ACTIVE && stale.contains(row.nodeId())) {
-                putQueued(memory, row.with(State.READY, null, row.attempt(), null, null));
+                boolean dead = row.expiries() + 1 >= expiries.deadLetterAt();
+                boolean ready = !dead && expiries.backoff().isZero();
+                Instant runAt = dead || ready ? null : now.plus(expiries.backoff().multipliedBy(1L << Math.min(row.expiries(), 20)));
+                putQueued(memory, row.with(dead ? State.FAILED : ready ? State.READY : State.RETRYING, runAt, row.attempt(), null, null).expiredAt(now));
+                Rows.Task task = tasks.get(row.taskId());
+                memory.put(tasks, task.id(), task.failed("{\"message\":\"" + (dead ? "Expired " + (row.expiries() + 1)
+                    + " times: the node running it stopped every time" : "Expired: the node running it stopped") + "\",\"type\":\"expired\"}", row.attempt()));
                 memory.append(attempts, new Rows.Attempt(row.topicId(), row.taskId(), row.attempt(), row.nodeId(),
                     row.claimedAt() == null ? now : row.claimedAt(), now, "expired", null));
                 requeued.add(row.topicId());

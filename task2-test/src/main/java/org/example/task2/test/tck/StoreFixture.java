@@ -115,8 +115,13 @@ public abstract class StoreFixture implements AutoCloseable {
         return new Completion(task.id(), task.attempt(), task.claimedAt(), resolution);
     }
 
+    /** Requeues expired tasks as ready, without counting the expiry against them. */
     public List<Integer> requeueExpired(int node, Duration expiry) throws SQLException {
-        return inTransaction(transaction -> store().requeueExpired(transaction, node, expiry));
+        return requeueExpired(node, expiry, TaskStore.Expiries.UNCOUNTED);
+    }
+
+    public List<Integer> requeueExpired(int node, Duration expiry, TaskStore.Expiries expiries) throws SQLException {
+        return inTransaction(transaction -> store().requeueExpired(transaction, node, expiry, expiries));
     }
 
     /** Promotes what is due and returns the topics that got work. */

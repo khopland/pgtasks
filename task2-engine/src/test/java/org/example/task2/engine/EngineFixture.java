@@ -31,7 +31,9 @@ public final class EngineFixture implements AutoCloseable {
     public static EngineSettings settings(String node) {
         return EngineSettings.defaults(node)
             .withHeartbeat(Duration.ofMillis(200), Duration.ofHours(1))
-            .withPromoteInterval(Duration.ofMillis(50));
+            .withPromoteInterval(Duration.ofMillis(50))
+            // Tests that expire a node want its tasks back soon, not after 30 s.
+            .withExpiries(new org.example.task2.spi.TaskStore.Expiries(3, Duration.ofMillis(100)));
     }
 
     public TaskEngine start(String node, List<Topic<?>> topics) throws Exception {
