@@ -66,7 +66,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 throw new CancellationException("Batch cancelled");
             }
             StagedWork<T> work = new StagedWork<>(task, targets);
-            decisions.decide(task, decideOne(decider, work), work.pushes, work.junctions);
+            decisions.decide(task, decideOne(topic.name(), decider, work), work.pushes, work.junctions);
         }
         return decisions.build();
     }
@@ -86,7 +86,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 running.acquire();
                 futures.add(executor.submit(() -> {
                     try {
-                        return decideOne(decider, work);
+                        return decideOne(topic.name(), decider, work);
                     } finally {
                         running.release();
                     }
@@ -122,9 +122,10 @@ final class DefaultBatch<T> implements Batch<T> {
     }
 
     /** One task's decision: an exception or Error from the decider fails only this task. */
-    private static <T> Decision decideOne(Decider<T> decider, StagedWork<T> work) {
+    private static <T> Decision decideOne(String topic, Decider<T> decider, StagedWork<T> work) {
         try {
-            return Objects.requireNonNull(decider.decide(work), "decider returned null");
+            // Each task's own thread under decideConcurrently: marked as a handler's too.
+            return Objects.requireNonNull(HandlerThread.run(topic, () -> decider.decide(work)), "decider returned null");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CancellationException("Batch cancelled");

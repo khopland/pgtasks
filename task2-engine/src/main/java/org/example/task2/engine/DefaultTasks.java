@@ -79,12 +79,24 @@ final class DefaultTasks implements Tasks {
         this.observer = Objects.requireNonNull(observer);
     }
 
+    /** Pairs of handler topic and target topic already warned about, so each is logged once. */
+    private final java.util.Set<String> warnedHandlers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     @Override
     public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-        AppTransaction transaction = transactions.current().orElseThrow(() -> new IllegalStateException(
-            "tasks.push(...) joins the current transaction, but there is none. Run it inside a transaction, "
+        String handler = HandlerThread.topic();
+        AppTransaction transaction = transactions.current().orElseThrow(() -> new IllegalStateException(handler != null
+            ? "tasks.push(...) to " + topic + " from a handler of " + handler + ": there is no transaction to join. Stage the push with "
+                + "task.push(...) on the task, so it commits with the task's completion and only if the task succeeds, "
+                + "or use tasks.independently() for a push of its own."
+            : "tasks.push(...) joins the current transaction, but there is none. Run it inside a transaction, "
                 + "use tasks.on(connection) to push on an explicit connection, or tasks.independently() to commit on its own."
         ));
+        if (handler != null && warnedHandlers.add(handler + " -> " + topic.name())) {
+            LOGGER.log(System.Logger.Level.WARNING, "A handler of " + handler + " pushed to " + topic + " in a transaction of its own, which commits "
+                + "before the task completes: if the task fails or its completion is lost, the retry pushes again. Stage downstream work "
+                + "with task.push(...) unless that is what you want. (Logged once.)");
+        }
         if (store.joinsApplicationTransactions()) {
             Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
                 "The current transaction has no JDBC connection, so a push to " + store + " can't join it."));

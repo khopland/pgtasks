@@ -142,6 +142,14 @@ public final class TaskEngine implements AutoCloseable {
         return specs;
     }
 
+    /** Topics this node's modules push to, created when it prepares; see {@link TaskRegistry#pushesTo}. */
+    private Set<String> pushedTo = Set.of();
+
+    TaskEngine withPushedTo(java.util.Collection<String> topics) {
+        this.pushedTo = Set.copyOf(topics);
+        return this;
+    }
+
     TaskEngine withVersion(String version) {
         this.version = version;
         return this;
@@ -214,7 +222,7 @@ public final class TaskEngine implements AutoCloseable {
     /**
      * Readies the store for this engine without processing anything: applies the schema (as the
      * store's schema mode says), registers the configured topics with their retention and
-     * recurring tasks, and the rate limits. Enough for a node that only pushes, such as the
+     * recurring tasks, the topics its modules push to, and the rate limits. Enough for a node that only pushes, such as the
      * Spring starter's {@code task.enabled=false}: its pushes work whichever node starts first,
      * and the nodes that process the topics pick them up. {@link #start()} does this first.
      */
@@ -240,6 +248,11 @@ public final class TaskEngine implements AutoCloseable {
                 return created;
             });
             directory.register(topic.ref().name(), id);
+        }
+        for (String topic : pushedTo) {
+            if (!topicsByName.containsKey(topic)) {
+                directory.register(topic, EngineCore.transact(store, transaction -> store.createTopic(transaction, topic)));
+            }
         }
         EngineCore.transact(store, transaction -> {
             for (RateLimit limit : configured) {

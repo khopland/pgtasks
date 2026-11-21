@@ -165,7 +165,7 @@ final class BatchRun<T> {
             DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened, core.tasks()::checkTarget);
             Decisions handled = covering(scope.call(() -> {
                 try (TaskObserver.Scope ignored = observation.open()) {
-                    return topic.handler().handle(batch);
+                    return HandlerThread.run(topic.ref().name(), () -> topic.handler().handle(batch));
                 }
             }, topic.settings().batchDeadline()), runnable);
             Decisions merged = handled;

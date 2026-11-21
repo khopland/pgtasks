@@ -59,6 +59,10 @@ public final class TaskEngineBuilder {
     private record Named<T>(String name, T value) {
     }
 
+    /** A topic a module pushes to, from {@link TaskRegistry#pushesTo}. */
+    private record Declared(TopicRef<?> ref, String module) {
+    }
+
     private TaskStore store;
     private DataSource dataSource;
     private String node = "node";
@@ -451,6 +455,7 @@ public final class TaskEngineBuilder {
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);
         List<EventRoute<?>> routes = new ArrayList<>();
         List<Recurring<?>> recurring = new ArrayList<>();
+        List<Declared> declared = new ArrayList<>();
         for (Named<TaskConfigurer> configurer : configurers) {
             Spec moduleDefaults = new Spec(Source.MODULE_DEFAULTS);
             List<TopicSpec<?>> registered = new ArrayList<>();
@@ -475,6 +480,14 @@ public final class TaskEngineBuilder {
                     options.accept(spec);
                     registered.add(new TopicSpec<>(Objects.requireNonNull(pattern, "pattern"), Objects.requireNonNull(type, "type"), true,
                         Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
+                    return this;
+                }
+
+                @Override
+                public TaskRegistry pushesTo(TopicRef<?>... refs) {
+                    for (TopicRef<?> ref : refs) {
+                        declared.add(new Declared(Objects.requireNonNull(ref, "topic"), configurer.name()));
+                    }
                     return this;
                 }
 
@@ -577,6 +590,18 @@ public final class TaskEngineBuilder {
             values.forEach((key, value) -> report.put(key, new Setting(describe(value), sources.get(key))));
             effective.add(new EffectiveSettings(topic.name, topic.module, report));
         }
+        Map<String, Declared> pushedTo = new LinkedHashMap<>();
+        for (Declared each : declared) {
+            Declared other = pushedTo.putIfAbsent(each.ref().name(), each);
+            TopicSpec<?> owner = topics.get(each.ref().name());
+            if (other != null && other.ref().payloadType() != each.ref().payloadType()) {
+                problems.add("Topic " + each.ref() + " is pushed to with payload type " + other.ref().payloadType().getName() + " by " + other.module()
+                    + " and " + each.ref().payloadType().getName() + " by " + each.module());
+            } else if (owner != null && owner.type != each.ref().payloadType()) {
+                problems.add("Topic " + each.ref() + " has payload type " + owner.type.getName() + " in " + owner.module + ", but " + each.module()
+                    + " pushes " + each.ref().payloadType().getName());
+            }
+        }
         if (!problems.isEmpty()) {
             throw new IllegalStateException("The task setup is invalid:\n - " + String.join("\n - ", problems));
         }
@@ -603,6 +628,19 @@ public final class TaskEngineBuilder {
             .withRecurring(recurring);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
+        // A codec for every topic modules push to, now rather than at the first push.
+        for (Declared each : pushedTo.values()) {
+            try {
+                engine.defaultTasks().codec(each.ref());
+            } catch (IllegalArgumentException e) {
+                problems.add("Topic " + each.ref() + ", which " + each.module() + " pushes to: " + e.getMessage()
+                    + "; register one with codec(...), or give the builder codecs(...)");
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException("The task setup is invalid:\n - " + String.join("\n - ", problems));
+        }
+        engine.withPushedTo(pushedTo.keySet());
         return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
     }
 
