@@ -166,9 +166,18 @@ final class TopicWorker<T> {
                 continue;
             }
             boolean probe = permit == CircuitBreaker.Permit.PROBE;
+            // The node-wide permit covers talking to the store, not the handler, which holds no
+            // connection: a topic whose handlers hang can't starve the node's other topics.
+            boolean nodeHeld = true;
             try {
                 TaskStore.ClaimRequest request = request(probe ? 1 : topic.settings().batchSize());
-                TaskStore.Claim claimed = core.transact(transaction -> core.store().claim(transaction, request));
+                TaskStore.Claim claimed;
+                try {
+                    claimed = core.transact(transaction -> core.store().claim(transaction, request));
+                } finally {
+                    core.inFlight().release();
+                    nodeHeld = false;
+                }
                 failures = 0;
                 if (claimed.tasks().isEmpty() && probe) {
                     breaker.probeReturned();
@@ -186,7 +195,7 @@ final class TopicWorker<T> {
                                 LOGGER.log(System.Logger.Level.ERROR, "A batch in " + topic.ref() + " failed unexpectedly", e);
                             } finally {
                                 runningBatches.decrementAndGet();
-                                release();
+                                permits.release();
                                 // Finishing a task can unblock later tasks for its identifier. No
                                 // row becomes newly ready then, so no notification is sent: poll again.
                                 if (topic.settings().ordering() != Ordering.FIFO) {
@@ -212,7 +221,7 @@ final class TopicWorker<T> {
                     dispatched = true;
                     continue;
                 }
-                release();
+                permits.release();
                 dispatched = true;
                 if (claimed.admissionWait() != null) {
                     // New work doesn't shorten a wait for the rate limit; a changed limit does.
@@ -229,7 +238,10 @@ final class TopicWorker<T> {
                     breaker.probeReturned();
                 }
                 if (!dispatched) {
-                    release();
+                    if (nodeHeld) {
+                        core.inFlight().release();
+                    }
+                    permits.release();
                     dispatched = true;
                 }
                 if (!running) {

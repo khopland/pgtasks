@@ -236,6 +236,17 @@ final class BatchRun<T> {
 
     private void complete(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                           TaskObserver.BatchObservation observation) {
+        // The node-wide cap on talking to the store, taken again for the completion.
+        core.inFlight().acquireUninterruptibly();
+        try {
+            completeWithin(topic, claims, decisions, early, opened, observation);
+        } finally {
+            core.inFlight().release();
+        }
+    }
+
+    private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
+                                TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
         decisions.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));

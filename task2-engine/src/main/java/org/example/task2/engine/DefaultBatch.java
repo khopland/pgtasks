@@ -59,21 +59,67 @@ final class DefaultBatch<T> implements Batch<T> {
                 throw new CancellationException("Batch cancelled");
             }
             StagedWork<T> work = new StagedWork<>(task);
-            Decision decision;
-            try {
-                decision = Objects.requireNonNull(decider.decide(work), "decider returned null");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new CancellationException("Batch cancelled");
-            } catch (VirtualMachineError e) {
-                throw e;
-            } catch (Throwable e) {
-                // An Error, such as NoClassDefFoundError, fails the task like an exception does.
-                decision = Decision.failed(e);
-            }
-            decisions.decide(task, decision, work.pushes, work.junctions);
+            decisions.decide(task, decideOne(decider, work), work.pushes, work.junctions);
         }
         return decisions.build();
+    }
+
+    @Override
+    public Decisions decideConcurrently(int parallelism, Decider<T> decider) {
+        if (parallelism < 1) {
+            throw new IllegalArgumentException("parallelism must be at least 1");
+        }
+        List<StagedWork<T>> works = tasks.stream().map(StagedWork::new).toList();
+        java.util.concurrent.Semaphore running = new java.util.concurrent.Semaphore(parallelism);
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("task2-" + topic.name() + "-task-", 0).factory());
+        try {
+            List<java.util.concurrent.Future<Decision>> futures = new ArrayList<>(works.size());
+            for (StagedWork<T> work : works) {
+                running.acquire();
+                futures.add(executor.submit(() -> {
+                    try {
+                        return decideOne(decider, work);
+                    } finally {
+                        running.release();
+                    }
+                }));
+            }
+            Decisions.Builder decisions = Decisions.builder();
+            for (int index = 0; index < works.size(); index++) {
+                StagedWork<T> work = works.get(index);
+                Decision decision;
+                try {
+                    decision = futures.get(index).get();
+                } catch (java.util.concurrent.ExecutionException e) {
+                    // Only a cancellation gets here; decideOne turns everything else into a decision.
+                    throw new CancellationException("Batch cancelled");
+                }
+                decisions.decide(work.task, decision, work.pushes, work.junctions);
+            }
+            return decisions.build();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("Batch cancelled");
+        } finally {
+            // Cancels what still runs when the batch is cancelled; the batch scope waits for the rest.
+            executor.shutdownNow();
+        }
+    }
+
+    /** One task's decision: an exception or Error from the decider fails only this task. */
+    private static <T> Decision decideOne(Decider<T> decider, StagedWork<T> work) {
+        try {
+            return Objects.requireNonNull(decider.decide(work), "decider returned null");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("Batch cancelled");
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable e) {
+            // An Error, such as NoClassDefFoundError, fails the task like an exception does.
+            return Decision.failed(e);
+        }
     }
 
     private static final class StagedWork<T> implements Work<T> {

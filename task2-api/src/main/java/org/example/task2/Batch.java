@@ -25,6 +25,15 @@ public interface Batch<T> {
      */
     Decisions decide(Decider<T> decider);
 
+    /**
+     * Decides up to {@code parallelism} tasks at once, each on a virtual thread of its own, for a
+     * decider that waits on something, such as a remote call per task: with {@link #decide} a
+     * batch of 100 makes its calls one after another. An exception fails only its task, and the
+     * decisions come back in the batch's order. Staged work is per task, as with {@link #decide};
+     * anything else the decider shares across tasks must be thread-safe.
+     */
+    Decisions decideConcurrently(int parallelism, Decider<T> decider);
+
     @FunctionalInterface
     interface Decider<T> {
         Decision decide(Work<T> task) throws Exception;

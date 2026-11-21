@@ -16,7 +16,9 @@ import org.example.task2.spi.TransactionBinding;
  * @param heartbeat          how often this node reports that it is alive
  * @param expiry             after how long without a heartbeat another node's tasks are requeued
  * @param promoteInterval    how often due delayed tasks and retries become ready
- * @param maxInFlightBatches node-wide cap on batches in flight; keep it below the pool size
+ * @param maxInFlightBatches node-wide cap on claims and completions talking to the store at once;
+ *                           keep it below the pool size. Handlers run outside it, so a topic
+ *                           whose handlers hang can't hold up the node's other topics
  * @param notifier           wake-ups; {@code null} relies on polling alone
  * @param transactions       finds the current transaction for {@code Tasks.push}
  * @param codecs             codecs for payload types of topics this node only pushes to
