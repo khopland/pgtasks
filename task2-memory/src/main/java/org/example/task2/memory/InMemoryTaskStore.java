@@ -241,7 +241,7 @@ public final class InMemoryTaskStore implements TaskStore {
                     && queuedIdentifiers.contains(old.identifier()) && covered.contains(old.state())) {
                     memory.remove(queue, old.taskId());
                     if (insertion == Insertion.DELETE) {
-                        memory.remove(tasks, old.taskId());
+                        deleteTask(memory, old.taskId());
                     } else {
                         memory.put(tasks, old.taskId(), tasks.get(old.taskId()).redundant(now));
                     }
@@ -252,7 +252,7 @@ public final class InMemoryTaskStore implements TaskStore {
                     if (beforeTasks.contains(old.id()) && old.topicId() == topicId && queuedIdentifiers.contains(old.identifier())
                         && old.outcome() != null && !queue.containsKey(old.id())) {
                         if (insertion == Insertion.DELETE) {
-                            memory.remove(tasks, old.id());
+                            deleteTask(memory, old.id());
                         } else if (Set.of("succeeded", "filtered", "failed").contains(old.outcome())) {
                             memory.put(tasks, old.id(), old.replaced());
                         }
@@ -422,6 +422,9 @@ public final class InMemoryTaskStore implements TaskStore {
                             memory.put(tasks, task.id(), task.failed(waiting.error(), attempt));
                         }
                         if (waiting.error() != null) {
+                            // The first attempt and the last ten stay, as on Postgres.
+                            memory.removeIf(attempts, logged -> logged.taskId() == row.taskId() && logged.attempt() > 1
+                                && logged.attempt() <= completion.attempt() - 10);
                             memory.append(attempts, new Rows.Attempt(topicId, row.taskId(), completion.attempt(), nodeId,
                                 completion.claimedAt() == null ? now : completion.claimedAt(), now, "failed", waiting.error()));
                         }
@@ -433,20 +436,20 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Integer> promoteDue(StoreTransaction transaction, int limit) {
+    public Promoted promoteDue(StoreTransaction transaction, int limit) {
         MemoryTransaction memory = memory(transaction);
         Instant now = now();
-        Set<Integer> promoted = new LinkedHashSet<>();
-        queue.values().stream()
+        Set<Integer> topics = new LinkedHashSet<>();
+        List<Rows.Queued> due = queue.values().stream()
             .filter(row -> (row.state() == State.SCHEDULED || row.state() == State.RETRYING) && !row.runAt().isAfter(now))
             .sorted(Comparator.comparing(Rows.Queued::runAt))
             .limit(limit)
-            .toList()
-            .forEach(row -> {
-                putQueued(memory, row.with(State.READY, null, row.attempt(), null, null));
-                promoted.add(row.topicId());
-            });
-        return List.copyOf(promoted);
+            .toList();
+        due.forEach(row -> {
+            putQueued(memory, row.with(State.READY, null, row.attempt(), null, null));
+            topics.add(row.topicId());
+        });
+        return new Promoted(due.size(), List.copyOf(topics));
     }
 
     @Override
@@ -505,7 +508,7 @@ public final class InMemoryTaskStore implements TaskStore {
             .sorted(Comparator.comparing(Rows.Task::completedAt))
             .limit(limit)
             .toList();
-        purged.forEach(task -> memory.remove(tasks, task.id()));
+        purged.forEach(task -> deleteTask(memory, task.id()));
         return purged.size();
     }
 
@@ -599,6 +602,12 @@ public final class InMemoryTaskStore implements TaskStore {
         memory.put(limitOverrides, name, changed);
         memory.limitChanged(name);
         return Optional.of(changed);
+    }
+
+    /** Deletes a task and its attempt log. */
+    private void deleteTask(MemoryTransaction memory, long taskId) {
+        memory.remove(tasks, taskId);
+        memory.removeIf(attempts, attempt -> attempt.taskId() == taskId);
     }
 
     @Override

@@ -189,12 +189,13 @@ final class Housekeeper {
         EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry())).forEach(wake::accept);
     }
 
+    /** Promotes everything due, a batch per transaction, for as long as batches come back full. */
     private void promote() throws Exception {
-        List<Integer> promoted;
+        TaskStore.Promoted promoted;
         do {
             promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, BATCH));
-            promoted.forEach(wake::accept);
-        } while (promoted.size() == BATCH && leading());
+            promoted.topics().forEach(wake::accept);
+        } while (promoted.tasks() == BATCH && leading());
     }
 
     /** Deletes finished tasks past their retention, counted from completion, a batch at a time. */

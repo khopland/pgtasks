@@ -99,8 +99,20 @@ public interface TaskStore {
      */
     int release(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException;
 
-    /** Makes due delayed tasks and retries ready. Returns the topics that got ready work. */
-    List<Integer> promoteDue(StoreTransaction transaction, int limit) throws SQLException;
+    /**
+     * Makes up to {@code limit} due delayed tasks and retries ready, earliest first. Returns how
+     * many it promoted, so a caller knows whether more are due, and the topics that got work.
+     */
+    Promoted promoteDue(StoreTransaction transaction, int limit) throws SQLException;
+
+    /** @param tasks how many tasks became ready; @param topics the topics they belong to, each once */
+    record Promoted(int tasks, List<Integer> topics) {
+        public static final Promoted NONE = new Promoted(0, List.of());
+
+        public Promoted {
+            topics = List.copyOf(topics);
+        }
+    }
 
     /**
      * Requeues the active tasks of other nodes whose heartbeat is older than {@code expiry}.

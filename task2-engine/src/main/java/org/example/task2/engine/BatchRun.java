@@ -54,6 +54,8 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
+    /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
+    private VirtualMachineError fatal;
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
         this.worker = worker;
@@ -72,7 +74,7 @@ final class BatchRun<T> {
             T payload;
             try {
                 payload = claim.payload() == null ? null : topic.codec().decode(claim.payload());
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | LinkageError e) {
                 Task<T> undecoded = task(claim, null);
                 all.add(undecoded);
                 early.decide(undecoded, Decision.failed(new IllegalStateException("Could not decode the payload", e)));
@@ -94,6 +96,9 @@ final class BatchRun<T> {
             opened.values().forEach(BatchRun::closeQuietly);
             claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
             observation.close();
+        }
+        if (fatal != null) {
+            throw fatal;
         }
     }
 
@@ -156,6 +161,14 @@ final class BatchRun<T> {
         } catch (Exception e) {
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
+        } catch (Error e) {
+            // Without this, an Error left the claims to the orphan sweep, which hands them back
+            // without counting the attempt: retried forever, no error stored.
+            if (e instanceof VirtualMachineError vm) {
+                fatal = vm;
+            }
+            observation.error(e);
+            return Decisions.all(runnable, Decision.failed(e));
         }
     }
 
@@ -175,7 +188,8 @@ final class BatchRun<T> {
             return handled;
         }
         Decisions.Builder complete = Decisions.builder();
-        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream()));
+        // With their junctions: without them, a fan-in group a decided task belongs to stays suspended for good.
+        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream(), verdict.junctions()));
         runnable.stream().filter(task -> !handled.covers(task)).forEach(task -> complete.decide(task, Decision.failed("The handler returned no decision for this task")));
         return complete.build();
     }
@@ -219,7 +233,10 @@ final class BatchRun<T> {
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
             observation.released();
             return;
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
+            if (e instanceof VirtualMachineError vm) {
+                fatal = vm;
+            }
             LOGGER.log(System.Logger.Level.WARNING, "The completion of a batch in " + topic.ref() + " failed and was rolled back", e);
             observation.error(e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();

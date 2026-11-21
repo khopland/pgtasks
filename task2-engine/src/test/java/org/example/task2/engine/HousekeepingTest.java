@@ -35,6 +35,21 @@ class HousekeepingTest {
         return List.of(nodes).stream().filter(TaskEngine::leadsHousekeeping).count();
     }
 
+    /** Review F1: promotion stopped after one batch of 1,000 unless 1,000 topics were due. */
+    @Test
+    void one_housekeeping_run_promotes_every_due_task_not_just_one_batch() throws Exception {
+        TaskEngine engine = engines.start("node-a", topic());
+        engine.pause("topic");
+        engine.tasks().independently().push(TOPIC, org.example.task2.Insertion.APPEND, java.util.stream.IntStream.range(0, 2_500)
+            .mapToObj(index -> org.example.task2.Creation.of("t" + index, "ok").withDelay(Duration.ofMinutes(1))).toList());
+        TaskTester tester = TaskTester.of(engine);
+
+        tester.advance(Duration.ofMinutes(2));
+
+        assertThat(tester.counts(TOPIC).ready()).isEqualTo(2_500);
+        assertThat(tester.counts(TOPIC).scheduled()).isZero();
+    }
+
     @Test
     void one_engine_leads_and_another_takes_over_when_it_stops() throws Exception {
         TaskEngine nodeA = engines.start("node-a", topic());

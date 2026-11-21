@@ -119,8 +119,9 @@ public abstract class StoreFixture implements AutoCloseable {
         return inTransaction(transaction -> store().requeueExpired(transaction, node, expiry));
     }
 
+    /** Promotes what is due and returns the topics that got work. */
     public List<Integer> promoteDue() throws SQLException {
-        return inTransaction(transaction -> store().promoteDue(transaction, 1000));
+        return inTransaction(transaction -> store().promoteDue(transaction, 1000)).topics();
     }
 
     public static Resolution succeeded() {

@@ -143,6 +143,47 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(retry.attempt()).isEqualTo(2);
     }
 
+    /** Fails the task's current claim with a retry due at once, and makes it ready again. */
+    private ClaimedTask failAndRetry(StoreFixture fixture, long id) throws Exception {
+        ClaimedTask claimed = fixture.claim(topic, node).stream().filter(task -> task.id() == id).findFirst().orElseThrow();
+        fixture.complete(topic, node, claimed, StoreFixture.retrying(Duration.ZERO));
+        fixture.promoteDue();
+        return claimed;
+    }
+
+    @Test
+    void the_attempt_log_keeps_a_tasks_first_attempt_and_its_last_ten() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        for (int attempt = 1; attempt <= 15; attempt++) {
+            failAndRetry(fixture, id);
+        }
+
+        assertThat(fixture.attempts(id)).extracting(AttemptView::attempt).containsExactly(1, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    }
+
+    @Test
+    void a_tasks_attempts_go_when_retention_or_a_delete_push_removes_it() throws Exception {
+        StoreFixture fixture = setUp();
+        long purged = fixture.push(topic, "a");
+        failAndRetry(fixture, purged);
+        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
+        long replaced = fixture.push(topic, "b");
+        failAndRetry(fixture, replaced);
+        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
+        assertThat(fixture.attempts(purged)).hasSize(1);
+        assertThat(fixture.attempts(replaced)).hasSize(1);
+
+        int deleted = fixture.inTransaction(transaction -> fixture.store().purge(transaction, topic, org.example.task2.Outcome.SUCCEEDED,
+            fixture.store().clock().instant().plusSeconds(60), 1));
+        assertThat(deleted).isEqualTo(1);
+        assertThat(fixture.attempts(purged)).isEmpty();
+
+        fixture.push(topic, Insertion.DELETE, StoreFixture.task("b"));
+        assertThat(fixture.view(replaced)).isEmpty();
+        assertThat(fixture.attempts(replaced)).isEmpty();
+    }
+
     @Test
     void promotion_respects_its_limit() throws Exception {
         StoreFixture fixture = setUp();
@@ -150,13 +191,20 @@ public abstract class CompletionTck extends StoreTck {
             StoreFixture.delayed("c", Duration.ofSeconds(10)), StoreFixture.delayed("d", Duration.ofSeconds(10)), StoreFixture.delayed("e", Duration.ofSeconds(10)));
         fixture.advance(Duration.ofSeconds(20));
 
-        List<Integer> promoted = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
-        assertThat(promoted).containsExactly(topic);
+        // The count, not the topics, tells the caller whether more are due: one topic, two tasks.
+        TaskStore.Promoted promoted = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
+        assertThat(promoted.tasks()).isEqualTo(2);
+        assertThat(promoted.topics()).containsExactly(topic);
         assertThat(fixture.counts(topic).ready()).isEqualTo(2);
         assertThat(fixture.counts(topic).due()).isEqualTo(3);
 
-        assertThat(fixture.promoteDue()).containsExactly(topic);
+        TaskStore.Promoted rest = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
+        assertThat(rest.tasks()).isEqualTo(2);
+        TaskStore.Promoted last = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
+        assertThat(last.tasks()).isEqualTo(1);
         assertThat(fixture.counts(topic).ready()).isEqualTo(5);
+        TaskStore.Promoted none = fixture.inTransaction(transaction -> fixture.store().promoteDue(transaction, 2));
+        assertThat(none).isEqualTo(TaskStore.Promoted.NONE);
     }
 
     @Test

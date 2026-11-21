@@ -180,6 +180,14 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT :topic::integer, d.task_id, d.attempt, :node::integer, coalesce(d.started_at, now()), 'failed', d.error::jsonb
                 FROM moved m JOIN d ON d.task_id = m.task_id
                 WHERE d.error IS NOT NULL
+            ),
+            -- The log keeps a task's first attempt and its last ten, so a task that keeps failing
+            -- doesn't grow it without bound. (This statement doesn't see the row it inserts.)
+            trimmed AS (
+                DELETE FROM tasks.attempt a
+                USING moved m JOIN d ON d.task_id = m.task_id
+                WHERE d.error IS NOT NULL AND a.task_id = m.task_id
+                  AND a.attempt > 1 AND a.attempt <= d.attempt - 10
             )
             SELECT task_id FROM moved
             """);
@@ -336,6 +344,11 @@ public final class PostgresTaskStore implements TaskStore {
                 ORDER BY d.completed_at
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
+            ),
+            -- A task's attempt log goes with it.
+            attempts AS (
+                DELETE FROM tasks.attempt a
+                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM tasks.task t
             USING doomed
@@ -539,6 +552,11 @@ public final class PostgresTaskStore implements TaskStore {
                             AND d.identifier IN (SELECT identifier FROM queued)
                             AND d.outcome IS NOT NULL
                           FOR UPDATE OF d SKIP LOCKED))
+                    RETURNING t.id
+                ),
+                deleted_attempts AS (
+                    DELETE FROM tasks.attempt a
+                    WHERE a.task_id = ANY (ARRAY(SELECT id FROM deleted_tasks))
                 )
                 """;
         };
@@ -966,9 +984,17 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Integer> promoteDue(StoreTransaction transaction, int limit) throws SQLException {
-        Connection connection = transaction.connection();
-        return topics(promote, connection, NamedSql.parameters().set("limit", limit));
+    public Promoted promoteDue(StoreTransaction transaction, int limit) throws SQLException {
+        int tasks = 0;
+        Set<Integer> topics = new LinkedHashSet<>();
+        try (PreparedStatement statement = promote.prepare(transaction.connection(), NamedSql.parameters().set("limit", limit));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                tasks++;
+                topics.add(resultSet.getInt(1));
+            }
+        }
+        return new Promoted(tasks, List.copyOf(topics));
     }
 
     @Override

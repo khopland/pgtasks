@@ -65,7 +65,10 @@ final class DefaultBatch<T> implements Batch<T> {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new CancellationException("Batch cancelled");
-            } catch (Exception e) {
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable e) {
+                // An Error, such as NoClassDefFoundError, fails the task like an exception does.
                 decision = Decision.failed(e);
             }
             decisions.decide(task, decision, work.pushes, work.junctions);

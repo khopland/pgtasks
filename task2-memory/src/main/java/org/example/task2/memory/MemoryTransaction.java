@@ -63,6 +63,18 @@ final class MemoryTransaction implements StoreTransaction {
         }
     }
 
+    /** Deletes the rows that match; a rollback puts them back where they were. */
+    <T> void removeIf(List<T> table, java.util.function.Predicate<? super T> which) {
+        check();
+        List<T> before = List.copyOf(table);
+        if (table.removeIf(which)) {
+            undo.push(() -> {
+                table.clear();
+                table.addAll(before);
+            });
+        }
+    }
+
     <T> void append(List<T> table, T row) {
         check();
         table.add(row);
