@@ -45,7 +45,10 @@ public interface TaskObserver {
 
     /** What became of a task when its batch completed. */
     enum Result {
-        SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED, RETRYING, DEAD_LETTERED
+        SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED,
+        /** Failed without using up an attempt: {@code Decision.unavailable}, or a type the retry policy doesn't count. */
+        UNAVAILABLE,
+        RETRYING, DEAD_LETTERED
     }
 
     /** Something made current on a thread until closed. */

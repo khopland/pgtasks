@@ -344,11 +344,19 @@ final class BatchRun<T> {
             case Decision.Suspended ignored -> new Resolution.Waiting(WaitState.SUSPENDED, null, false, null);
             case Decision.Later later -> new Resolution.Waiting(WaitState.SCHEDULED, later.delay(), false, null);
             case Decision.Throttled throttled -> new Resolution.Waiting(WaitState.RETRYING, throttled.retryAfter(), false, null);
+            // Not the task's fault: back off, keep the error, give the attempt back.
+            case Decision.Unavailable unavailable -> new Resolution.Waiting(WaitState.RETRYING,
+                retry.uncountedBackoff(claim.failures() + 1, core.random()), false, ErrorJson.of(unavailable.message(), unavailable.cause()));
             case Decision.Failed failed -> {
                 String error = ErrorJson.of(failed.message(), failed.cause());
-                yield retry.allowsAnotherAfter(claim.attempt())
-                    ? new Resolution.Waiting(WaitState.RETRYING, retry.backoff(claim.attempt(), core.random()), true, error)
-                    : new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
+                yield switch (retry.classify(failed.cause())) {
+                    case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
+                    case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    case COUNTED -> retry.allowsAnotherAfter(claim.attempt())
+                        ? new Resolution.Waiting(WaitState.RETRYING, retry.backoff(claim.failures() + 1, core.random()), true, error)
+                        : new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                };
             }
         };
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
@@ -363,7 +371,8 @@ final class BatchRun<T> {
                 case Resolution.Waiting waiting -> switch (waiting.state()) {
                     case SUSPENDED -> TaskObserver.Result.SUSPENDED;
                     case SCHEDULED -> TaskObserver.Result.DELAYED;
-                    case RETRYING -> waiting.counted() ? TaskObserver.Result.RETRYING : TaskObserver.Result.THROTTLED;
+                    case RETRYING -> waiting.counted() ? TaskObserver.Result.RETRYING
+                        : waiting.error() != null ? TaskObserver.Result.UNAVAILABLE : TaskObserver.Result.THROTTLED;
                     case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
                 };
             };

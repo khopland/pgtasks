@@ -8,7 +8,7 @@ import java.util.Objects;
  *
  * <p>When several sources decide on the same task (a handler and the batch resources that
  * review it), the most severe decision wins, in this order:
- * {@code failed > suspended > throttled > later > filtered > success}. Between two delays of the
+ * {@code failed > unavailable > suspended > throttled > later > filtered > success}. Between two delays of the
  * same kind, the longer one wins.
  */
 public sealed interface Decision {
@@ -43,6 +43,19 @@ public sealed interface Decision {
 
     static Decision failed(String message) {
         return new Failed(message, null);
+    }
+
+    /**
+     * Not the task's fault: a downstream system is down, a connection failed. The task is retried
+     * with the topic's backoff and its error is kept, but the attempt doesn't count, so an outage
+     * can't use up a task's attempts.
+     */
+    static Decision unavailable(Throwable cause) {
+        return new Unavailable(cause.getMessage(), cause);
+    }
+
+    static Decision unavailable(String message) {
+        return new Unavailable(message, null);
     }
 
     /** Downstream pushback: the task is retried after the delay and the attempt doesn't count. */
@@ -123,10 +136,17 @@ public sealed interface Decision {
         }
     }
 
-    record Failed(String message, Throwable cause) implements Decision {
+    record Unavailable(String message, Throwable cause) implements Decision {
         @Override
         public int severity() {
             return 5;
+        }
+    }
+
+    record Failed(String message, Throwable cause) implements Decision {
+        @Override
+        public int severity() {
+            return 6;
         }
     }
 }

@@ -1,6 +1,7 @@
 package org.example.task2.engine;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.random.RandomGenerator;
 
@@ -31,18 +32,40 @@ import java.util.random.RandomGenerator;
  * @param budget      how long a task keeps trying, if the policy is a time budget; null if it is a
  *                    number of attempts. {@code maxAttempts} is worked out from it: the attempts
  *                    whose nominal backoffs fit in the budget
+ * @param notCounting failures caused by these types, anywhere in the cause chain, are the
+ *                    system's, not the task's: retried with the backoff, the attempt not counted,
+ *                    as if the handler had said {@link org.example.task2.Decision#unavailable}
+ * @param deadLetterAt failures caused by these types go straight to the dead letters, such as
+ *                    bad input that no retry will fix. Checked before {@code notCounting}
  */
-public record Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, Duration budget) {
+public record Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, Duration budget,
+                    List<Class<? extends Throwable>> notCounting, List<Class<? extends Throwable>> deadLetterAt) {
 
     public static final int FOREVER = Integer.MAX_VALUE;
+
+    /** What a failure means for its task. */
+    public enum Kind {
+        /** Uses up an attempt. */
+        COUNTED,
+        /** Retried without using up an attempt. */
+        NOT_COUNTED,
+        /** Dead-lettered at once. */
+        DEAD_LETTER
+    }
 
     public Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter) {
         this(maxAttempts, initial, multiplier, max, jitter, null);
     }
 
+    public Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, Duration budget) {
+        this(maxAttempts, initial, multiplier, max, jitter, budget, List.of(), List.of());
+    }
+
     public Retry {
         Objects.requireNonNull(initial, "initial");
         Objects.requireNonNull(max, "max");
+        notCounting = List.copyOf(notCounting);
+        deadLetterAt = List.copyOf(deadLetterAt);
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be at least 1");
         }
@@ -86,17 +109,17 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
 
     /** Keeps trying for this long after the first failure, then dead-letters the task. */
     public Retry giveUpAfter(Duration budget) {
-        return new Retry(1, initial, multiplier, max, jitter, Objects.requireNonNull(budget, "budget"));
+        return new Retry(1, initial, multiplier, max, jitter, Objects.requireNonNull(budget, "budget"), notCounting, deadLetterAt);
     }
 
     /** Never gives up: a failing task retries at the capped backoff until it succeeds. */
     public Retry forever() {
-        return new Retry(FOREVER, initial, multiplier, max, jitter, null);
+        return new Retry(FOREVER, initial, multiplier, max, jitter, null, notCounting, deadLetterAt);
     }
 
     /** Gives up after this many counted attempts. */
     public Retry attempts(int maxAttempts) {
-        return new Retry(maxAttempts, initial, multiplier, max, jitter, null);
+        return new Retry(maxAttempts, initial, multiplier, max, jitter, null, notCounting, deadLetterAt);
     }
 
     /** Same as {@link #attempts}. */
@@ -106,7 +129,57 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
 
     /** Another ramp, keeping how the policy gives up; a time budget is worked out again. */
     public Retry withBackoff(Duration first, Duration cap) {
-        return new Retry(maxAttempts, first, multiplier, cap, jitter, budget);
+        return new Retry(maxAttempts, first, multiplier, cap, jitter, budget, notCounting, deadLetterAt);
+    }
+
+    /**
+     * Failures caused by these types don't use up an attempt: a connection refused, a timeout,
+     * anything that says a downstream system is down rather than the task is wrong.
+     */
+    @SafeVarargs
+    public final Retry notCounting(Class<? extends Throwable>... types) {
+        return new Retry(maxAttempts, initial, multiplier, max, jitter, budget, append(notCounting, types), deadLetterAt);
+    }
+
+    /** Failures caused by these types dead-letter the task at once, such as bad input. */
+    @SafeVarargs
+    public final Retry deadLetterAt(Class<? extends Throwable>... types) {
+        return new Retry(maxAttempts, initial, multiplier, max, jitter, budget, notCounting, append(deadLetterAt, types));
+    }
+
+    /** What a failure with this cause means, by the types anywhere in its cause chain. */
+    public Kind classify(Throwable cause) {
+        if (matches(cause, deadLetterAt)) {
+            return Kind.DEAD_LETTER;
+        }
+        return matches(cause, notCounting) ? Kind.NOT_COUNTED : Kind.COUNTED;
+    }
+
+    /**
+     * The backoff after an uncounted failure. A policy without a backoff, such as {@link #none()},
+     * would retry at once, again and again, so those back off as the standard policy does.
+     */
+    public Duration uncountedBackoff(int failures, RandomGenerator random) {
+        return initial.isZero() ? standard().backoff(failures, random) : backoff(failures, random);
+    }
+
+    private static boolean matches(Throwable cause, List<Class<? extends Throwable>> types) {
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Throwable current = cause; current != null && seen.add(current); current = current.getCause()) {
+            for (Class<? extends Throwable> type : types) {
+                if (type.isInstance(current)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    @SafeVarargs
+    private static List<Class<? extends Throwable>> append(List<Class<? extends Throwable>> list, Class<? extends Throwable>... more) {
+        List<Class<? extends Throwable>> all = new java.util.ArrayList<>(list);
+        all.addAll(List.of(more));
+        return all;
     }
 
     public boolean isForever() {

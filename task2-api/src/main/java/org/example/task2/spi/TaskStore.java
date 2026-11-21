@@ -348,7 +348,8 @@ public interface TaskStore {
         Long rootId,
         Instant createdAt,
         Instant claimedAt,
-        String traceContext
+        String traceContext,
+        int failures
     ) {
     }
 
@@ -412,7 +413,9 @@ public interface TaskStore {
      *                        suspended, failed), otherwise the outcome (succeeded, filtered,
      *                        failed, redundant, recreated)
      * @param attempt         the current attempt if unfinished, otherwise the attempts it took
-     * @param error           the last recorded failure as JSON, for dead letters
+     * @param error           the last recorded failure as JSON, kept from the first failure on
+     * @param failures        failed runs in a row while unfinished, counted or not
+     * @param firstFailedAt   when the first of those failed, or null
      */
     record TaskView(
         String topic,
@@ -433,7 +436,9 @@ public interface TaskStore {
         String error,
         String previousOutcome,
         Instant createdAt,
-        Instant completedAt
+        Instant completedAt,
+        int failures,
+        Instant firstFailedAt
     ) {
     }
 

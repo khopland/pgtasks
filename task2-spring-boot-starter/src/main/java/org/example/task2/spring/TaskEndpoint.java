@@ -315,6 +315,8 @@ public class TaskEndpoint {
         task.put("payload", view.payload());
         task.put("output", view.output());
         task.put("error", view.error());
+        task.put("failures", view.failures());
+        task.put("firstFailedAt", text(view.firstFailedAt()));
         task.put("createdAt", text(view.createdAt()));
         task.put("completedAt", text(view.completedAt()));
         return task;

@@ -96,6 +96,10 @@ CREATE TABLE tasks.queue (
     node_id     integer REFERENCES tasks.node (id),
     claimed_at  timestamptz,
     dedup_key   text,
+    -- Failed runs in a row, counted or not: the backoff grows with them, so an outage that
+    -- doesn't use up attempts still backs off. first_failed_at is when the first of them failed.
+    failures         integer NOT NULL DEFAULT 0,
+    first_failed_at  timestamptz,
     CHECK ((state = 'active') = (node_id IS NOT NULL)),
     CHECK ((state IN ('scheduled', 'retrying')) = (run_at IS NOT NULL))
 ) WITH (

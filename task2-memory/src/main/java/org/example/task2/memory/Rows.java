@@ -97,11 +97,23 @@ final class Rows {
         int attempt,
         Integer nodeId,
         Instant claimedAt,
-        String dedupKey
+        String dedupKey,
+        int failures,
+        Instant firstFailedAt
     ) {
 
         Queued with(State state, Instant runAt, int attempt, Integer nodeId, Instant claimedAt) {
-            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey);
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures, firstFailedAt);
+        }
+
+        /** One more failed run, counted or not. */
+        Queued failedAt(Instant now) {
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures + 1,
+                firstFailedAt == null ? now : firstFailedAt);
+        }
+
+        Queued withoutFailures() {
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null);
         }
     }
 

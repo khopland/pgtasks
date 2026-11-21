@@ -159,7 +159,9 @@ public final class PostgresTaskStore implements TaskStore {
                     run_at = CASE WHEN d.delay_ms IS NULL THEN NULL ELSE now() + d.delay_ms * interval '1 millisecond' END,
                     node_id = NULL,
                     claimed_at = NULL,
-                    attempt = q.attempt - d.uncounted
+                    attempt = q.attempt - d.uncounted,
+                    failures = q.failures + CASE WHEN d.error IS NULL THEN 0 ELSE 1 END,
+                    first_failed_at = CASE WHEN d.error IS NULL THEN q.first_failed_at ELSE coalesce(q.first_failed_at, now()) END
                 FROM d
                 WHERE q.task_id = ANY (:ids::bigint[])
                   AND q.task_id = d.task_id
@@ -169,24 +171,27 @@ public final class PostgresTaskStore implements TaskStore {
                   AND q.state = 'active'
                 RETURNING q.task_id, q.state, q.attempt
             ),
-            dead AS (
+            -- Every failure, counted or not, leaves its error on the task, so what is failing shows
+            -- while it retries, not only once it is dead.
+            last_error AS (
                 UPDATE tasks.task t
                 SET error = d.error::jsonb, attempts = m.attempt
                 FROM moved m JOIN d ON d.task_id = m.task_id
-                WHERE t.topic_id = :topic::integer AND t.id = m.task_id AND m.state = 'failed'
+                WHERE t.topic_id = :topic::integer AND t.id = m.task_id AND d.error IS NOT NULL
             ),
+            -- Only counted attempts are logged, so an outage of uncounted failures doesn't grow the log.
             logged AS (
                 INSERT INTO tasks.attempt (topic_id, task_id, attempt, node_id, started_at, result, error)
                 SELECT :topic::integer, d.task_id, d.attempt, :node::integer, coalesce(d.started_at, now()), 'failed', d.error::jsonb
                 FROM moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL
+                WHERE d.error IS NOT NULL AND d.uncounted = 0
             ),
             -- The log keeps a task's first attempt and its last ten, so a task that keeps failing
             -- doesn't grow it without bound. (This statement doesn't see the row it inserts.)
             trimmed AS (
                 DELETE FROM tasks.attempt a
                 USING moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL AND a.task_id = m.task_id
+                WHERE d.error IS NOT NULL AND d.uncounted = 0 AND a.task_id = m.task_id
                   AND a.attempt > 1 AND a.attempt <= d.attempt - 10
             )
             SELECT task_id FROM moved
@@ -239,6 +244,7 @@ public final class PostgresTaskStore implements TaskStore {
         findTask = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
                    coalesce(q.attempt, t.attempts) AS attempt, q.run_at, coalesce(q.priority, 0) AS priority, q.node_id,
+                   coalesce(q.failures, 0) AS failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
                    t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
             FROM tasks.task t
@@ -249,7 +255,7 @@ public final class PostgresTaskStore implements TaskStore {
         // Dead letters are few, so queue_failed_idx keeps these to the topic's dead letters.
         deadLetters = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, q.state::text AS state, false AS finished,
-                   q.attempt, q.run_at, q.priority, q.node_id,
+                   q.attempt, q.run_at, q.priority, q.node_id, q.failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
                    t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
             FROM tasks.queue q
@@ -271,7 +277,7 @@ public final class PostgresTaskStore implements TaskStore {
         // The statement trigger on tasks.queue wakes the workers.
         revive = sql(pickDeadLetters + """
             UPDATE tasks.queue q
-            SET state = 'ready', attempt = 0, run_at = NULL
+            SET state = 'ready', attempt = 0, run_at = NULL, failures = 0, first_failed_at = NULL
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
             """);
@@ -680,9 +686,9 @@ public final class PostgresTaskStore implements TaskStore {
                 UPDATE tasks.queue q
                 SET state = 'active', node_id = :node::integer, attempt = q.attempt + 1, claimed_at = clock_timestamp()
                 WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
-                RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at
+                RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at, q.failures
             )
-            SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at,
+            SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at, c.failures,
                    t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.trace_context
             FROM claimed c
             JOIN tasks.task t ON t.id = c.task_id
@@ -851,7 +857,8 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getObject("root_id", Long.class),
                     instant(resultSet, "created_at"),
                     instant(resultSet, "claimed_at"),
-                    resultSet.getString("trace_context")
+                    resultSet.getString("trace_context"),
+                    resultSet.getInt("failures")
                 ));
             }
         }
@@ -1367,7 +1374,9 @@ public final class PostgresTaskStore implements TaskStore {
             resultSet.getString("error"),
             resultSet.getString("previous_outcome"),
             instant(resultSet, "created_at"),
-            instant(resultSet, "completed_at")
+            instant(resultSet, "completed_at"),
+            resultSet.getInt("failures"),
+            instant(resultSet, "first_failed_at")
         );
     }
 

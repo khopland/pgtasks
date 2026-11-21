@@ -152,6 +152,45 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void an_uncounted_failure_gives_the_attempt_back_but_counts_as_a_failure_and_keeps_its_error() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        ClaimedTask first = fixture.claim(topic, node).getFirst();
+        assertThat(first.failures()).isZero();
+
+        fixture.complete(topic, node, first, new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, Duration.ZERO, false,
+            "{\"message\":\"downstream down\"}"));
+
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.state()).isEqualTo("retrying");
+        assertThat(view.attempt()).as("the attempt is given back").isZero();
+        assertThat(view.failures()).isEqualTo(1);
+        assertThat(view.firstFailedAt()).isNotNull();
+        assertThat(view.error()).contains("downstream down");
+        assertThat(fixture.attempts(id)).as("uncounted failures aren't logged").isEmpty();
+
+        fixture.promoteDue();
+        ClaimedTask again = fixture.claim(topic, node).getFirst();
+        assertThat(again.attempt()).isEqualTo(1);
+        assertThat(again.failures()).isEqualTo(1);
+    }
+
+    @Test
+    void a_counted_failure_keeps_its_error_on_the_task_while_it_retries() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        java.time.Instant firstFailed;
+        failAndRetry(fixture, id);
+        firstFailed = fixture.view(id).orElseThrow().firstFailedAt();
+        failAndRetry(fixture, id);
+
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.error()).contains("boom");
+        assertThat(view.failures()).isEqualTo(2);
+        assertThat(view.firstFailedAt()).as("when the first of the run failed").isEqualTo(firstFailed);
+    }
+
+    @Test
     void the_attempt_log_keeps_a_tasks_first_attempt_and_its_last_ten() throws Exception {
         StoreFixture fixture = setUp();
         long id = fixture.push(topic, "a");

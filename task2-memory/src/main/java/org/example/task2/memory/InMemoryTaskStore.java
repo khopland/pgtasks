@@ -228,7 +228,7 @@ public final class InMemoryTaskStore implements TaskStore {
             State state = task.suspended() ? State.SUSPENDED : task.delay() != null && !task.delay().isZero() ? State.SCHEDULED : State.READY;
             memory.put(tasks, id, row);
             putQueued(memory, new Rows.Queued(id, topicId, task.identifier(), state, task.priority(),
-                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey()));
+                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey(), 0, null));
             queuedIdentifiers.add(task.identifier());
             results.add(new Pushed(task.identifier(), Pushed.Status.QUEUED, id));
         }
@@ -321,7 +321,7 @@ public final class InMemoryTaskStore implements TaskStore {
             putQueued(memory, active);
             Rows.Task task = tasks.get(row.taskId());
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
-                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext()));
+                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext(), row.failures()));
         }
         if (admission != null && !claimed.isEmpty()) {
             Rows.Bucket bucket = buckets.get(admission.name());
@@ -417,11 +417,13 @@ public final class InMemoryTaskStore implements TaskStore {
                             case DEAD_LETTER -> State.FAILED;
                         };
                         int attempt = row.attempt() - (waiting.counted() ? 0 : 1);
-                        putQueued(memory, row.with(state, waiting.delay() == null ? null : now.plus(waiting.delay()), attempt, null, null));
-                        if (state == State.FAILED) {
+                        Rows.Queued waited = row.with(state, waiting.delay() == null ? null : now.plus(waiting.delay()), attempt, null, null);
+                        putQueued(memory, waiting.error() == null ? waited : waited.failedAt(now));
+                        if (waiting.error() != null) {
+                            // The last error stays on the task from the first failure on, as on Postgres.
                             memory.put(tasks, task.id(), task.failed(waiting.error(), attempt));
                         }
-                        if (waiting.error() != null) {
+                        if (waiting.error() != null && waiting.counted()) {
                             // The first attempt and the last ten stay, as on Postgres.
                             memory.removeIf(attempts, logged -> logged.taskId() == row.taskId() && logged.attempt() > 1
                                 && logged.attempt() <= completion.attempt() - 10);
@@ -621,7 +623,7 @@ public final class InMemoryTaskStore implements TaskStore {
     public List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) {
         MemoryTransaction memory = memory(transaction);
         List<Rows.Queued> revived = failed(memory, topicId, taskIds, limit, 0);
-        revived.forEach(row -> putQueued(memory, row.with(State.READY, null, 0, null, null)));
+        revived.forEach(row -> putQueued(memory, row.with(State.READY, null, 0, null, null).withoutFailures()));
         return revived.stream().map(Rows.Queued::taskId).toList();
     }
 
@@ -732,7 +734,9 @@ public final class InMemoryTaskStore implements TaskStore {
             task.error(),
             task.previousOutcome(),
             task.createdAt(),
-            task.completedAt()
+            task.completedAt(),
+            row != null ? row.failures() : 0,
+            row != null ? row.firstFailedAt() : null
         ));
     }
 
