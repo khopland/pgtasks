@@ -2,6 +2,7 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Period;
 import java.util.List;
@@ -39,7 +40,7 @@ class HousekeepingTest {
     @Test
     void one_housekeeping_run_promotes_every_due_task_not_just_one_batch() throws Exception {
         TaskEngine engine = engines.start("node-a", topic());
-        engine.pause("topic");
+        engine.admin().pause("topic");
         engine.tasks().independently().push(TOPIC, org.example.task2.Insertion.APPEND, java.util.stream.IntStream.range(0, 2_500)
             .mapToObj(index -> org.example.task2.Creation.of("t" + index, "ok").withDelay(Duration.ofMinutes(1))).toList());
         TaskTester tester = TaskTester.of(engine);
@@ -97,8 +98,8 @@ class HousekeepingTest {
         tester.awaitIdle();
 
         assertThat(tester.find(delayed).orElseThrow().state()).as("promoted by the new leader and run").isEqualTo("succeeded");
-        List<TaskStore.TopicSnapshot> snapshots = EngineCore.transact(engines.store, transaction -> engines.store.snapshots(transaction));
-        assertThat(snapshots).extracting(TaskStore.TopicSnapshot::topic).contains(TOPIC.name());
+        List<TopicSnapshot> snapshots = EngineCore.transact(engines.store, transaction -> engines.store.snapshots(transaction));
+        assertThat(snapshots).extracting(TopicSnapshot::topic).contains(TOPIC.name());
     }
 
     /** Review 2026-11-21: every run started with the same topics, so one that used the whole budget starved the rest. */

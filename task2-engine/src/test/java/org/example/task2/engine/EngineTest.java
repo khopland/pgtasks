@@ -3,6 +3,8 @@ package org.example.task2.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -52,7 +54,7 @@ class EngineTest {
         return Topic.of(topic, batch -> batch.decide(task -> Decision.success()));
     }
 
-    private TaskStore.TaskView view(TaskTester tester, long id) {
+    private TaskView view(TaskTester tester, long id) {
         return tester.find(id).orElseThrow();
     }
 
@@ -87,13 +89,13 @@ class EngineTest {
         assertThat(view(tester, id).state()).isEqualTo("retrying");
         assertThat(view(tester, id).runAt()).isAfter(engines.clock.instant().plusSeconds(7));
 
-        TaskStore.QueueCounts counts = tester.drain(TOPIC);
+        QueueCounts counts = tester.drain(TOPIC);
 
         // The standard policy: a week of retries, ramping to every half hour, jumped through on the
         // clock. Jitter shortens backoffs, so a few more runs than the nominal count fit in the week.
         assertThat(runs.get()).isBetween(Retry.standard().nominalAttempts(), Retry.standard().nominalAttempts() * 5 / 4);
         assertThat(counts.failed()).isEqualTo(1);
-        TaskStore.TaskView dead = view(tester, id);
+        TaskView dead = view(tester, id);
         assertThat(dead.state()).isEqualTo("failed");
         assertThat(dead.attempt()).isEqualTo(runs.get());
         assertThat(Duration.between(dead.firstFailedAt(), engines.clock.instant())).as("the last run was in the week's last half hour")
@@ -238,7 +240,7 @@ class EngineTest {
         TaskTester tester = engines.tester();
         List<Long> ids = pushAll(120);
 
-        TaskStore.QueueCounts left = tester.drain(TOPIC);
+        QueueCounts left = tester.drain(TOPIC);
 
         assertThat(left.total()).isZero();
         assertThat(violations).isEmpty();
@@ -403,7 +405,7 @@ class EngineTest {
         assertThat(batchSizes.getFirst()).isEqualTo(kinds.size());
         assertThat(tester.pushed(FIRST)).extracting(Creation::identifier).containsExactly("both-0", "first-2", "both-5");
         assertThat(tester.pushed(SECOND)).extracting(Creation::identifier).containsExactly("both-0", "both-5");
-        TaskStore.QueueCounts counts = tester.counts(TOPIC);
+        QueueCounts counts = tester.counts(TOPIC);
         assertThat(counts.retrying()).isEqualTo(2);
         assertThat(counts.suspended()).isEqualTo(1);
     }

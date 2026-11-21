@@ -1,5 +1,8 @@
 package org.example.task2.test.tck;
 
+import org.example.task2.admin.AttemptView;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
@@ -15,7 +18,6 @@ import org.example.task2.spi.TaskStore.ClaimedTask;
 import org.example.task2.spi.TaskStore.Completion;
 import org.example.task2.spi.TaskStore.NewTask;
 import org.example.task2.spi.TaskStore.Resolution;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.example.task2.spi.TaskStore.WaitState;
 
 /**
@@ -178,11 +180,11 @@ public abstract class StoreFixture implements AutoCloseable {
         }
     }
 
-    public List<TaskStore.AttemptView> attempts(long task) throws SQLException {
+    public List<AttemptView> attempts(long task) throws SQLException {
         return inTransaction(transaction -> store().attempts(transaction, task));
     }
 
-    public TaskStore.QueueCounts counts(int topic) throws SQLException {
+    public QueueCounts counts(int topic) throws SQLException {
         return inTransaction(transaction -> store().count(transaction, topic));
     }
 

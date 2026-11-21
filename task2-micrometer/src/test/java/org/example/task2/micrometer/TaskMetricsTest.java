@@ -2,6 +2,8 @@ package org.example.task2.micrometer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -11,8 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.example.task2.spi.ManualClock;
-import org.example.task2.spi.TaskStore.QueueCounts;
-import org.example.task2.spi.TaskStore.TopicSnapshot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

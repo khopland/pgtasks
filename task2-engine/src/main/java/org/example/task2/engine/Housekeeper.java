@@ -1,5 +1,6 @@
 package org.example.task2.engine;
 
+import org.example.task2.admin.Schedule;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
@@ -244,7 +245,7 @@ final class Housekeeper {
             fired = EngineCore.transact(store, transaction -> {
                 Instant now = store.clock().instant();
                 List<Integer> topics = new java.util.ArrayList<>();
-                for (TaskStore.Schedule schedule : store.dueSchedules(transaction, BATCH)) {
+                for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
                     Instant next;
                     try {
                         next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).next(now);

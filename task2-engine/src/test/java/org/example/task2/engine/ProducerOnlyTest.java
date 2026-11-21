@@ -36,7 +36,7 @@ class ProducerOnlyTest {
             try (TaskEngine consumer = TaskEngine.builder().store(store).configure("work", work).build().start()) {
                 TaskTester.of(consumer).awaitIdle();
                 assertThat(handled).containsExactly("from the producer");
-                assertThat(consumer.find(id).orElseThrow().state()).isEqualTo("succeeded");
+                assertThat(consumer.admin().find(id).orElseThrow().state()).isEqualTo("succeeded");
             }
         }
     }

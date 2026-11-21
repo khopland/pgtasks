@@ -2,6 +2,7 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.TaskView;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -13,7 +14,6 @@ import org.example.task2.Insertion;
 import org.example.task2.Juncture;
 import org.example.task2.TopicRef;
 import org.example.task2.memory.InMemoryTaskStore;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,7 +42,7 @@ class FailureHandlingTest {
             .start();
         long id = engine.tasks().independently().push(WORK, "a", "payload").id();
         TaskTester.of(engine).awaitIdle();
-        return engine.find(id).orElseThrow();
+        return engine.admin().find(id).orElseThrow();
     }
 
     /** Review 2026-11-21: one task pushing to a topic that doesn't exist failed the whole batch's completion. */
@@ -67,7 +67,7 @@ class FailureHandlingTest {
         TaskTester.of(engine).awaitIdle();
 
         assertThat(nexts).containsExactlyInAnyOrder("fine", "fine too");
-        TaskView typo = engine.find(2).orElseThrow();
+        TaskView typo = engine.admin().find(2).orElseThrow();
         assertThat(typo.state()).isEqualTo("failed");
         assertThat(typo.error()).contains("Unknown topic 'nxet'");
     }
@@ -93,8 +93,8 @@ class FailureHandlingTest {
         TaskTester.of(engine).awaitIdle();
 
         assertThat(handled).containsExactly(1);
-        assertThat(engine.find(good).orElseThrow().finished()).isTrue();
-        TaskView view = engine.find(bad).orElseThrow();
+        assertThat(engine.admin().find(good).orElseThrow().finished()).isTrue();
+        TaskView view = engine.admin().find(bad).orElseThrow();
         assertThat(view.state()).as("no retries: the stored text won't change").isEqualTo("failed");
         assertThat(view.attempt()).isEqualTo(1);
         assertThat(view.error()).contains("Could not decode the payload").contains("NumberFormatException");
@@ -158,14 +158,14 @@ class FailureHandlingTest {
         clock.advance(java.time.Duration.ofHours(1)); // far past any retry backoff
         Thread.sleep(300);
 
-        assertThat(engine.find(id).orElseThrow().state()).as("still claimed").isEqualTo("active");
+        assertThat(engine.admin().find(id).orElseThrow().state()).as("still claimed").isEqualTo("active");
         assertThat(engine.health().stuck()).extracting(EngineHealth.StuckClaim::taskId).containsExactly(id);
         assertThat(runs).hasValue(1);
 
         finish.set(true);
         EngineFixture.await("the late batch to fail", java.time.Duration.ofSeconds(5),
-            () -> !"active".equals(unchecked(() -> engine.find(id).orElseThrow().state())));
-        TaskView view = engine.find(id).orElseThrow();
+            () -> !"active".equals(unchecked(() -> engine.admin().find(id).orElseThrow().state())));
+        TaskView view = engine.admin().find(id).orElseThrow();
         assertThat(view.state()).isEqualTo("retrying");
         assertThat(view.error()).contains("deadline");
         assertThat(mostAtOnce).hasValue(1);
@@ -207,9 +207,9 @@ class FailureHandlingTest {
             .build()
             .start();
         engine.tasks().independently().push(MERGE, Insertion.APPEND, List.of(Creation.of("a", "a").asSuspended(), Creation.of("b", "b").asSuspended()));
-        engine.pause("parts");
+        engine.admin().pause("parts");
         engine.tasks().independently().push(PARTS, Insertion.APPEND, List.of(Creation.of("a", "a"), Creation.of("x", "x")));
-        engine.resume("parts");
+        engine.admin().resume("parts");
         TaskTester.of(engine).awaitIdle();
 
         assertThat(merged).containsExactlyInAnyOrder("a", "b");

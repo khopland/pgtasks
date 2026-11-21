@@ -3,6 +3,7 @@ package org.example.task2.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.example.task2.admin.Schedule;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -60,7 +61,7 @@ class RecurringTest {
     void fires_when_due_and_makes_up_a_gap_once() throws Exception {
         TaskEngine engine = start("node-a", "0 2 * * *");
         TaskTester tester = TaskTester.of(engine);
-        assertThat(engine.schedules()).singleElement().satisfies(schedule -> {
+        assertThat(engine.admin().schedules()).singleElement().satisfies(schedule -> {
             assertThat(schedule.nextRunAt()).isEqualTo(Instant.parse("2026-11-21T02:00:00Z"));
             assertThat(schedule.lastRunAt()).isNull();
         });
@@ -80,7 +81,7 @@ class RecurringTest {
         tester.advance(Duration.ofDays(3));
         tester.awaitIdle();
         assertThat(ran).hasSize(2);
-        assertThat(engine.schedules().getFirst().nextRunAt()).isEqualTo(Instant.parse("2026-11-25T02:00:00Z"));
+        assertThat(engine.admin().schedules().getFirst().nextRunAt()).isEqualTo(Instant.parse("2026-11-25T02:00:00Z"));
     }
 
     @Test
@@ -88,13 +89,13 @@ class RecurringTest {
     void runs_supersede_each_other_while_waiting() throws Exception {
         TaskEngine engine = start("node-a", "0 * * * *");
         TaskTester tester = TaskTester.of(engine);
-        engine.pause("reports");
+        engine.admin().pause("reports");
         for (int hour = 0; hour < 3; hour++) {
             tester.advance(Duration.ofHours(1));
         }
         assertThat(tester.counts(REPORTS).ready()).isEqualTo(1);
 
-        engine.resume("reports");
+        engine.admin().resume("reports");
         tester.awaitIdle();
         assertThat(ran).hasSize(1);
     }
@@ -115,7 +116,7 @@ class RecurringTest {
     void the_configuration_at_start_replaces_the_stored_schedule() throws Exception {
         start("node-a", "0 2 * * *").close();
         TaskEngine changed = start("node-a", "30 3 * * *");
-        assertThat(changed.schedules()).extracting(TaskStore.Schedule::cron, TaskStore.Schedule::nextRunAt)
+        assertThat(changed.admin().schedules()).extracting(Schedule::cron, Schedule::nextRunAt)
             .containsExactly(org.assertj.core.groups.Tuple.tuple("30 3 * * *", Instant.parse("2026-11-21T03:30:00Z")));
         changed.close();
 
@@ -123,7 +124,7 @@ class RecurringTest {
             .configure("reporting", tasks -> tasks.topic(REPORTS, batch -> batch.decide(task -> Decision.success())))
             .build().start();
         engines.add(without);
-        assertThat(without.schedules()).isEmpty();
+        assertThat(without.admin().schedules()).isEmpty();
     }
 
     @Test

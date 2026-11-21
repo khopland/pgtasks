@@ -3,6 +3,8 @@ package org.example.task2.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.TaskView;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -17,7 +19,6 @@ import org.example.task2.TopicRef;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.postgres.PostgresNotifier;
 import org.example.task2.spi.ManualClock;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.example.task2.test.PostgresDatabase;
 import org.example.task2.test.PostgresExtension;
 import org.junit.jupiter.api.AfterEach;
@@ -68,20 +69,20 @@ class AdminTest {
         long discarded = engine.tasks().independently().push(WORK, "b", "flaky-b").id();
         tester.awaitIdle();
 
-        List<TaskView> dead = engine.deadLetters("work", 0, 10);
+        List<TaskView> dead = engine.admin().deadLetters("work", 0, 10);
         assertThat(dead).extracting(TaskView::id).containsExactly(revived, discarded);
         assertThat(dead.getFirst().error()).contains("not yet");
 
-        assertThat(engine.revive("work", List.of(revived))).isEqualTo(1);
+        assertThat(engine.admin().revive("work", List.of(revived))).isEqualTo(1);
         tester.awaitIdle();
-        assertThat(engine.find(revived).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(engine.admin().find(revived).orElseThrow().state()).isEqualTo("succeeded");
 
-        assertThat(engine.discard("work", org.example.task2.spi.TaskStore.DeadLetterQuery.ALL)).isEqualTo(1);
-        TaskView gone = engine.find(discarded).orElseThrow();
+        assertThat(engine.admin().discard("work", DeadLetterQuery.ALL)).isEqualTo(1);
+        TaskView gone = engine.admin().find(discarded).orElseThrow();
         assertThat(gone.finished()).isTrue();
         assertThat(gone.state()).isEqualTo("failed");
-        assertThat(engine.deadLetters("work", 0, 10)).isEmpty();
-        assertThatThrownBy(() -> engine.revive("missing", org.example.task2.spi.TaskStore.DeadLetterQuery.ALL)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("missing");
+        assertThat(engine.admin().deadLetters("work", 0, 10)).isEmpty();
+        assertThatThrownBy(() -> engine.admin().revive("missing", DeadLetterQuery.ALL)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("missing");
     }
 
     @Test
@@ -92,20 +93,20 @@ class AdminTest {
         engine.tasks().independently().push(WORK, "b", "flaky-b");
         TaskTester.of(engine).awaitIdle();
 
-        assertThat(engine.purge("work", Outcome.FAILED, Instant.now().plusSeconds(1))).as("the dead letter isn't finished").isZero();
-        assertThat(engine.purge("work", Outcome.SUCCEEDED, Instant.now().plusSeconds(1))).isEqualTo(1);
-        assertThat(engine.find(done)).isEmpty();
+        assertThat(engine.admin().purge("work", Outcome.FAILED, Instant.now().plusSeconds(1))).as("the dead letter isn't finished").isZero();
+        assertThat(engine.admin().purge("work", Outcome.SUCCEEDED, Instant.now().plusSeconds(1))).isEqualTo(1);
+        assertThat(engine.admin().find(done)).isEmpty();
     }
 
     @Test
     @DisplayName("Topic status: every topic with its pause flag, module and whether this node runs it")
     void topic_status_lists_every_topic() throws Exception {
         start(new InMemoryTaskStore());
-        engine.createTopic("elsewhere");
-        engine.pause("elsewhere");
+        engine.admin().createTopic("elsewhere");
+        engine.admin().pause("elsewhere");
 
-        assertThat(engine.topicStatus()).extracting(TaskEngine.TopicStatus::name, TaskEngine.TopicStatus::paused,
-                TaskEngine.TopicStatus::processing, TaskEngine.TopicStatus::module)
+        assertThat(engine.admin().topics()).extracting(org.example.task2.admin.TopicStatus::name, org.example.task2.admin.TopicStatus::paused,
+                org.example.task2.admin.TopicStatus::processing, org.example.task2.admin.TopicStatus::module)
             .containsExactly(
                 org.assertj.core.groups.Tuple.tuple("elsewhere", true, false, null),
                 org.assertj.core.groups.Tuple.tuple("work", false, true, "work-module"));

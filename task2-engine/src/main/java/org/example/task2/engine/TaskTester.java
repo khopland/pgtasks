@@ -1,5 +1,7 @@
 package org.example.task2.engine;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -120,15 +122,15 @@ public final class TaskTester {
      * Runs a topic until nothing in it can run any more, jumping the clock past delays and
      * backoffs when the store has a {@link ManualClock}. Suspended and dead-lettered tasks stay.
      */
-    public TaskStore.QueueCounts drain(TopicRef<?> topic) {
+    public QueueCounts drain(TopicRef<?> topic) {
         return drain(topic, DEFAULT_TIMEOUT);
     }
 
-    public TaskStore.QueueCounts drain(TopicRef<?> topic, Duration timeout) {
+    public QueueCounts drain(TopicRef<?> topic, Duration timeout) {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (true) {
             awaitIdle(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
-            TaskStore.QueueCounts counts = counts(topic);
+            QueueCounts counts = counts(topic);
             // Ready tasks wait for an open breaker's next probe.
             Instant probe = counts.ready() == 0 ? null : engines.stream().flatMap(engine -> engine.workers().stream())
                 .filter(worker -> worker.topic().ref().name().equals(topic.name()))
@@ -169,14 +171,14 @@ public final class TaskTester {
         captured.clear();
     }
 
-    public TaskStore.QueueCounts counts(TopicRef<?> topic) {
+    public QueueCounts counts(TopicRef<?> topic) {
         return read(transaction -> {
             int id = engines.getFirst().defaultTasks().topicId(transaction, topic.name());
             return store.count(transaction, id);
         });
     }
 
-    public Optional<TaskStore.TaskView> find(long taskId) {
+    public Optional<TaskView> find(long taskId) {
         return read(transaction -> store.find(transaction, taskId));
     }
 

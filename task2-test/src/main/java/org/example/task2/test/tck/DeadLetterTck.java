@@ -2,6 +2,8 @@ package org.example.task2.test.tck;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.util.Collection;
 import java.util.List;
@@ -9,7 +11,6 @@ import java.util.List;
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
 import org.example.task2.spi.TaskStore.ClaimedTask;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.Test;
 
 /** TCK: listing, reviving and discarding dead letters. */
@@ -103,7 +104,7 @@ public abstract class DeadLetterTck extends StoreTck {
         fixture.complete(topic, node, claimed, new org.example.task2.spi.TaskStore.Resolution.Waiting(
             org.example.task2.spi.TaskStore.WaitState.DEAD_LETTER, null, true, "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}"));
         long later = deadLetter(fixture, topic, "c");
-        org.example.task2.spi.TaskStore.DeadLetterQuery all = org.example.task2.spi.TaskStore.DeadLetterQuery.ALL;
+        DeadLetterQuery all = DeadLetterQuery.ALL;
         java.time.Instant now = fixture.store().clock().instant();
 
         assertThat(find(fixture, all.withError("java.net.ConnectException"))).containsExactly(refusedId);
@@ -118,7 +119,7 @@ public abstract class DeadLetterTck extends StoreTck {
         assertThat(discarded).containsExactly(refusedId);
     }
 
-    private List<Long> find(StoreFixture fixture, org.example.task2.spi.TaskStore.DeadLetterQuery query) throws SQLException {
+    private List<Long> find(StoreFixture fixture, DeadLetterQuery query) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().deadLetters(transaction, topic, query, 10)).stream().map(TaskView::id).toList();
     }
 

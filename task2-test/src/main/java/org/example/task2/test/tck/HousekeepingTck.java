@@ -2,6 +2,7 @@ package org.example.task2.test.tck;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.TopicSnapshot;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -183,11 +184,11 @@ public abstract class HousekeepingTck extends StoreTck {
             return null;
         });
         // Only this test's topics: a store's test may keep others in the background.
-        List<TaskStore.TopicSnapshot> snapshots = fixture.inTransaction(transaction -> fixture.store().snapshots(transaction)).stream()
+        List<TopicSnapshot> snapshots = fixture.inTransaction(transaction -> fixture.store().snapshots(transaction)).stream()
             .filter(snapshot -> List.of("busy", "idle").contains(snapshot.topic()))
             .toList();
 
-        assertThat(snapshots).extracting(TaskStore.TopicSnapshot::topic).containsExactly("busy", "idle");
+        assertThat(snapshots).extracting(TopicSnapshot::topic).containsExactly("busy", "idle");
         assertThat(snapshots.getFirst().counts().ready()).isEqualTo(2);
         assertThat(snapshots.getFirst().counts().active()).isEqualTo(1);
         assertThat(snapshots.get(1).counts().total()).isZero();

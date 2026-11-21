@@ -77,18 +77,18 @@ class ConcurrentDecideTest {
                 })))
             .build()) {
             engine.start();
-            engine.pause("work");
+            engine.admin().pause("work");
             engine.tasks().independently().push(WORK, Insertion.APPEND, IntStream.range(0, 20)
                 .mapToObj(index -> Creation.of("t" + index, index == 7 ? "bad" : "fine")).toList());
             long started = System.nanoTime();
-            engine.resume("work");
+            engine.admin().resume("work");
             TaskTester.of(engine).awaitIdle();
             long millis = (System.nanoTime() - started) / 1_000_000;
 
             assertThat(mostAtOnce).hasValue(5);
             assertThat(millis).as("four rounds of 100 ms, not twenty").isLessThan(1_500);
             assertThat(next).hasSize(19).doesNotContain("after t7");
-            assertThat(engine.find(8).orElseThrow().state()).as("only the bad one failed").isEqualTo("failed");
+            assertThat(engine.admin().find(8).orElseThrow().state()).as("only the bad one failed").isEqualTo("failed");
         }
     }
 

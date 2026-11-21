@@ -2,6 +2,7 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.example.task2.admin.TaskView;
 import java.net.ConnectException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -11,7 +12,6 @@ import org.example.task2.Decision;
 import org.example.task2.TopicRef;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.spi.ManualClock;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -51,7 +51,7 @@ class UncountedFailureTest {
         long id = run(Retry.standard().attempts(3), batch -> batch.decide(task ->
             runs.incrementAndGet() <= 10 ? Decision.unavailable("downstream is down") : Decision.success()));
 
-        TaskView done = engine.find(id).orElseThrow();
+        TaskView done = engine.admin().find(id).orElseThrow();
         assertThat(runs).hasValue(11);
         assertThat(done.state()).isEqualTo("succeeded");
         assertThat(done.attempt()).as("ten uncounted failures, one counted success").isEqualTo(1);
@@ -69,7 +69,7 @@ class UncountedFailureTest {
         long id = engine.tasks().independently().push(WORK, "a", "payload").id();
         tester.awaitIdle();
         for (int failure = 1; failure <= 4; failure++) {
-            TaskView view = engine.find(id).orElseThrow();
+            TaskView view = engine.admin().find(id).orElseThrow();
             assertThat(view.failures()).isEqualTo(failure);
             Duration backoff = Duration.between(clock.instant(), view.runAt());
             // 10 s doubling, up to 20 % shorter.
@@ -78,7 +78,7 @@ class UncountedFailureTest {
             tester.advance(backoff);
             tester.awaitIdle();
         }
-        assertThat(engine.find(id).orElseThrow().error()).contains("down");
+        assertThat(engine.admin().find(id).orElseThrow().error()).contains("down");
     }
 
     @Test
@@ -93,7 +93,7 @@ class UncountedFailureTest {
             return Decision.failed(new IllegalArgumentException("bad payload"));
         }));
 
-        TaskView dead = engine.find(id).orElseThrow();
+        TaskView dead = engine.admin().find(id).orElseThrow();
         assertThat(runs).as("five uncounted failures, then a dead letter at once").hasValue(6);
         assertThat(dead.state()).isEqualTo("failed");
         assertThat(dead.attempt()).isEqualTo(1);
@@ -113,7 +113,7 @@ class UncountedFailureTest {
         long id = engine.tasks().independently().push(WORK, "a", "payload").id();
         tester.awaitIdle();
 
-        TaskView view = engine.find(id).orElseThrow();
+        TaskView view = engine.admin().find(id).orElseThrow();
         assertThat(view.state()).isEqualTo("retrying");
         assertThat(Duration.between(clock.instant(), view.runAt())).isGreaterThanOrEqualTo(Duration.ofSeconds(8));
     }

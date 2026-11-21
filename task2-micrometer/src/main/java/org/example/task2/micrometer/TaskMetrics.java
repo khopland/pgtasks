@@ -1,5 +1,7 @@
 package org.example.task2.micrometer;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -16,8 +18,6 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import org.example.task2.engine.TaskEngine;
-import org.example.task2.spi.TaskStore.QueueCounts;
-import org.example.task2.spi.TaskStore.TopicSnapshot;
 
 /**
  * Queue gauges per topic, from the counts the housekeeping leader snapshots (every minute by
@@ -70,7 +70,7 @@ public final class TaskMetrics implements MeterBinder {
 
     /** Reads the engine's snapshots at most every 10 seconds. */
     public TaskMetrics(TaskEngine engine) {
-        this(engine::snapshots, Duration.ofSeconds(10), InstantSource.system());
+        this(engine.admin()::snapshots, Duration.ofSeconds(10), InstantSource.system());
     }
 
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Duration refresh, InstantSource clock) {

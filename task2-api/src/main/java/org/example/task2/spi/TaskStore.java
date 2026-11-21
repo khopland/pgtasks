@@ -1,5 +1,13 @@
 package org.example.task2.spi;
 
+import org.example.task2.admin.AttemptView;
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.FailureGroup;
+import org.example.task2.admin.LimitOverride;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.Schedule;
+import org.example.task2.admin.TaskView;
+import org.example.task2.admin.TopicSnapshot;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -259,36 +267,6 @@ public interface TaskStore {
     }
 
     /**
-     * Which dead letters: some by id or all, after an id (for paging, and so that reviving in
-     * batches never meets a task twice), with an error (its type, or its message if it has none,
-     * as {@link #failing} groups them), first failed in a time range. Null means any.
-     */
-    record DeadLetterQuery(Collection<Long> taskIds, long afterId, String error, Instant failedFrom, Instant failedUntil) {
-
-        public static final DeadLetterQuery ALL = new DeadLetterQuery(null, 0, null, null, null);
-
-        public DeadLetterQuery {
-            taskIds = taskIds == null ? null : List.copyOf(taskIds);
-        }
-
-        public static DeadLetterQuery ids(Collection<Long> taskIds) {
-            return new DeadLetterQuery(Objects.requireNonNull(taskIds, "taskIds"), 0, null, null, null);
-        }
-
-        public DeadLetterQuery after(long id) {
-            return new DeadLetterQuery(taskIds, id, error, failedFrom, failedUntil);
-        }
-
-        public DeadLetterQuery withError(String error) {
-            return new DeadLetterQuery(taskIds, afterId, error, failedFrom, failedUntil);
-        }
-
-        public DeadLetterQuery failedBetween(Instant from, Instant until) {
-            return new DeadLetterQuery(taskIds, afterId, error, from, until);
-        }
-    }
-
-    /**
      * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest
      * removed. A schedule whose cron or zone is unchanged keeps its next run; one whose cron or
      * zone changed starts over from {@code nextRunAt}.
@@ -312,10 +290,6 @@ public interface TaskStore {
      * largest group first, with when the longest-failing task of each first failed.
      */
     List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) throws SQLException;
-
-    /** @param example the lowest task id in the group, to look at */
-    record FailureGroup(String error, long tasks, Instant oldestFailedAt, long example, String exampleMessage) {
-    }
 
     /**
      * Records that the topic's dead letters were revived for this application version. True for
@@ -343,11 +317,6 @@ public interface TaskStore {
             Objects.requireNonNull(insertion, "insertion");
             Objects.requireNonNull(nextRunAt, "nextRunAt");
         }
-    }
-
-    /** A stored recurring task. */
-    record Schedule(int id, int topicId, String topic, String name, String identifier, String cron, String zone, Insertion insertion,
-                    String payload, String payloadType, Instant nextRunAt, Instant lastRunAt) {
     }
 
     /**
@@ -389,28 +358,6 @@ public interface TaskStore {
     }
 
     record TopicInfo(int id, String name, boolean paused) {
-    }
-
-    /**
-     * An operator's override of a configured rate limit. A null rate or burst keeps the configured
-     * value.
-     */
-    record LimitOverride(String name, Double perSecond, Integer burst, Instant until, long version, Instant updatedAt, String updatedBy) {
-
-        public LimitOverride {
-            Objects.requireNonNull(name, "name");
-            if (perSecond != null && !(perSecond > 0)) {
-                throw new IllegalArgumentException("rate must be positive; pausing is a separate switch");
-            }
-            if (burst != null && burst < 1) {
-                throw new IllegalArgumentException("burst must be at least 1");
-            }
-        }
-
-        /** Whether it changes the limit at this time: it sets something and hasn't lapsed. */
-        public boolean activeAt(Instant now) {
-            return (perSecond != null || burst != null) && (until == null || now.isBefore(until));
-        }
     }
 
     record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit, Admission admission) {
@@ -493,70 +440,7 @@ public interface TaskStore {
         DEAD_LETTER
     }
 
-    /**
-     * A task, unfinished or not.
-     *
-     * @param state           the queue state if unfinished (scheduled, retrying, ready, active,
-     *                        suspended, failed), otherwise the outcome (succeeded, filtered,
-     *                        failed, redundant, recreated)
-     * @param attempt         the current attempt if unfinished, otherwise the attempts it took
-     * @param error           the last recorded failure as JSON, kept from the first failure on
-     * @param failures        failed runs in a row while unfinished, counted or not
-     * @param firstFailedAt   when the first of those failed, or null
-     */
-    record TaskView(
-        String topic,
-        long id,
-        String identifier,
-        String state,
-        boolean finished,
-        int attempt,
-        Instant runAt,
-        int priority,
-        Integer nodeId,
-        String reference,
-        Long parentId,
-        Long rootId,
-        String payload,
-        String payloadType,
-        String output,
-        String error,
-        String previousOutcome,
-        Instant createdAt,
-        Instant completedAt,
-        int failures,
-        Instant firstFailedAt
-    ) {
-    }
-
-    /**
-     * Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has
-     * come; {@code nextRunAt} is the earliest time one of them is due, if any. {@code oldestReadyAt}
-     * is when the oldest ready task (the lowest id) was pushed, if any are ready: how long the
-     * topic's work has been waiting. A delayed task's delay counts in it. {@code failing} counts
-     * unfinished tasks whose last run failed, dead letters included, and {@code oldestFailingAt}
-     * is when the longest-failing of them first failed: the number to alert on.
-     */
-    record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
-                       Instant oldestReadyAt, long failing, Instant oldestFailingAt) {
-
-        public QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
-                           Instant oldestReadyAt) {
-            this(scheduled, retrying, ready, active, suspended, failed, due, nextRunAt, oldestReadyAt, 0, null);
-        }
-
-        public long total() {
-            return scheduled + retrying + ready + active + suspended + failed;
-        }
-    }
-
     record ActiveClaim(int topicId, long taskId, int attempt, Instant claimedAt) {
     }
 
-    record TopicSnapshot(String topic, QueueCounts counts, Instant takenAt) {
-    }
-
-    /** @param result failed or expired */
-    record AttemptView(long taskId, int attempt, Integer nodeId, String result, String error) {
-    }
 }

@@ -1,5 +1,9 @@
 package org.example.task2.spring;
 
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.LimitOverride;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -29,7 +33,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * {@code /actuator/tasks}: the topics, their settings and dead letters, and the rate limits,
- * with the operator's changes. Everything here is also library API on {@link TaskEngine}.
+ * with the operator's changes. Everything here is also library API, on {@link TaskEngine#admin()} and {@link TaskEngine#limits()}.
  *
  * <pre>
  * GET    /actuator/tasks                                   topics by module, limits, this node
@@ -69,7 +73,7 @@ public class TaskEndpoint {
     public Map<String, Object> overview() throws Exception {
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, List<String>> modules = new TreeMap<>();
-        List<Map<String, Object>> topics = engine.topicStatus().stream().map(status -> {
+        List<Map<String, Object>> topics = engine.admin().topics().stream().map(status -> {
             modules.computeIfAbsent(status.module() == null ? "(other nodes)" : status.module(), ignored -> new java.util.ArrayList<>())
                 .add(status.name());
             return topic(status);
@@ -108,7 +112,7 @@ public class TaskEndpoint {
         }
         if (part.equals("failing")) {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("failing", engine.failing(name, limit == null ? 50 : Math.clamp(limit, 1, 1_000)).stream().map(group -> {
+            body.put("failing", engine.admin().failing(name, limit == null ? 50 : Math.clamp(limit, 1, 1_000)).stream().map(group -> {
                 Map<String, Object> entry = new LinkedHashMap<>();
                 entry.put("error", group.error());
                 entry.put("tasks", group.tasks());
@@ -120,7 +124,7 @@ public class TaskEndpoint {
             return new WebEndpointResponse<>(body);
         }
         int size = limit == null ? DEAD_LETTER_PAGE : Math.clamp(limit, 1, 1_000);
-        List<TaskStore.TaskView> page = engine.deadLetters(name, after == null ? 0 : after, size);
+        List<TaskView> page = engine.admin().deadLetters(name, after == null ? 0 : after, size);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("deadLetters", page.stream().map(TaskEndpoint::task).toList());
         // The next page starts after the last id of a full one.
@@ -151,18 +155,18 @@ public class TaskEndpoint {
         body.put("topic", name);
         body.put("action", action);
         switch (action) {
-            case "pause" -> engine.pause(name);
-            case "resume" -> engine.resume(name);
-            case "create" -> engine.createTopic(name);
+            case "pause" -> engine.admin().pause(name);
+            case "resume" -> engine.admin().resume(name);
+            case "create" -> engine.admin().createTopic(name);
             case "revive", "discard" -> {
-                TaskStore.DeadLetterQuery query;
+                DeadLetterQuery query;
                 try {
                     query = deadLetterQuery(taskIds, error, failedFrom, failedUntil, all);
                 } catch (IllegalArgumentException | java.time.format.DateTimeParseException e) {
                     return badRequest(e.getMessage());
                 }
                 body.put(action.equals("revive") ? "revived" : "discarded",
-                    action.equals("revive") ? engine.revive(name, query) : engine.discard(name, query));
+                    action.equals("revive") ? engine.admin().revive(name, query) : engine.admin().discard(name, query));
             }
             case "purge" -> {
                 if (outcome == null || before == null) {
@@ -176,7 +180,7 @@ public class TaskEndpoint {
                 } catch (RuntimeException e) {
                     return badRequest(e.getMessage());
                 }
-                body.put("purged", engine.purge(name, purged, until));
+                body.put("purged", engine.admin().purge(name, purged, until));
             }
             default -> {
                 return notFound();
@@ -223,15 +227,15 @@ public class TaskEndpoint {
      * Ids, or a filter, or all of them, but only when asked for in so many words: one stray call
      * with an empty body would otherwise finish every dead letter of a topic.
      */
-    private static TaskStore.DeadLetterQuery deadLetterQuery(List<Long> taskIds, String error, String failedFrom, String failedUntil, String all) {
+    private static DeadLetterQuery deadLetterQuery(List<Long> taskIds, String error, String failedFrom, String failedUntil, String all) {
         boolean filtered = error != null || failedFrom != null || failedUntil != null;
         if (taskIds != null) {
-            return TaskStore.DeadLetterQuery.ids(taskIds);
+            return DeadLetterQuery.ids(taskIds);
         }
         if (!filtered && !"true".equalsIgnoreCase(all)) {
             throw new IllegalArgumentException("Name the dead letters: \"ids\", or \"error\", \"failedFrom\" and \"failedUntil\", or \"all\": \"true\" for every one");
         }
-        return TaskStore.DeadLetterQuery.ALL.withError(error)
+        return DeadLetterQuery.ALL.withError(error)
             .failedBetween(failedFrom == null ? null : Instant.parse(failedFrom), failedUntil == null ? null : Instant.parse(failedUntil));
     }
 
@@ -247,43 +251,35 @@ public class TaskEndpoint {
     }
 
     private List<Map<String, Object>> schedules(String topic) {
-        try {
-            return engine.schedules().stream().filter(schedule -> schedule.topic().equals(topic)).map(schedule -> {
-                Map<String, Object> body = new LinkedHashMap<>();
-                body.put("name", schedule.name());
-                body.put("cron", schedule.cron());
-                body.put("zone", schedule.zone());
-                body.put("identifier", schedule.identifier());
-                body.put("insertion", schedule.insertion().name().toLowerCase(Locale.ROOT));
-                body.put("nextRunAt", text(schedule.nextRunAt()));
-                body.put("lastRunAt", text(schedule.lastRunAt()));
-                return body;
-            }).toList();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
+        return engine.admin().schedules().stream().filter(schedule -> schedule.topic().equals(topic)).map(schedule -> {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("name", schedule.name());
+            body.put("cron", schedule.cron());
+            body.put("zone", schedule.zone());
+            body.put("identifier", schedule.identifier());
+            body.put("insertion", schedule.insertion().name().toLowerCase(Locale.ROOT));
+            body.put("nextRunAt", text(schedule.nextRunAt()));
+            body.put("lastRunAt", text(schedule.lastRunAt()));
+            return body;
+        }).toList();
     }
 
-    private Optional<TaskEngine.TopicStatus> status(String name) throws Exception {
-        return engine.topicStatus().stream().filter(status -> status.name().equals(name)).findFirst();
+    private Optional<org.example.task2.admin.TopicStatus> status(String name) {
+        return engine.admin().topic(name);
     }
 
-    private Optional<TaskStore.TaskView> task(long id) {
-        try {
-            return engine.find(id);
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
+    private Optional<TaskView> task(long id) {
+        return engine.admin().find(id);
     }
 
-    private static Map<String, Object> topic(TaskEngine.TopicStatus status) {
+    private static Map<String, Object> topic(org.example.task2.admin.TopicStatus status) {
         Map<String, Object> topic = new LinkedHashMap<>();
         topic.put("name", status.name());
         topic.put("module", status.module());
         topic.put("paused", status.paused());
         topic.put("processing", status.processing());
         topic.put("breaker", status.breakerOpen() ? "open" : "closed");
-        TaskStore.QueueCounts counts = status.counts();
+        QueueCounts counts = status.counts();
         if (counts != null) {
             Map<String, Object> queue = new LinkedHashMap<>();
             queue.put("scheduled", counts.scheduled());
@@ -318,7 +314,7 @@ public class TaskEndpoint {
                 "from", window.from().expression(), "zone", window.from().zone().getId(), "rate", window.rate().toString())).toList());
         }
         body.put("effective", rate(limit.effective()));
-        TaskStore.LimitOverride override = limit.override();
+        LimitOverride override = limit.override();
         if (override != null && (override.perSecond() != null || override.burst() != null)) {
             Map<String, Object> changed = new LinkedHashMap<>();
             changed.put("rate", override.perSecond() == null ? null : Rate.perSecond(override.perSecond()).toString());
@@ -342,7 +338,7 @@ public class TaskEndpoint {
         return rate;
     }
 
-    private static Map<String, Object> task(TaskStore.TaskView view) {
+    private static Map<String, Object> task(TaskView view) {
         Map<String, Object> task = new LinkedHashMap<>();
         task.put("id", view.id());
         task.put("topic", view.topic());

@@ -62,8 +62,8 @@ class TopicDiscoveryTest {
         TaskEngine nodeB = memoryNode("node-b", List.of(), List.of(assessments()));
         TaskEngine other = memoryNode("node-c", List.of(), List.of());
 
-        other.createTopic("assessment-2027");
-        other.createTopic("payroll-2027");
+        other.admin().createTopic("assessment-2027");
+        other.admin().createTopic("payroll-2027");
 
         EngineFixture.await("both template nodes to run it", SOON,
             () -> nodeA.processing().contains("assessment-2027") && nodeB.processing().contains("assessment-2027"));
@@ -98,8 +98,8 @@ class TopicDiscoveryTest {
         Topic<String> topic = Topic.of(TopicRef.of("topic", String.class), batch -> batch.decide(task -> Decision.success()));
         TaskEngine node = memoryNode("node-a", List.of(topic), List.of());
         for (int round = 0; round < 30; round++) {
-            node.pause("topic");
-            node.resume("topic");
+            node.admin().pause("topic");
+            node.admin().resume("topic");
             Thread.sleep(20);
             assertThat(node.processing()).as("after round %d", round).containsExactly("topic");
         }
@@ -114,7 +114,7 @@ class TopicDiscoveryTest {
         TaskEngine nodeA = memoryNode("node-a", List.of(topic), List.of());
         TaskEngine nodeB = memoryNode("node-b", List.of(topic), List.of());
 
-        nodeA.pause("topic");
+        nodeA.admin().pause("topic");
 
         EngineFixture.await("node B to stop too", SOON, () -> nodeB.processing().isEmpty());
         assertThat(nodeA.processing()).isEmpty();
@@ -122,7 +122,7 @@ class TopicDiscoveryTest {
         Thread.sleep(200);
         assertThat(processed).isEmpty();
 
-        nodeB.resume("topic");
+        nodeB.admin().resume("topic");
 
         EngineFixture.await("the waiting task to run", SOON, () -> processed.contains("while-paused"));
         assertThat(nodeA.processing()).containsExactly("topic");
@@ -138,8 +138,8 @@ class TopicDiscoveryTest {
         TaskEngine engine = memoryNode("node-a", List.of(Topic.of(TopicRef.of("topic", String.class), batch -> batch.decide(task -> Decision.success()))), List.of());
 
         assertThat(engine.processing()).isEmpty();
-        assertThatThrownBy(() -> engine.pause("missing")).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> engine.createTopic("Not A Topic")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> engine.admin().pause("missing")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> engine.admin().createTopic("Not A Topic")).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -186,21 +186,21 @@ class TopicDiscoveryTest {
             // Only a notification carries the news here, so every node must be listening first.
             List<TaskEngine> all = List.of(nodes.get(0), nodes.get(1), withTemplate, withTemplateToo);
             EngineFixture.await("every node listening", Duration.ofSeconds(5), () -> all.stream().allMatch(TopicDiscoveryTest::listening));
-            runner.createTopic("assessment-2027");
+            runner.admin().createTopic("assessment-2027");
             EngineFixture.await("both template nodes to run the new topic", SOON,
                 () -> withTemplate.processing().contains("assessment-2027") && withTemplateToo.processing().contains("assessment-2027"));
             assertThat(nodes.get(1).processing()).isEmpty();
             push(runner, "assessment-2027", "a");
             EngineFixture.await("its task to run", SOON, () -> processed.contains("assessment-2027/a"));
 
-            nodes.get(1).pause("assessment-2027");
+            nodes.get(1).admin().pause("assessment-2027");
             EngineFixture.await("both to pause it", SOON,
                 () -> withTemplate.processing().isEmpty() && withTemplateToo.processing().isEmpty());
             push(runner, "assessment-2027", "b");
             Thread.sleep(300);
             assertThat(processed).doesNotContain("assessment-2027/b");
 
-            nodes.get(1).resume("assessment-2027");
+            nodes.get(1).admin().resume("assessment-2027");
             EngineFixture.await("the waiting task to run after the resume", SOON, () -> processed.contains("assessment-2027/b"));
         } finally {
             withTemplate.stop(Duration.ofSeconds(5));

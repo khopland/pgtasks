@@ -3,6 +3,7 @@ package org.example.task2.spring;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.example.task2.admin.TaskView;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -148,7 +149,7 @@ class TaskAutoConfigurationTest {
         postgres().withUserConfiguration(Modules.class).withPropertyValues("task.topics.notify.poll-interval=1h").run(context -> {
             Tasks tasks = context.getBean(Tasks.class);
             TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).pause("notify");
+            context.getBean(TaskEngine.class).admin().pause("notify");
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 tasks.push(NOTIFY, "anna", "rolled back");
@@ -289,7 +290,7 @@ class TaskAutoConfigurationTest {
             EngineFixture.await("the order", Duration.ofSeconds(5), () -> !context.getBean(RecordTopic.class).handled.isEmpty());
 
             assertThat(context.getBean(RecordTopic.class).handled).containsExactly(new Order("o-1", 3));
-            org.example.task2.spi.TaskStore.TaskView view = engine.find(id).orElseThrow();
+            TaskView view = engine.admin().find(id).orElseThrow();
             assertThat(view.payloadType()).isEqualTo("json");
             assertThat(view.payload()).isEqualTo("{\"id\":\"o-1\",\"quantity\":3}");
         });
@@ -313,7 +314,7 @@ class TaskAutoConfigurationTest {
     void an_event_becomes_a_task_in_the_publishers_transaction() {
         postgres().withUserConfiguration(GreetingRoute.class).withPropertyValues("task.topics.notify.poll-interval=1h").run(context -> {
             TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).pause("notify");
+            context.getBean(TaskEngine.class).admin().pause("notify");
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 context.publishEvent(new Greeted("anna"));

@@ -31,16 +31,10 @@ public final class TaskEngineLifecycle implements SmartLifecycle {
 
     @Override
     public void start() {
-        try {
-            if (processing) {
-                engine.start();
-            } else {
-                engine.prepare();
-            }
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalStateException("Could not start the task engine", e);
+        if (processing) {
+            engine.start();
+        } else {
+            engine.prepare();
         }
         running = true;
     }

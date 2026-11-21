@@ -89,11 +89,11 @@ class ShutdownTest {
         TaskEngine nodeB = fixture.create("node-b", busyTopics(runs, running), templates, settings -> settings).start();
         nodeA.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 200));
         nodeA.tasks().independently().push(LIMITED, Insertion.APPEND, tasks("l", 50));
-        nodeA.createTopic("assessment-2027");
+        nodeA.admin().createTopic("assessment-2027");
         nodeA.tasks().independently().push(TopicRef.of("assessment-2027", String.class), Insertion.APPEND, tasks("a", 20));
         nodeA.limits().override("downstream", Rate.perSecond(100), null, null, "ops", null);
-        nodeA.pause(PAUSED.name());
-        nodeB.resume(PAUSED.name());
+        nodeA.admin().pause(PAUSED.name());
+        nodeB.admin().resume(PAUSED.name());
         assertThat(running.await(5, TimeUnit.SECONDS)).as("batches running on both nodes").isTrue();
         assertThat(threadsLeft()).as("the engines' threads while running").isNotEmpty();
 
@@ -140,7 +140,7 @@ class ShutdownTest {
         CountDownLatch running = new CountDownLatch(1);
         TaskEngine engine = engines.start("node-a", busyTopics(runs, running));
         engine.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 50));
-        engine.pause(PAUSED.name());
+        engine.admin().pause(PAUSED.name());
         assertThat(running.await(5, TimeUnit.SECONDS)).isTrue();
 
         engine.stop(Duration.ofSeconds(5));

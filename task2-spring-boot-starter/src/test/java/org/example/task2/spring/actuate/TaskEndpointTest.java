@@ -131,7 +131,7 @@ class TaskEndpointTest {
     @Test
     void dead_letters_are_listed_and_revived() throws Exception {
         long id = tasks.independently().push(WORK, "a", "flaky-a").id();
-        EngineFixture.await("the task is dead-lettered", Duration.ofSeconds(5), () -> unchecked(() -> !engine.deadLetters("work", 0, 10).isEmpty()));
+        EngineFixture.await("the task is dead-lettered", Duration.ofSeconds(5), () -> unchecked(() -> !engine.admin().deadLetters("work", 0, 10).isEmpty()));
 
         Response dead = get("/tasks/topics/work/dead-letters?limit=10");
         assertThat(dead.status()).isEqualTo(200);

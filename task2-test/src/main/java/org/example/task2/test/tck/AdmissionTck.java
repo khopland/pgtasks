@@ -3,6 +3,7 @@ package org.example.task2.test.tck;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import org.example.task2.admin.LimitOverride;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -91,11 +92,11 @@ public abstract class AdmissionTck extends StoreTck {
         assertThat(mine.size() + theirs.size()).isEqualTo(3);
     }
 
-    private static List<TaskStore.LimitOverride> overrides(StoreFixture fixture) throws SQLException {
+    private static List<LimitOverride> overrides(StoreFixture fixture) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().limitOverrides(transaction));
     }
 
-    private Optional<TaskStore.LimitOverride> override(StoreFixture fixture, Double rate, Integer burst, Long expected) throws SQLException {
+    private Optional<LimitOverride> override(StoreFixture fixture, Double rate, Integer burst, Long expected) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().overrideLimit(transaction, limit.name(), rate, burst, null, "ops", expected));
     }
 
@@ -104,10 +105,10 @@ public abstract class AdmissionTck extends StoreTck {
         StoreFixture fixture = setUp();
         assertThat(overrides(fixture)).isEmpty();
 
-        TaskStore.LimitOverride first = override(fixture, 20.0, null, 0L).orElseThrow();
-        Optional<TaskStore.LimitOverride> stale = override(fixture, 5.0, null, 0L);
-        TaskStore.LimitOverride second = override(fixture, null, 8, first.version()).orElseThrow();
-        TaskStore.LimitOverride forced = override(fixture, 30.0, 9, null).orElseThrow();
+        LimitOverride first = override(fixture, 20.0, null, 0L).orElseThrow();
+        Optional<LimitOverride> stale = override(fixture, 5.0, null, 0L);
+        LimitOverride second = override(fixture, null, 8, first.version()).orElseThrow();
+        LimitOverride forced = override(fixture, 30.0, 9, null).orElseThrow();
 
         assertThat(first.version()).isEqualTo(1);
         assertThat(first.perSecond()).isEqualTo(20.0);
@@ -131,8 +132,8 @@ public abstract class AdmissionTck extends StoreTck {
     @Test
     void a_reset_keeps_the_row_so_the_version_only_grows() throws SQLException {
         StoreFixture fixture = setUp();
-        TaskStore.LimitOverride set = override(fixture, 20.0, 5, 0L).orElseThrow();
-        TaskStore.LimitOverride reset = override(fixture, null, null, set.version()).orElseThrow();
+        LimitOverride set = override(fixture, 20.0, 5, 0L).orElseThrow();
+        LimitOverride reset = override(fixture, null, null, set.version()).orElseThrow();
 
         assertThat(reset.version()).isEqualTo(2);
         assertThat(reset.activeAt(fixture.store().clock().instant())).isFalse();
@@ -147,7 +148,7 @@ public abstract class AdmissionTck extends StoreTck {
 
         fixture.advance(Duration.ofSeconds(61));
 
-        TaskStore.LimitOverride override = overrides(fixture).getFirst();
+        LimitOverride override = overrides(fixture).getFirst();
         assertThat(override.activeAt(fixture.store().clock().instant())).isFalse();
     }
 

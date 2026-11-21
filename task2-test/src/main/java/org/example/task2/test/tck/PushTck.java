@@ -7,6 +7,8 @@ import static org.example.task2.test.tck.StoreFixture.delayed;
 import static org.example.task2.test.tck.StoreFixture.suspended;
 import static org.example.task2.test.tck.StoreFixture.task;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -18,7 +20,6 @@ import org.example.task2.Insertion;
 import org.example.task2.Pushed;
 import org.example.task2.spi.StoreTransaction;
 import org.example.task2.spi.TaskStore;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.Test;
 
 /** TCK: pushes and the four insertion policies. */
@@ -61,8 +62,8 @@ public abstract class PushTck extends StoreTck {
         assertThat(pushed).extracting(Pushed::id).extracting(fixture::state).containsExactly("scheduled", "suspended", "ready");
         assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
             .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
-        TaskStore.QueueCounts counts = fixture.counts(topic);
-        assertThat(counts).isEqualTo(new TaskStore.QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt()));
+        QueueCounts counts = fixture.counts(topic);
+        assertThat(counts).isEqualTo(new QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt()));
         assertThat(counts.nextRunAt()).isEqualTo(fixture.view(pushed.getFirst().id()).orElseThrow().runAt());
         assertThat(counts.oldestReadyAt()).isEqualTo(fixture.view(pushed.get(2).id()).orElseThrow().createdAt());
     }

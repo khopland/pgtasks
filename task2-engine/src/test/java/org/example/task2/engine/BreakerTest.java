@@ -81,7 +81,7 @@ class BreakerTest {
 
         tester.awaitIdle();
         assertThat(engine.health().openBreakers()).containsExactly("work");
-        assertThat(engine.topicStatus()).singleElement().extracting(TaskEngine.TopicStatus::breakerOpen).isEqualTo(true);
+        assertThat(engine.admin().topics()).singleElement().extracting(org.example.task2.admin.TopicStatus::breakerOpen).isEqualTo(true);
         int beforeWaiting = runs.get();
         assertThat(beforeWaiting).as("the first batch opened it; the second ran beside it").isBetween(10, 20);
 
@@ -101,7 +101,7 @@ class BreakerTest {
 
         assertThat(engine.health().openBreakers()).isEmpty();
         assertThat(tester.counts(WORK).total()).isZero();
-        long counted = IntStream.range(0, 20).mapToLong(index -> unchecked(() -> engine.find(index + 1).orElseThrow().attempt())).max().orElseThrow();
+        long counted = IntStream.range(0, 20).mapToLong(index -> unchecked(() -> engine.admin().find(index + 1).orElseThrow().attempt())).max().orElseThrow();
         assertThat(counted).as("only the failures before the breaker opened counted").isLessThanOrEqualTo(2);
     }
 
@@ -116,7 +116,7 @@ class BreakerTest {
 
         assertThat(runs).hasValue(30);
         assertThat(engine.health().openBreakers()).isEmpty();
-        assertThat(engine.find(poison).orElseThrow().state()).isEqualTo("failed");
+        assertThat(engine.admin().find(poison).orElseThrow().state()).isEqualTo("failed");
     }
 
     private static <V> V unchecked(java.util.concurrent.Callable<V> call) {

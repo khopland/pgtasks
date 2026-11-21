@@ -1,5 +1,11 @@
 package org.example.task2.engine;
 
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.FailureGroup;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.Schedule;
+import org.example.task2.admin.TaskView;
+import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -13,6 +19,7 @@ import java.util.random.RandomGenerator;
 import java.util.stream.Stream;
 
 import org.example.task2.PayloadCodec;
+import org.example.task2.TaskStorageException;
 import org.example.task2.Tasks;
 import org.example.task2.TopicRef;
 import org.example.task2.spi.Notifier;
@@ -29,8 +36,8 @@ import org.example.task2.spi.TaskStore;
  * so a lost notification delays a change by at most one heartbeat. A paused topic's running
  * batches finish; nothing is claimed from it until it is resumed.
  *
- * <p>Wiring is plain constructor arguments for now; the configuration model with defaults,
- * per-module configurers and overrides comes in a later phase.
+ * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}
+ * and {@link #limits()}. Every method throws only unchecked exceptions.
  */
 public final class TaskEngine implements AutoCloseable {
 
@@ -43,6 +50,7 @@ public final class TaskEngine implements AutoCloseable {
     private final List<TopicTemplate<?>> templates;
     private final TopicDirectory directory;
     private final DefaultTasks tasks;
+    private final TaskAdmin admin;
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
     private final Map<Integer, TopicWorker<?>> workersById = new ConcurrentHashMap<>();
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
@@ -86,6 +94,7 @@ public final class TaskEngine implements AutoCloseable {
             topicsByName.put(topic.ref().name(), topic);
         }
         this.directory = new TopicDirectory(store);
+        this.admin = new TaskAdmin(this, store);
         this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake,
             settings.observer());
     }
@@ -113,11 +122,6 @@ public final class TaskEngine implements AutoCloseable {
     /** The recurring tasks this node's configurers define; see {@link TaskRegistry#recurring}. */
     public List<Recurring<?>> recurring() {
         return recurring;
-    }
-
-    /** Every topic's recurring tasks as stored, with their next and last runs. */
-    public List<TaskStore.Schedule> schedules() throws Exception {
-        return EngineCore.transact(store, store::schedules);
     }
 
     /** What a topic's stored recurring tasks should be, by this node's configuration, with their payloads encoded. */
@@ -190,6 +194,16 @@ public final class TaskEngine implements AutoCloseable {
         return tasks;
     }
 
+    /** The operator's side: topics, tasks, dead letters and retention, across the cluster. */
+    public TaskAdmin admin() {
+        return admin;
+    }
+
+    /** The topics whose breaker is open on this node. */
+    List<String> openBreakers() {
+        return workersByName.values().stream().filter(TopicWorker::breakerOpen).map(worker -> worker.topic().ref().name()).sorted().toList();
+    }
+
     public int nodeId() {
         if (nodeId < 0) {
             throw new IllegalStateException("Not started");
@@ -204,9 +218,14 @@ public final class TaskEngine implements AutoCloseable {
      * Spring starter's {@code task.enabled=false}: its pushes work whichever node starts first,
      * and the nodes that process the topics pick them up. {@link #start()} does this first.
      */
-    public synchronized TaskEngine prepare() throws Exception {
+    public synchronized TaskEngine prepare() {
+        Unchecked.run("Preparing the task store", this::prepareStore);
+        return this;
+    }
+
+    private void prepareStore() throws Exception {
         if (prepared) {
-            return this;
+            return;
         }
         store.prepare();
         List<RateLimit> configured = Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
@@ -230,7 +249,6 @@ public final class TaskEngine implements AutoCloseable {
         });
         limits.refresh();
         prepared = true;
-        return this;
     }
 
     /** Whether this engine processes tasks: started and not stopped. A node that only pushes never starts. */
@@ -238,10 +256,22 @@ public final class TaskEngine implements AutoCloseable {
         return started;
     }
 
-    public synchronized TaskEngine start() throws Exception {
+    /**
+     * Prepares the store, registers this node and starts processing: a poll loop per topic it
+     * runs, housekeeping, and listening for notifications. Can be called again after
+     * {@link #stop}.
+     *
+     * @throws TaskStorageException if the store can't be reached or refuses
+     */
+    public synchronized TaskEngine start() {
         if (started) {
             throw new IllegalStateException("Already started");
         }
+        Unchecked.run("Starting the task engine", this::startProcessing);
+        return this;
+    }
+
+    private void startProcessing() throws Exception {
         prepare();
         if (stopped) {
             // Started again after a stop, as Spring does on context.stop() and start(): the
@@ -308,7 +338,6 @@ public final class TaskEngine implements AutoCloseable {
             }
             throw e;
         }
-        return this;
     }
 
     /**
@@ -400,187 +429,14 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     /**
-     * Registers a topic, so every node with a handler for it starts processing it: one registered
-     * by name, or matching a {@link TopicTemplate}. Idempotent.
-     */
-    public void createTopic(String name) throws Exception {
-        TopicRef.of(name, Object.class);
-        EngineCore.transact(store, transaction -> store.createTopic(transaction, name));
-        reconcileTopics();
-    }
-
-    /** Pauses a topic on every node: pushes are still taken, nothing is claimed. Running batches finish. */
-    public void pause(String topic) throws Exception {
-        setPaused(topic, true);
-    }
-
-    /** Resumes a paused topic on every node. */
-    public void resume(String topic) throws Exception {
-        setPaused(topic, false);
-    }
-
-    private void setPaused(String topic, boolean paused) throws Exception {
-        if (!EngineCore.transact(store, transaction -> store.setPaused(transaction, topic, paused))) {
-            throw new IllegalArgumentException("Unknown topic '" + topic + "'");
-        }
-        reconcileTopics();
-    }
-
-    /**
-     * Every topic's queue counts as the housekeeping leader last recorded them, by topic name. They
-     * are at most one snapshot interval old (a minute by default), so dashboards and health checks
-     * can read them as often as they like without counting the queue.
-     */
-    public List<TaskStore.TopicSnapshot> snapshots() throws Exception {
-        return EngineCore.transact(store, store::snapshots);
-    }
-
-    /**
-     * One topic as an operator sees it: registered in the store, paused or not, processed on this
-     * node or not, which module registered it here, and its last snapshotted counts.
-     *
-     * @param module   the configurer that registered the topic on this node, or null
-     * @param counts   from the last snapshot, or null if none was taken yet
-     */
-    public record TopicStatus(String name, boolean paused, boolean processing, String module, TaskStore.QueueCounts counts,
-                              java.time.Instant countedAt, boolean breakerOpen) {
-    }
-
-    /** Every topic in the store, by name. */
-    public List<TopicStatus> topicStatus() throws Exception {
-        List<TaskStore.TopicInfo> all = EngineCore.transact(store, store::topics);
-        Map<String, TaskStore.TopicSnapshot> counts = new HashMap<>();
-        snapshots().forEach(snapshot -> counts.put(snapshot.topic(), snapshot));
-        Map<String, String> modules = new HashMap<>();
-        effectiveSettings.forEach(settings -> modules.put(settings.topic(), settings.module()));
-        Set<String> processing = processing();
-        return all.stream()
-            .sorted(java.util.Comparator.comparing(TaskStore.TopicInfo::name))
-            .map(topic -> {
-                TaskStore.TopicSnapshot snapshot = counts.get(topic.name());
-                TopicWorker<?> worker = workersByName.get(topic.name());
-                return new TopicStatus(topic.name(), topic.paused(), processing.contains(topic.name()), modules.get(topic.name()),
-                    snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt(), worker != null && worker.breakerOpen());
-            })
-            .toList();
-    }
-
-    /** A task, finished or not, as tasks.task_view shows it. */
-    public java.util.Optional<TaskStore.TaskView> find(long taskId) throws Exception {
-        return EngineCore.transact(store, transaction -> store.find(transaction, taskId));
-    }
-
-    /** What is failing in a topic: its failing tasks grouped by error, the largest group first. */
-    public List<TaskStore.FailureGroup> failing(String topic, int limit) throws Exception {
-        int id = topicId(topic);
-        return EngineCore.transact(store, transaction -> store.failing(transaction, id, limit));
-    }
-
-    /** A page of a topic's dead letters, lowest id first, after {@code afterId} (0 for the first page). */
-    public List<TaskStore.TaskView> deadLetters(String topic, long afterId, int limit) throws Exception {
-        int id = topicId(topic);
-        return EngineCore.transact(store, transaction -> store.deadLetters(transaction, id, afterId, limit));
-    }
-
-    /**
-     * Gives dead letters another round of attempts, with the topic's whole retry policy.
-     *
-     * @param taskIds the dead letters to revive, or null for all of the topic's; others are skipped
-     * @return how many were revived
-     */
-    public int revive(String topic, java.util.Collection<Long> taskIds) throws Exception {
-        return revive(topic, taskIds == null ? TaskStore.DeadLetterQuery.ALL : TaskStore.DeadLetterQuery.ids(taskIds));
-    }
-
-    /** Revives the dead letters that match, such as those with one error type, first failed in a time range. */
-    public int revive(String topic, TaskStore.DeadLetterQuery query) throws Exception {
-        int id = topicId(topic);
-        int revived = inBatches(query, (transaction, batch, limit) -> store.revive(transaction, id, batch, limit));
-        if (revived > 0) {
-            wake(topic);
-        }
-        return revived;
-    }
-
-    /**
-     * Gives up on dead letters: they finish as failed, kept as long as the topic's retention for
-     * failed tasks says, and tasks they held back under an ordering run next.
-     *
-     * @param taskIds as for {@link #revive}
-     * @return how many were discarded
-     */
-    public int discard(String topic, java.util.Collection<Long> taskIds) throws Exception {
-        return discard(topic, taskIds == null ? TaskStore.DeadLetterQuery.ALL : TaskStore.DeadLetterQuery.ids(taskIds));
-    }
-
-    /** Discards the dead letters that match. */
-    public int discard(String topic, TaskStore.DeadLetterQuery query) throws Exception {
-        int id = topicId(topic);
-        int discarded = inBatches(query, (transaction, batch, limit) -> store.discard(transaction, id, batch, limit));
-        if (discarded > 0) {
-            wake(topic);
-        }
-        return discarded;
-    }
-
-    /** Deletes a topic's finished tasks with an outcome that finished before a time, as retention does. Returns how many. */
-    public long purge(String topic, org.example.task2.Outcome outcome, java.time.Instant finishedBefore) throws Exception {
-        int id = topicId(topic);
-        long total = 0;
-        while (true) {
-            int purged = EngineCore.transact(store, transaction -> store.purge(transaction, id, outcome, finishedBefore, BATCH));
-            total += purged;
-            if (purged < BATCH) {
-                return total;
-            }
-        }
-    }
-
-    private static final int BATCH = 1_000;
-
-    @FunctionalInterface
-    private interface DeadLetterWork {
-        List<Long> apply(org.example.task2.spi.StoreTransaction transaction, TaskStore.DeadLetterQuery query, int limit) throws Exception;
-    }
-
-    /**
-     * Given ids in one transaction; otherwise a batch per transaction, so a large topic doesn't
-     * hold locks for long. Each batch starts after the last one's highest id: a revived task that
-     * fails straight back into the dead letters isn't revived again by the same call.
-     */
-    private int inBatches(TaskStore.DeadLetterQuery query, DeadLetterWork work) throws Exception {
-        if (query.taskIds() != null) {
-            return query.taskIds().isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, query.taskIds().size())).size();
-        }
-        int total = 0;
-        TaskStore.DeadLetterQuery next = query;
-        while (true) {
-            TaskStore.DeadLetterQuery batch = next;
-            List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
-            total += done.size();
-            if (done.size() < BATCH) {
-                return total;
-            }
-            next = batch.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
-        }
-    }
-
-    /** A page of the dead letters that match. */
-    public List<TaskStore.TaskView> deadLetters(String topic, TaskStore.DeadLetterQuery query, int limit) throws Exception {
-        int id = topicId(topic);
-        return EngineCore.transact(store, transaction -> store.deadLetters(transaction, id, query, limit));
-    }
-
-    private int topicId(String topic) throws Exception {
-        return EngineCore.transact(store, transaction -> store.findTopic(transaction, topic))
-            .orElseThrow(() -> new IllegalArgumentException("Unknown topic '" + topic + "'"));
-    }
-
-    /**
      * How this node is doing: heartbeat, leadership, notifications and claims stuck past their
      * deadline. Reads this node's active claims, so it fails if the database can't be reached.
      */
-    public EngineHealth health() throws Exception {
+    public EngineHealth health() {
+        return Unchecked.call("Checking the engine's health", this::checkHealth);
+    }
+
+    private EngineHealth checkHealth() throws Exception {
         Duration term = settings.leaseTerm();
         if (!started) {
             return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(), List.of());
@@ -662,9 +518,9 @@ public final class TaskEngine implements AutoCloseable {
                 continue;
             }
             try {
-                int id = topicId(topic.ref().name());
+                int id = admin.topicId(topic.ref().name());
                 if (EngineCore.transact(store, transaction -> store.claimRevival(transaction, id, version))) {
-                    int revived = revive(topic.ref().name(), TaskStore.DeadLetterQuery.ALL);
+                    int revived = admin.revive(topic.ref().name(), DeadLetterQuery.ALL);
                     LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + topic.ref() + " for version " + version);
                 }
             } catch (Exception e) {
@@ -678,7 +534,7 @@ public final class TaskEngine implements AutoCloseable {
         for (TopicWorker<?> worker : List.copyOf(workersByName.values())) {
             java.time.Duration every = worker.topic().settings().deadLetters().reviveEvery();
             if (every != null && EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, worker.topicId(), every))) {
-                int revived = revive(worker.topic().ref().name(), TaskStore.DeadLetterQuery.ALL);
+                int revived = admin.revive(worker.topic().ref().name(), DeadLetterQuery.ALL);
                 if (revived > 0) {
                     LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + worker.topic().ref() + ", as it does every " + every);
                 }

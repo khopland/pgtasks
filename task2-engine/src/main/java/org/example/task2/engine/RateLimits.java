@@ -1,5 +1,6 @@
 package org.example.task2.engine;
 
+import org.example.task2.admin.LimitOverride;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -13,7 +14,6 @@ import java.util.TreeMap;
 import java.util.function.Consumer;
 
 import org.example.task2.spi.TaskStore;
-import org.example.task2.spi.TaskStore.LimitOverride;
 
 /**
  * The rate limits of this node's topics, and operators' overrides of them (plan section 08).
@@ -78,7 +78,7 @@ public final class RateLimits {
      * @throws VersionConflictException if the limit's version isn't {@code ifVersion}
      * @throws IllegalArgumentException if no node has configured the limit
      */
-    public Limit override(String name, Rate rate, Integer burst, Duration lasting, String by, Long ifVersion) throws Exception {
+    public Limit override(String name, Rate rate, Integer burst, Duration lasting, String by, Long ifVersion) {
         Objects.requireNonNull(name, "name");
         if (rate == null && burst == null) {
             throw new IllegalArgumentException("An override sets a rate, a burst or both; use reset(...) to go back to the configured values");
@@ -87,7 +87,7 @@ public final class RateLimits {
             throw new IllegalArgumentException("An override must last a positive time");
         }
         Instant until = lasting == null ? null : store.clock().instant().plus(lasting);
-        return change(name, rate == null ? null : rate.perSecond(), burst, until, by, ifVersion);
+        return Unchecked.call("Overriding rate limit " + name, () -> change(name, rate == null ? null : rate.perSecond(), burst, until, by, ifVersion));
     }
 
     /**
@@ -95,8 +95,9 @@ public final class RateLimits {
      *
      * @throws VersionConflictException if the limit's version isn't {@code ifVersion}
      */
-    public Limit reset(String name, String by, Long ifVersion) throws Exception {
-        return change(Objects.requireNonNull(name, "name"), null, null, null, by, ifVersion);
+    public Limit reset(String name, String by, Long ifVersion) {
+        Objects.requireNonNull(name, "name");
+        return Unchecked.call("Resetting rate limit " + name, () -> change(name, null, null, null, by, ifVersion));
     }
 
     private Limit change(String name, Double perSecond, Integer burst, Instant until, String by, Long ifVersion) throws Exception {

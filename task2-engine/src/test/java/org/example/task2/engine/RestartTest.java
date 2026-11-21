@@ -40,7 +40,7 @@ class RestartTest {
             try (TaskEngine other = TaskEngine.builder().store(store).globals(slowHeartbeat)
                 .configure("other", tasks -> tasks.topic(OTHER, batch -> batch.decide(task -> Decision.success())))
                 .build().start()) {
-                other.pause("work");
+                other.admin().pause("work");
                 EngineFixture.await("the pause to reach the restarted engine", Duration.ofSeconds(5),
                     () -> !engine.processing().contains("work"));
             }

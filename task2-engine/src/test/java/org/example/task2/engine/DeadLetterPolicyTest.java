@@ -53,12 +53,12 @@ class DeadLetterPolicyTest {
         TaskEngine first = start("1.0", policy);
         long id = first.tasks().independently().push(WORK, "a", "payload").id();
         TaskTester.of(first).awaitIdle();
-        assertThat(first.find(id).orElseThrow().state()).isEqualTo("failed");
+        assertThat(first.admin().find(id).orElseThrow().state()).isEqualTo("failed");
         first.close();
 
         TaskEngine restarted = start("1.0", policy);
         TaskTester.of(restarted).awaitIdle();
-        assertThat(restarted.find(id).orElseThrow().state()).as("the same version doesn't revive again").isEqualTo("failed");
+        assertThat(restarted.admin().find(id).orElseThrow().state()).as("the same version doesn't revive again").isEqualTo("failed");
         restarted.close();
 
         fixed.set(true);
@@ -66,7 +66,7 @@ class DeadLetterPolicyTest {
         TaskEngine sameVersion = start("1.1", policy);
         TaskTester.of(upgraded, sameVersion).awaitIdle();
 
-        assertThat(upgraded.find(id).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(upgraded.admin().find(id).orElseThrow().state()).isEqualTo("succeeded");
         assertThat(runs).as("one failure, one run after the revival").hasValue(2);
     }
 
@@ -77,15 +77,15 @@ class DeadLetterPolicyTest {
         TaskTester tester = TaskTester.of(engine);
         long id = engine.tasks().independently().push(WORK, "a", "payload").id();
         tester.awaitIdle();
-        assertThat(engine.find(id).orElseThrow().state()).isEqualTo("failed");
+        assertThat(engine.admin().find(id).orElseThrow().state()).isEqualTo("failed");
 
         tester.advance(Duration.ofHours(1));
         tester.awaitIdle();
-        assertThat(engine.find(id).orElseThrow().state()).as("not yet").isEqualTo("failed");
+        assertThat(engine.admin().find(id).orElseThrow().state()).as("not yet").isEqualTo("failed");
 
         fixed.set(true);
         tester.advance(Duration.ofHours(6));
         tester.awaitIdle();
-        assertThat(engine.find(id).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(engine.admin().find(id).orElseThrow().state()).isEqualTo("succeeded");
     }
 }

@@ -127,7 +127,7 @@ class ObserverTest {
             .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success())))
             .build()
             .start();
-        engine.pause("work");
+        engine.admin().pause("work");
         engine.tasks().independently().push(WORK, "a", "ok");
         assertThat(observer.events).containsExactly("pushing work 1", "pushed-written work", "pushed work 1");
     }

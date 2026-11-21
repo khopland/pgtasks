@@ -5,6 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.example.task2.test.tck.StoreFixture.completion;
 import static org.example.task2.test.tck.StoreFixture.task;
 
+import org.example.task2.admin.AttemptView;
+import org.example.task2.admin.FailureGroup;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -13,9 +17,7 @@ import java.util.List;
 import org.example.task2.Insertion;
 import org.example.task2.spi.StaleClaimException;
 import org.example.task2.spi.TaskStore;
-import org.example.task2.spi.TaskStore.AttemptView;
 import org.example.task2.spi.TaskStore.ClaimedTask;
-import org.example.task2.spi.TaskStore.TaskView;
 import org.junit.jupiter.api.Test;
 
 /** TCK: fenced completion, retries, dead letters, promotion and expiry. */
@@ -206,11 +208,11 @@ public abstract class CompletionTck extends StoreTck {
             fixture.complete(topic, node, claimed, resolution);
         }
 
-        TaskStore.QueueCounts counts = fixture.counts(topic);
+        QueueCounts counts = fixture.counts(topic);
         assertThat(counts.failing()).as("retrying and dead-lettered alike").isEqualTo(3);
         assertThat(counts.oldestFailingAt()).isNotNull();
-        List<TaskStore.FailureGroup> groups = fixture.inTransaction(transaction -> fixture.store().failing(transaction, topic, 10));
-        assertThat(groups).extracting(TaskStore.FailureGroup::error, TaskStore.FailureGroup::tasks).containsExactly(
+        List<FailureGroup> groups = fixture.inTransaction(transaction -> fixture.store().failing(transaction, topic, 10));
+        assertThat(groups).extracting(FailureGroup::error, FailureGroup::tasks).containsExactly(
             org.assertj.core.groups.Tuple.tuple("java.net.ConnectException", 2L),
             org.assertj.core.groups.Tuple.tuple("gave up", 1L));
         assertThat(groups.getFirst().exampleMessage()).isEqualTo("refused");
