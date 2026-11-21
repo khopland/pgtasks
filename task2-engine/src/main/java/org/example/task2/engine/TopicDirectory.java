@@ -24,6 +24,11 @@ final class TopicDirectory {
         createOnPush = true;
     }
 
+    /** Whether the topic's id is known here already, so looking it up costs nothing. */
+    boolean known(String name) {
+        return createOnPush || ids.containsKey(name);
+    }
+
     void register(String name, int id) {
         ids.put(name, id);
     }

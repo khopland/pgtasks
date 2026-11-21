@@ -61,6 +61,9 @@ final class Housekeeper {
     private ScheduledExecutorService beats, jobs, slow;
     /** How long one retention run may delete before it leaves the rest to the next run. */
     static final Duration PURGE_BUDGET = Duration.ofSeconds(30);
+    private final Duration purgeBudget;
+    /** The topic a retention run ran out of time in; the next run starts with the one after it. */
+    private Integer purgeStoppedAt;
 
     /**
      * @param wake         wakes this node's worker for a topic id
@@ -69,6 +72,11 @@ final class Housekeeper {
      *                     lost: the topics it runs and paused, the rate limit overrides
      */
     Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reconcile) {
+        this(store, settings, nodeId, wake, sweepOrphans, reconcile, PURGE_BUDGET);
+    }
+
+    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reconcile, Duration purgeBudget) {
+        this.purgeBudget = purgeBudget;
         this.store = store;
         this.settings = settings;
         this.nodeId = nodeId;
@@ -261,20 +269,29 @@ final class Housekeeper {
     /**
      * Deletes finished tasks past their retention, counted from completion, a batch at a time,
      * for at most {@link #PURGE_BUDGET}: after downtime, or after retention was shortened, the rest
-     * waits for the next run rather than holding the job.
+     * waits for the next run rather than holding the job. A run that runs out of time leaves the
+     * next run to start with the following topic, so a topic with a large backlog can't keep the
+     * others from ever being purged.
      */
     private void purge() throws Exception {
         Instant now = store.clock().instant();
-        long deadline = System.nanoTime() + PURGE_BUDGET.toNanos();
-        Map<Integer, Map<Outcome, Period>> retention = EngineCore.transact(store, store::retention);
-        for (Map.Entry<Integer, Map<Outcome, Period>> topic : retention.entrySet()) {
-            for (Map.Entry<Outcome, Period> kept : topic.getValue().entrySet()) {
+        long deadline = System.nanoTime() + purgeBudget.toNanos();
+        Map<Integer, Map<Outcome, Period>> retention = new java.util.TreeMap<>(EngineCore.transact(store, store::retention));
+        List<Integer> order = new java.util.ArrayList<>(retention.keySet());
+        if (purgeStoppedAt != null) {
+            int start = (int) order.stream().filter(id -> id <= purgeStoppedAt).count();
+            java.util.Collections.rotate(order, -start);
+        }
+        purgeStoppedAt = null;
+        for (int topic : order) {
+            for (Map.Entry<Outcome, Period> kept : retention.get(topic).entrySet()) {
                 Instant cutoff = now.atZone(ZoneOffset.UTC).minus(kept.getValue()).toInstant();
                 int deleted;
                 do {
-                    deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic.getKey(), kept.getKey(), cutoff, BATCH));
+                    deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic, kept.getKey(), cutoff, BATCH));
                     if (System.nanoTime() > deadline) {
-                        LOGGER.log(System.Logger.Level.INFO, "Retention used its " + PURGE_BUDGET + " for this run; it goes on in " + settings.purgeInterval());
+                        purgeStoppedAt = topic;
+                        LOGGER.log(System.Logger.Level.INFO, "Retention used its " + purgeBudget + " for this run; it goes on in " + settings.purgeInterval());
                         return;
                     }
                 } while (deleted == BATCH && leading());

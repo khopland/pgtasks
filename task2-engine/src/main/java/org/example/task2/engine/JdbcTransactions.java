@@ -39,7 +39,11 @@ public final class JdbcTransactions implements TransactionBinding {
         T run(Connection connection) throws Exception;
     }
 
-    /** Commits when the callback returns and rolls back when it throws. Does not nest. */
+    /**
+     * Commits when the callback returns and rolls back when it throws. Does not nest. If an
+     * action registered to run after the commit fails, the transaction has still committed, and
+     * the exception says so.
+     */
     public <T> T inTransaction(Callback<T> callback) throws Exception {
         if (CURRENT.isBound()) {
             throw new IllegalStateException("Already in a transaction");
@@ -48,11 +52,10 @@ public final class JdbcTransactions implements TransactionBinding {
             boolean autoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
             Bound bound = new Bound(connection);
+            T result;
             try {
-                T result = ScopedValue.where(CURRENT, bound).call(() -> callback.run(connection));
+                result = ScopedValue.where(CURRENT, bound).call(() -> callback.run(connection));
                 connection.commit();
-                bound.committed();
-                return result;
             } catch (Exception | Error e) {
                 try {
                     connection.rollback();
@@ -63,6 +66,12 @@ public final class JdbcTransactions implements TransactionBinding {
             } finally {
                 connection.setAutoCommit(autoCommit);
             }
+            try {
+                bound.committed();
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("The transaction committed, but an action after the commit failed", e);
+            }
+            return result;
         }
     }
 

@@ -211,6 +211,29 @@ final class DefaultTasks implements Tasks {
         return tasks;
     }
 
+    /**
+     * Fails now, in the handler, if downstream work for this topic couldn't be written at the
+     * completion: no codec for its payloads, or no such topic. Otherwise one task's mistake would
+     * fail the whole batch's completion. The topic is looked up once, then known.
+     */
+    void checkTarget(TopicRef<?> topic, boolean needsCodec) {
+        if (needsCodec) {
+            codec(topic);
+        }
+        if (topics.known(topic.name())) {
+            return;
+        }
+        try {
+            EngineCore.transact(store, transaction -> topics.id(transaction, topic.name()));
+        } catch (SQLException e) {
+            throw new TaskStorageException("Could not look up topic " + topic, e);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     int topicId(StoreTransaction transaction, String topic) throws SQLException {
         return topics.id(transaction, topic);
     }

@@ -45,6 +45,33 @@ class FailureHandlingTest {
         return engine.find(id).orElseThrow();
     }
 
+    /** Review 2026-11-21: one task pushing to a topic that doesn't exist failed the whole batch's completion. */
+    @Test
+    void a_push_to_a_topic_that_doesnt_exist_fails_only_the_task_that_staged_it() throws Exception {
+        TopicRef<String> next = TopicRef.of("next", String.class);
+        List<String> nexts = new CopyOnWriteArrayList<>();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure("work", tasks -> tasks
+                .topic(WORK, batch -> batch.decide(task -> {
+                    task.push(task.payload().equals("typo") ? TopicRef.of("nxet", String.class) : next, task.identifier(), task.payload());
+                    return Decision.success();
+                }), topic -> topic.retry(Retry.none()))
+                .topic(next, batch -> batch.decide(task -> {
+                    nexts.add(task.payload());
+                    return Decision.success();
+                })))
+            .build()
+            .start();
+        engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(Creation.of("a", "fine"), Creation.of("b", "typo"), Creation.of("c", "fine too")));
+        TaskTester.of(engine).awaitIdle();
+
+        assertThat(nexts).containsExactlyInAnyOrder("fine", "fine too");
+        TaskView typo = engine.find(2).orElseThrow();
+        assertThat(typo.state()).isEqualTo("failed");
+        assertThat(typo.error()).contains("Unknown topic 'nxet'");
+    }
+
     /** Review 2026-11-21: an undecodable payload was retried as a counted failure for a week, about 343 times. */
     @Test
     void a_payload_the_codec_cant_decode_is_dead_lettered_at_once() throws Exception {

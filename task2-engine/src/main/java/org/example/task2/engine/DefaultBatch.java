@@ -25,11 +25,19 @@ final class DefaultBatch<T> implements Batch<T> {
     private final TopicRef<T> topic;
     private final List<Task<T>> tasks;
     private final Map<BatchResource<?>, Object> resources;
+    /** Checks a staged push's or junction's target topic; see {@link DefaultTasks#checkTarget}. */
+    private final java.util.function.BiConsumer<TopicRef<?>, Boolean> targets;
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources) {
+        this(topic, tasks, resources, (target, codec) -> { });
+    }
+
+    DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources,
+                 java.util.function.BiConsumer<TopicRef<?>, Boolean> targets) {
         this.topic = topic;
         this.tasks = List.copyOf(tasks);
         this.resources = resources;
+        this.targets = targets;
     }
 
     @Override
@@ -58,7 +66,7 @@ final class DefaultBatch<T> implements Batch<T> {
             if (Thread.currentThread().isInterrupted()) {
                 throw new CancellationException("Batch cancelled");
             }
-            StagedWork<T> work = new StagedWork<>(task);
+            StagedWork<T> work = new StagedWork<>(task, targets);
             decisions.decide(task, decideOne(decider, work), work.pushes, work.junctions);
         }
         return decisions.build();
@@ -69,7 +77,7 @@ final class DefaultBatch<T> implements Batch<T> {
         if (parallelism < 1) {
             throw new IllegalArgumentException("parallelism must be at least 1");
         }
-        List<StagedWork<T>> works = tasks.stream().map(StagedWork::new).toList();
+        List<StagedWork<T>> works = tasks.stream().map(task -> new StagedWork<>(task, targets)).toList();
         java.util.concurrent.Semaphore running = new java.util.concurrent.Semaphore(parallelism);
         java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("task2-" + topic.name() + "-task-", 0).factory());
@@ -132,11 +140,13 @@ final class DefaultBatch<T> implements Batch<T> {
     private static final class StagedWork<T> implements Work<T> {
 
         private final Task<T> task;
+        private final java.util.function.BiConsumer<TopicRef<?>, Boolean> targets;
         private final List<Push<?>> pushes = new ArrayList<>();
         private final List<Junction> junctions = new ArrayList<>();
 
-        StagedWork(Task<T> task) {
+        StagedWork(Task<T> task, java.util.function.BiConsumer<TopicRef<?>, Boolean> targets) {
             this.task = task;
+            this.targets = targets;
         }
 
         @Override
@@ -146,12 +156,16 @@ final class DefaultBatch<T> implements Batch<T> {
 
         @Override
         public <C> void push(TopicRef<C> topic, Insertion insertion, Creation<C> creation) {
-            pushes.add(new Push<>(topic, insertion, creation));
+            Push<C> push = new Push<>(topic, insertion, creation);
+            targets.accept(topic, true);
+            pushes.add(push);
         }
 
         @Override
         public void junction(TopicRef<?> topic, Juncture juncture, Set<String> identifiers) {
-            junctions.add(new Junction(topic, juncture, identifiers));
+            Junction junction = new Junction(topic, juncture, identifiers);
+            targets.accept(topic, false);
+            junctions.add(junction);
         }
     }
 }

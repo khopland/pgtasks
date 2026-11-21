@@ -90,6 +90,19 @@ class TasksTest {
         }
     }
 
+    /** Review 2026-11-21: an after-commit action that threw was reported like a failed transaction. */
+    @Test
+    void an_action_after_the_commit_that_fails_says_the_transaction_committed() {
+        assertThatThrownBy(() -> transactions.inTransaction(connection -> {
+            tasks.push(TOPIC, "x", "payload");
+            transactions.current().orElseThrow().afterCommit(() -> {
+                throw new IllegalStateException("a listener failed");
+            });
+            return null;
+        })).hasMessage("The transaction committed, but an action after the commit failed").hasRootCauseMessage("a listener failed");
+        assertThat(stored()).isEqualTo(1);
+    }
+
     @Test
     void independently_commits_on_its_own() throws Exception {
         assertThatThrownBy(() -> transactions.inTransaction(connection -> {

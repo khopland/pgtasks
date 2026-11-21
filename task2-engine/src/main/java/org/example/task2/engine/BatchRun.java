@@ -163,7 +163,7 @@ final class BatchRun<T> {
             for (BatchResource<?> resource : topic.resources()) {
                 opened.put(resource, resource.open(topic.ref(), tasks));
             }
-            DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened);
+            DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened, core.tasks()::checkTarget);
             Decisions handled = covering(scope.call(() -> {
                 try (TaskObserver.Scope ignored = observation.open()) {
                     return topic.handler().handle(batch);

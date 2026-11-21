@@ -36,9 +36,12 @@ public interface BatchResource<R> {
     }
 
     /**
-     * After the completion committed: external effects and wake-ups. These can't be rolled
-     * back and run again if a worker dies before this point, so deduplicate them with
-     * {@link Task#idempotencyKey()}.
+     * After the completion committed: external effects and wake-ups. These can't be rolled back,
+     * and they are not guaranteed to run exactly once: they run again if the worker dies before
+     * this point and the task is retried, so deduplicate them with {@link Task#idempotencyKey()};
+     * and they don't run at all if the commit succeeded but its reply was lost, since the engine
+     * can't tell the commit happened. Something that must happen with the completion belongs in
+     * {@link #beforeCommit}, or in a task pushed there.
      */
     default void afterCommit(R resource, Decisions finalDecisions) {
     }

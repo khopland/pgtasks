@@ -66,6 +66,8 @@ public final class TaskEngine implements AutoCloseable {
     private boolean prepared;
     /** Whether it was started and stopped before, so a start must switch the reloads back on. */
     private boolean stopped;
+    /** How long one retention run may take; shorter in tests. */
+    Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
         this(store, settings, topics, List.of());
@@ -249,7 +251,7 @@ public final class TaskEngine implements AutoCloseable {
             limits.resumeRefreshing();
             limits.refresh();
         }
-        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version != null ? version : version()));
+        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, limits, settings.observer());
         notifier = settings.notifier();
@@ -287,7 +289,7 @@ public final class TaskEngine implements AutoCloseable {
                 reconcileTopics();
                 limits.refresh();
                 reviveSweep();
-            });
+            }, purgeBudget);
             housekeeper.start();
             reviveForVersion();
             started = true;
@@ -808,11 +810,6 @@ public final class TaskEngine implements AutoCloseable {
     @Override
     public void close() {
         stop(Duration.ofSeconds(30));
-    }
-
-    private static String version() {
-        String version = TaskEngine.class.getPackage().getImplementationVersion();
-        return version == null ? "dev" : version;
     }
 
     @Override

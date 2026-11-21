@@ -101,6 +101,29 @@ class HousekeepingTest {
         assertThat(snapshots).extracting(TaskStore.TopicSnapshot::topic).contains(TOPIC.name());
     }
 
+    /** Review 2026-11-21: every run started with the same topics, so one that used the whole budget starved the rest. */
+    @Test
+    void a_retention_run_out_of_time_leaves_the_next_run_to_start_with_the_following_topic() throws Exception {
+        TopicRef<String> second = TopicRef.of("second", String.class);
+        TopicSettings kept = TopicSettings.defaults().withRetention(Map.of(Outcome.SUCCEEDED, Period.ofDays(1)));
+        TaskEngine engine = engines.create("node-a", List.of(topic().getFirst().with(kept),
+            Topic.of(second, batch -> batch.decide(task -> Decision.success())).with(kept)), settings -> settings);
+        engine.purgeBudget = Duration.ZERO; // every run stops after its first batch
+        engine.start();
+        TaskTester tester = engines.tester();
+        long first = engine.tasks().independently().push(TOPIC, "a", "ok").id();
+        long other = engine.tasks().independently().push(second, "b", "ok").id();
+        tester.awaitIdle();
+
+        tester.advance(Duration.ofDays(2));
+        assertThat(java.util.stream.Stream.of(first, other).filter(id -> tester.find(id).isPresent()))
+            .as("each run purges one topic, then runs out of time").hasSize(1);
+
+        tester.advance(Duration.ofSeconds(1));
+        assertThat(tester.find(first)).as("the next run starts with the other topic").isEmpty();
+        assertThat(tester.find(other)).isEmpty();
+    }
+
     @Test
     void retention_deletes_finished_tasks_per_outcome_counted_from_completion() throws Exception {
         TaskEngine engine = engines.start("node-a", List.of(topic().getFirst().with(TopicSettings.defaults()
