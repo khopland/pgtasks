@@ -20,6 +20,14 @@ public sealed interface Decision {
         return Success.INSTANCE;
     }
 
+    /**
+     * Done, with a result to keep on the task, such as a receipt or a reference in another
+     * system: stored in {@code tasks.task.output}, shown by {@code admin().find(id)}.
+     */
+    static Decision success(String output) {
+        return new Success(java.util.Objects.requireNonNull(output, "output"));
+    }
+
     /** Irrelevant, so processing stops here. Not a failure, and nothing downstream runs. */
     static Decision filtered(@Nullable String reason) {
         return new Filtered(reason);
@@ -85,8 +93,9 @@ public sealed interface Decision {
         };
     }
 
-    record Success() implements Decision {
-        static final Success INSTANCE = new Success();
+    /** @param output what to keep on the task, or null */
+    record Success(@Nullable String output) implements Decision {
+        static final Success INSTANCE = new Success(null);
 
         @Override
         public int severity() {

@@ -101,4 +101,14 @@ class HandlerShapesTest {
         assertThat(engine.admin().find(1).orElseThrow().error())
             .contains("from a handler of notify: there is no transaction to join. Stage the push with task.push(...)");
     }
+
+    @Test
+    void a_success_can_keep_an_output_on_the_task() {
+        TaskEngine engine = started(TaskEngine.builder().store(new InMemoryTaskStore()).configure("notify", tasks -> tasks
+            .topic(NOTIFY, batch -> batch.decide(task -> org.example.task2.Decision.success("receipt-" + task.identifier())))));
+        long id = engine.tasks().independently().push(NOTIFY, "a", "hello").id();
+        TaskTester.of(engine).awaitIdle();
+
+        assertThat(engine.admin().find(id).orElseThrow().output()).isEqualTo("receipt-a");
+    }
 }

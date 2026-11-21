@@ -382,7 +382,7 @@ final class BatchRun<T> {
     private Completion completion(ClaimedTask claim, Decision decision) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
-            case Decision.Success ignored -> new Resolution.Finished(Outcome.SUCCEEDED, null);
+            case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, success.output());
             case Decision.Filtered filtered -> new Resolution.Finished(Outcome.FILTERED, filtered.reason());
             case Decision.Suspended ignored -> new Resolution.Waiting(WaitState.SUSPENDED, null, false, null);
             case Decision.Later later -> new Resolution.Waiting(WaitState.SCHEDULED, later.delay(), false, null);
