@@ -58,6 +58,27 @@ class BuilderTest {
         return engine.effectiveSettings().stream().filter(each -> each.topic().equals(topic)).findFirst().orElseThrow();
     }
 
+    /** Review 2026-11-21: resources in the global defaults were accepted and never used. */
+    @Test
+    void resources_from_every_layer_of_defaults_are_opened_in_order() throws Exception {
+        List<String> opened = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.function.Function<String, org.example.task2.BatchResource<String>> resource = name -> (topic, tasks) -> {
+            opened.add(name + ":" + topic.name());
+            return name;
+        };
+        engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .globals(globals -> globals.defaults(defaults -> defaults.resources(resource.apply("global"))))
+            .configure("notify", tasks -> tasks
+                .defaults(defaults -> defaults.resources(resource.apply("module")))
+                .codec(Notice.class, NOTICES)
+                .topic(NOTIFY, batch -> batch.decide(task -> Decision.success()), topic -> topic.resources(resource.apply("topic"))))
+            .build().start();
+        engine.tasks().independently().push(NOTIFY, "anna", new Notice("hello"));
+        TaskTester.of(engine).awaitIdle();
+
+        assertThat(opened).containsExactly("global:notify", "module:notify", "topic:notify");
+    }
+
     @Test
     void a_topic_needs_only_a_name_a_type_and_a_handler() throws Exception {
         engine = TaskEngine.builder().store(new InMemoryTaskStore()).configure(notifyTasks()).build().start();

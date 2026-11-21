@@ -519,7 +519,9 @@ public final class TaskEngineBuilder {
                         topic.spec.sources.put(key, Source.MODULE_DEFAULTS);
                     }
                 });
+                // Global defaults' resources first, then the module's, then the topic's own.
                 topic.spec.resources.addAll(0, moduleDefaults.resources);
+                topic.spec.resources.addAll(0, global.defaults.resources);
             }
         }
 
