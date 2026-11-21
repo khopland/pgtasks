@@ -66,6 +66,7 @@ public final class TaskEngineBuilder {
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
+    private String version;
     private boolean topicsCreatedOnPush;
     private boolean notifications = true;
     private Notifier notifier;
@@ -147,6 +148,15 @@ public final class TaskEngineBuilder {
      */
     public TaskEngineBuilder topicsCreatedOnPush(boolean create) {
         this.topicsCreatedOnPush = create;
+        return this;
+    }
+
+    /**
+     * The application's version, recorded with this node in tasks.node, and what a topic that
+     * revives its dead letters on a new version compares; see {@link DeadLetterPolicy}.
+     */
+    public TaskEngineBuilder version(String version) {
+        this.version = version;
         return this;
     }
 
@@ -275,6 +285,11 @@ public final class TaskEngineBuilder {
         @Override
         public TopicOptions breaker(Breaker breaker) {
             return set("breaker", Objects.requireNonNull(breaker));
+        }
+
+        @Override
+        public TopicOptions deadLetters(DeadLetterPolicy policy) {
+            return set("dead-letters", Objects.requireNonNull(policy));
         }
 
         @Override
@@ -576,6 +591,7 @@ public final class TaskEngineBuilder {
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
         TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes)
             .withRecurring(recurring);
+        engine.withVersion(version);
         return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
     }
 
@@ -598,6 +614,7 @@ public final class TaskEngineBuilder {
         values.put("batch-deadline", defaults.batchDeadline());
         values.put("poll-interval", defaults.pollInterval());
         values.put("breaker", defaults.breaker());
+        values.put("dead-letters", defaults.deadLetters());
         for (Outcome outcome : Outcome.values()) {
             Period period = defaults.retention().get(outcome);
             values.put("retain." + outcome.label(), period == null ? "forever" : period);
@@ -647,7 +664,8 @@ public final class TaskEngineBuilder {
             (Duration) values.get("poll-interval"),
             rateLimit,
             retention,
-            (Breaker) values.get("breaker")
+            (Breaker) values.get("breaker"),
+            (DeadLetterPolicy) values.get("dead-letters")
         );
         return topic.pattern
             ? new TopicTemplate<>(topic.name, topic.type, topic.handler, codec, settings, topic.spec.resources)
@@ -754,6 +772,7 @@ public final class TaskEngineBuilder {
         return switch (value) {
             case Retry retry -> retry.describe();
             case Breaker breaker -> breaker.describe();
+            case DeadLetterPolicy policy -> policy.describe();
             default -> String.valueOf(value);
         };
     }

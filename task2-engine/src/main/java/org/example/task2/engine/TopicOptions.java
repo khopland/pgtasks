@@ -35,4 +35,7 @@ public interface TopicOptions {
 
     /** When the topic stops claiming because most of its recent tasks fail; {@link Breaker#off()} for never. */
     TopicOptions breaker(Breaker breaker);
+
+    /** Whether dead letters are revived on a new application version, or every so often; kept until someone acts by default. */
+    TopicOptions deadLetters(DeadLetterPolicy policy);
 }

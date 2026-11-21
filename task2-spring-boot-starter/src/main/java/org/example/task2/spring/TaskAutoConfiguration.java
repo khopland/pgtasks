@@ -47,7 +47,8 @@ public class TaskAutoConfiguration {
     @Bean(destroyMethod = "") // the lifecycle drains it; close() would drain it a second time
     @ConditionalOnMissingBean
     public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ConfigurableListableBeanFactory beans,
-                                 Environment environment, ObjectProvider<TaskObserver> observer) {
+                                 Environment environment, ObjectProvider<TaskObserver> observer,
+                                 ObjectProvider<org.springframework.boot.info.BuildProperties> build) {
         TaskEngineBuilder builder = TaskEngine.builder()
             .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
             .notifications(properties.notifications())
@@ -69,6 +70,8 @@ public class TaskAutoConfiguration {
         configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
         beans.getBeansOfType(TaskGlobals.class).forEach(builder::globals);
         observer.ifUnique(builder::observer);
+        builder.version(properties.version() != null ? properties.version()
+            : build.getIfAvailable() != null ? build.getIfAvailable().getVersion() : null);
         // A module test runs one module's topics; pushes to the others' are stored for its assertions.
         builder.topicsCreatedOnPush(ModuleNames.inModuleTest(beans));
         return builder.build();

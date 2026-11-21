@@ -61,6 +61,7 @@ public final class TaskEngine implements AutoCloseable {
     private List<EffectiveSettings> effectiveSettings = List.of();
     private List<EventRoute<?>> eventRoutes = List.of();
     private List<Recurring<?>> recurring = List.of();
+    private String version;
     private volatile boolean started;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
@@ -132,6 +133,11 @@ public final class TaskEngine implements AutoCloseable {
         return specs;
     }
 
+    TaskEngine withVersion(String version) {
+        this.version = version;
+        return this;
+    }
+
     TaskEngine withTopicsCreatedOnPush() {
         directory.createOnPush();
         return this;
@@ -186,7 +192,7 @@ public final class TaskEngine implements AutoCloseable {
             throw new IllegalStateException("Already started");
         }
         store.prepare();
-        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version()));
+        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version != null ? version : version()));
         List<RateLimit> configured = Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
             templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
         limits = new RateLimits(store, configured, this::limitChanged);
@@ -241,8 +247,10 @@ public final class TaskEngine implements AutoCloseable {
         housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
             reconcileTopics();
             limits.refresh();
+            reviveSweep();
         });
         housekeeper.start();
+        reviveForVersion();
         started = true;
         try {
             reconcileTopics();
@@ -582,9 +590,52 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /** If this node leads, runs expiry, promotion, retention and count snapshots once, now. */
+    /**
+     * The first node of a new application version revives the dead letters of the topics that ask
+     * for it, once per version across the cluster: a fix that is deployed gets another go at what
+     * failed before it. Nodes of the old version may still run some of them during a rolling deploy.
+     */
+    private void reviveForVersion() {
+        if (version == null) {
+            if (topics.stream().anyMatch(topic -> topic.settings().deadLetters().reviveOnNewVersion())) {
+                LOGGER.log(System.Logger.Level.WARNING, "Some topics revive their dead letters on a new version, but the engine has no version; "
+                    + "set it with TaskEngineBuilder.version(...) (the Spring starter takes it from BuildProperties)");
+            }
+            return;
+        }
+        for (Topic<?> topic : topics) {
+            if (!topic.settings().deadLetters().reviveOnNewVersion()) {
+                continue;
+            }
+            try {
+                int id = topicId(topic.ref().name());
+                if (EngineCore.transact(store, transaction -> store.claimRevival(transaction, id, version))) {
+                    int revived = revive(topic.ref().name(), TaskStore.DeadLetterQuery.ALL);
+                    LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + topic.ref() + " for version " + version);
+                }
+            } catch (Exception e) {
+                LOGGER.log(System.Logger.Level.WARNING, "Could not revive the dead letters of " + topic.ref() + " for version " + version, e);
+            }
+        }
+    }
+
+    /** Revives the dead letters of topics that sweep them every so often, if it's time, once across the cluster. */
+    private void reviveSweep() throws Exception {
+        for (TopicWorker<?> worker : List.copyOf(workersByName.values())) {
+            java.time.Duration every = worker.topic().settings().deadLetters().reviveEvery();
+            if (every != null && EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, worker.topicId(), every))) {
+                int revived = revive(worker.topic().ref().name(), TaskStore.DeadLetterQuery.ALL);
+                if (revived > 0) {
+                    LOGGER.log(System.Logger.Level.INFO, "Revived " + revived + " dead letter(s) of " + worker.topic().ref() + ", as it does every " + every);
+                }
+            }
+        }
+    }
+
+    /** If this node leads, runs expiry, promotion, retention and count snapshots once, now; and any dead-letter sweep due. */
     void runLeaderJobsNow() throws Exception {
         if (started) {
+            reviveSweep();
             housekeeper.runLeaderJobsNow();
         }
     }

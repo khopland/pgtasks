@@ -310,6 +310,15 @@ public interface TaskStore {
     record FailureGroup(String error, long tasks, Instant oldestFailedAt, long example, String exampleMessage) {
     }
 
+    /**
+     * Records that the topic's dead letters were revived for this application version. True for
+     * the first node of the version to ask, false for every other: they are revived once.
+     */
+    boolean claimRevival(StoreTransaction transaction, int topicId, String version) throws SQLException;
+
+    /** Claims a sweep of the topic's dead letters: true at most once per {@code every}, across the cluster. */
+    boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) throws SQLException;
+
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
 

@@ -782,6 +782,29 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
+    public boolean claimRevival(StoreTransaction transaction, int topicId, String version) {
+        MemoryTransaction memory = memory(transaction);
+        Rows.Topic topic = topics.get(topicId);
+        if (topic == null || Objects.equals(topic.revivedVersion(), version)) {
+            return false;
+        }
+        memory.put(topics, topicId, topic.revivedFor(version));
+        return true;
+    }
+
+    @Override
+    public boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) {
+        MemoryTransaction memory = memory(transaction);
+        Rows.Topic topic = topics.get(topicId);
+        Instant now = now();
+        if (topic == null || topic.reviveSweptAt() != null && topic.reviveSweptAt().isAfter(now.minus(every))) {
+            return false;
+        }
+        memory.put(topics, topicId, topic.sweptAt(now));
+        return true;
+    }
+
+    @Override
     public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) {
         memory(transaction);
         Map<String, List<Rows.Queued>> groups = new HashMap<>();

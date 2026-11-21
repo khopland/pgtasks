@@ -123,6 +123,28 @@ public abstract class DeadLetterTck extends StoreTck {
     }
 
     @Test
+    void revival_is_claimed_once_per_version_and_a_sweep_once_per_interval() throws Exception {
+        StoreFixture fixture = setUp();
+        assertThat(claimRevival(fixture, "1.0")).as("the first node of 1.0").isTrue();
+        assertThat(claimRevival(fixture, "1.0")).as("every other node of 1.0").isFalse();
+        assertThat(claimRevival(fixture, "1.1")).isTrue();
+        assertThat(claimRevival(fixture, "1.0")).as("going back is a new version too").isTrue();
+
+        assertThat(claimSweep(fixture)).isTrue();
+        assertThat(claimSweep(fixture)).isFalse();
+        fixture.advance(java.time.Duration.ofHours(2));
+        assertThat(claimSweep(fixture)).isTrue();
+    }
+
+    private boolean claimRevival(StoreFixture fixture, String version) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().claimRevival(transaction, topic, version));
+    }
+
+    private boolean claimSweep(StoreFixture fixture) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().claimReviveSweep(transaction, topic, java.time.Duration.ofHours(1)));
+    }
+
+    @Test
     void reviving_all_takes_the_oldest_up_to_the_limit() throws SQLException {
         StoreFixture fixture = setUp();
         long first = deadLetter(fixture, topic, "a");

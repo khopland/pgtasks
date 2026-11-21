@@ -47,7 +47,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups;
+    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -352,6 +352,17 @@ public final class PostgresTaskStore implements TaskStore {
             FOR UPDATE OF s SKIP LOCKED
             """);
         scheduleFired = sql("UPDATE tasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
+        // One row update decides which node of a new version, or which sweep, revives the dead letters.
+        claimRevival = sql("""
+            UPDATE tasks.topic SET revived_version = :version::text
+            WHERE id = :topic::integer AND revived_version IS DISTINCT FROM :version::text
+            RETURNING id
+            """);
+        claimReviveSweep = sql("""
+            UPDATE tasks.topic SET revive_swept_at = now()
+            WHERE id = :topic::integer AND (revive_swept_at IS NULL OR revive_swept_at <= now() - :every::bigint * interval '1 millisecond')
+            RETURNING id
+            """);
         // queue_failing_idx keeps this to the topic's failing tasks.
         failingGroups = sql("""
             SELECT coalesce(t.error->>'type', t.error->>'message', 'unknown') AS error, count(*) AS tasks,
@@ -1403,6 +1414,23 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return result;
+    }
+
+    @Override
+    public boolean claimRevival(StoreTransaction transaction, int topicId, String version) throws SQLException {
+        try (PreparedStatement statement = claimRevival.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("version", version));
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next();
+        }
+    }
+
+    @Override
+    public boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) throws SQLException {
+        try (PreparedStatement statement = claimReviveSweep.prepare(transaction.connection(),
+                 NamedSql.parameters().set("topic", topicId).set("every", every.toMillis()));
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next();
+        }
     }
 
     @Override

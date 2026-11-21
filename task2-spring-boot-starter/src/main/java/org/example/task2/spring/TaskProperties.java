@@ -39,6 +39,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param limits          per rate limit: rate (such as 400/s) and burst
  * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
  *                        Spring Modulith module tests get one without it
+ * @param version         the application's version, for topics that revive their dead letters
+ *                        on a new version; by default the build's, from {@code BuildProperties}
+ *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)
  */
 @ConfigurationProperties("task")
 public record TaskProperties(
@@ -49,7 +52,8 @@ public record TaskProperties(
     @DefaultValue("30s") Duration shutdownTimeout,
     Map<String, Map<String, String>> topics,
     Map<String, Map<String, String>> limits,
-    @DefaultValue("false") boolean testing
+    @DefaultValue("false") boolean testing,
+    String version
 ) {
 
     public enum Store { POSTGRES, MEMORY }

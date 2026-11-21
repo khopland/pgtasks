@@ -37,7 +37,11 @@ CREATE TABLE tasks.topic (
     -- How long finished tasks are kept per outcome, as ISO periods: {"succeeded": "P30D"}. Set by
     -- the nodes that run the topic, so whichever node leads housekeeping applies it. NULL: kept forever.
     retention   jsonb CHECK (jsonb_typeof(retention) = 'object'),
-    created_at  timestamptz NOT NULL DEFAULT now()
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    -- The application version the dead letters were last revived for, and when they were last
+    -- swept, so a cluster revives them once per version and once per sweep interval.
+    revived_version  text,
+    revive_swept_at  timestamptz
 );
 
 CREATE TABLE tasks.node (
