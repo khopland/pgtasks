@@ -1,0 +1,227 @@
+package org.example.task2.spring;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.example.task2.Decision;
+import org.example.task2.Tasks;
+import org.example.task2.TopicRef;
+import org.example.task2.engine.EffectiveSettings;
+import org.example.task2.engine.EngineFixture;
+import org.example.task2.engine.Rate;
+import org.example.task2.engine.TaskConfigurer;
+import org.example.task2.engine.TaskEngine;
+import org.example.task2.engine.TaskGlobals;
+import org.example.task2.test.PostgresDatabase;
+import org.example.task2.test.TestPostgres;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionTemplate;
+
+class TaskAutoConfigurationTest {
+
+    static final TopicRef<String> NOTIFY = TopicRef.of("notify", String.class);
+    static final TopicRef<String> ASSESSMENT = TopicRef.of("assessment", String.class);
+
+    private PostgresDatabase database;
+
+    @BeforeEach
+    void setUp() {
+        database = TestPostgres.createDatabase();
+    }
+
+    @AfterEach
+    void tearDown() {
+        database.close();
+    }
+
+    /** Postgres through Spring Boot's own DataSource and transaction manager. */
+    private ApplicationContextRunner postgres() {
+        return new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class, DataSourceTransactionManagerAutoConfiguration.class,
+                TaskAutoConfiguration.class))
+            .withPropertyValues(
+                "spring.datasource.url=" + database.jdbcUrl(),
+                "spring.datasource.username=" + database.user(),
+                "spring.datasource.password=" + database.password());
+    }
+
+    private static ApplicationContextRunner memory() {
+        return new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(TaskAutoConfiguration.class))
+            .withPropertyValues("task.store=memory");
+    }
+
+    /** Two modules, each with its own configurer and handler. */
+    @Configuration(proxyBeanMethods = false)
+    static class Modules {
+        final List<String> handled = new CopyOnWriteArrayList<>();
+
+        @Bean
+        TaskConfigurer notifyTasks() {
+            return tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> {
+                handled.add(task.payload());
+                return Decision.success();
+            }));
+        }
+
+        @Bean
+        TaskConfigurer assessmentTasks() {
+            return tasks -> tasks.defaults(options -> options.concurrency(8))
+                .topic(ASSESSMENT, batch -> batch.decide(task -> Decision.success()), options -> options.limit("register"));
+        }
+
+        @Bean
+        TaskGlobals taskSettings() {
+            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(200)));
+        }
+    }
+
+    @Test
+    void configurer_beans_are_merged_into_one_engine_that_runs_with_the_context() {
+        postgres().withUserConfiguration(Modules.class).run(context -> {
+            assertThat(context).hasNotFailed().hasSingleBean(TaskEngine.class).hasSingleBean(Tasks.class);
+            TaskEngine engine = context.getBean(TaskEngine.class);
+            assertThat(engine.processing()).containsExactlyInAnyOrder("notify", "assessment");
+            assertThat(engine.effectiveSettings()).extracting(EffectiveSettings::topic, EffectiveSettings::module)
+                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("notify", "notifyTasks"),
+                    org.assertj.core.groups.Tuple.tuple("assessment", "assessmentTasks"));
+            assertThat(setting(engine, "assessment", "concurrency")).isEqualTo(new EffectiveSettings.Setting("8", EffectiveSettings.Source.MODULE_DEFAULTS));
+
+            context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
+            EngineFixture.await("the task ran", Duration.ofSeconds(5), () -> context.getBean(Modules.class).handled.contains("hello"));
+        });
+    }
+
+    @Test
+    void task_properties_override_what_the_code_sets() {
+        postgres().withUserConfiguration(Modules.class)
+            .withPropertyValues("task.topics.assessment.concurrency=3", "task.topics.assessment.retry.max-attempts=2",
+                "task.topics.notify.poll-interval=5s", "task.limits.register.rate=40/s", "task.node=pod-1")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                TaskEngine engine = context.getBean(TaskEngine.class);
+                assertThat(setting(engine, "assessment", "concurrency")).isEqualTo(new EffectiveSettings.Setting("3", EffectiveSettings.Source.OVERRIDE));
+                assertThat(setting(engine, "assessment", "retry").value()).startsWith("2 attempts");
+                assertThat(setting(engine, "notify", "poll-interval")).isEqualTo(new EffectiveSettings.Setting("PT5S", EffectiveSettings.Source.OVERRIDE));
+                assertThat(engine.limits().find("register")).hasValueSatisfying(limit -> assertThat(limit.configured().perSecond()).isEqualTo(40.0));
+                assertThat(database.rows("SELECT name FROM tasks.node")).containsExactly(List.of("pod-1"));
+            });
+    }
+
+    @Test
+    void an_override_for_a_topic_no_configurer_defines_fails_startup() {
+        postgres().withUserConfiguration(Modules.class).withPropertyValues("task.topics.asessment.concurrency=3").run(context ->
+            assertThat(context).hasFailed().getFailure().rootCause().hasMessageContaining("topics.asessment.concurrency names an unknown topic"));
+    }
+
+    @Test
+    void two_configurers_registering_one_topic_fail_startup_naming_both_beans() {
+        postgres().withUserConfiguration(Modules.class)
+            .withBean("lateNotifyTasks", TaskConfigurer.class, () -> tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> Decision.success())))
+            .run(context -> assertThat(context).hasFailed().getFailure().rootCause()
+                .hasMessageContainingAll("Topic notify is registered by both", "notifyTasks", "lateNotifyTasks"));
+    }
+
+    @Test
+    void without_a_data_source_startup_fails_instead_of_choosing_memory() {
+        new ApplicationContextRunner().withConfiguration(AutoConfigurations.of(TaskAutoConfiguration.class)).run(context ->
+            assertThat(context).hasFailed().getFailure().rootCause().hasMessage(TaskAutoConfiguration.NO_DATA_SOURCE));
+    }
+
+    @Test
+    void a_push_joins_the_spring_transaction_on_postgres() {
+        postgres().withUserConfiguration(Modules.class).withPropertyValues("task.topics.notify.poll-interval=1h").run(context -> {
+            Tasks tasks = context.getBean(Tasks.class);
+            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+            context.getBean(TaskEngine.class).pause("notify");
+
+            assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+                tasks.push(NOTIFY, "anna", "rolled back");
+                assertThat(database.count("SELECT count(*) FROM tasks.task")).as("not visible before the commit").isZero();
+                throw new IllegalStateException("the application's work failed");
+            })).hasMessage("the application's work failed");
+            assertThat(database.count("SELECT count(*) FROM tasks.task")).isZero();
+
+            transaction.executeWithoutResult(status -> tasks.push(NOTIFY, "anna", "committed"));
+            assertThat(database.rows("SELECT payload FROM tasks.task")).containsExactly(List.of("committed"));
+
+            assertThatThrownBy(() -> tasks.push(NOTIFY, "anna", "no transaction")).hasMessageContaining("there is none");
+        });
+    }
+
+    @Test
+    void stopping_the_context_drains_the_engine() {
+        postgres().withUserConfiguration(Modules.class).run(context -> {
+            TaskEngine engine = context.getBean(TaskEngine.class);
+            context.close();
+            assertThat(engine.processing()).isEmpty();
+            assertThat(database.count("SELECT count(*) FROM tasks.lease")).isZero();
+        });
+    }
+
+    @Test
+    void an_engine_of_the_applications_own_wins() {
+        memory().withUserConfiguration(Modules.class)
+            .withBean(TaskEngine.class, () -> TaskEngine.builder().store(new org.example.task2.memory.InMemoryTaskStore()).build())
+            .run(context -> assertThat(context.getBean(TaskEngine.class).processing()).isEmpty());
+    }
+
+    /** In memory, a push inside a Spring transaction is held back until it commits. */
+    @Test
+    void in_memory_a_push_waits_for_the_commit() {
+        memory().withUserConfiguration(Modules.class).withBean(PlatformTransactionManager.class, NoResources::new).run(context -> {
+            assertThat(context).hasNotFailed();
+            Tasks tasks = context.getBean(Tasks.class);
+            Modules modules = context.getBean(Modules.class);
+            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+
+            assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+                tasks.push(NOTIFY, "anna", "rolled back");
+                throw new IllegalStateException("the application's work failed");
+            })).hasMessage("the application's work failed");
+            transaction.executeWithoutResult(status -> tasks.push(NOTIFY, "anna", "committed"));
+
+            EngineFixture.await("the committed task ran", Duration.ofSeconds(5), () -> modules.handled.contains("committed"));
+            assertThat(modules.handled).containsExactly("committed");
+        });
+    }
+
+    private static EffectiveSettings.Setting setting(TaskEngine engine, String topic, String key) {
+        return engine.effectiveSettings().stream().filter(each -> each.topic().equals(topic)).findFirst().orElseThrow().settings().get(key);
+    }
+
+    /** A transaction manager without a resource, as an app on the in-memory store might have. */
+    static final class NoResources extends AbstractPlatformTransactionManager {
+        @Override
+        protected Object doGetTransaction() {
+            return new Object();
+        }
+
+        @Override
+        protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {
+        }
+
+        @Override
+        protected void doCommit(DefaultTransactionStatus status) {
+        }
+
+        @Override
+        protected void doRollback(DefaultTransactionStatus status) {
+        }
+    }
+}

@@ -58,6 +58,7 @@ public final class TaskEngineBuilder {
 
     private TaskStore store;
     private DataSource dataSource;
+    private String node = "node";
     private final Map<String, String> storeOptions = new HashMap<>();
     private final List<Named<TaskConfigurer>> configurers = new ArrayList<>();
     private final List<Named<TaskGlobals>> globals = new ArrayList<>();
@@ -73,6 +74,15 @@ public final class TaskEngineBuilder {
     /** Tasks live in this database, through the store a provider on the classpath offers for it. */
     public TaskEngineBuilder dataSource(DataSource dataSource) {
         this.dataSource = Objects.requireNonNull(dataSource);
+        return this;
+    }
+
+    /**
+     * This node's name, shown in tasks.node and in logs, such as the application's name. A
+     * {@link TaskGlobals} that sets {@link GlobalOptions#node} takes precedence.
+     */
+    public TaskEngineBuilder node(String name) {
+        this.node = Objects.requireNonNull(name);
         return this;
     }
 
@@ -281,7 +291,7 @@ public final class TaskEngineBuilder {
     }
 
     private final class Globals implements GlobalOptions, GlobalOptions.HousekeepingOptions {
-        EngineSettings settings = EngineSettings.defaults("node");
+        EngineSettings settings = EngineSettings.defaults(node);
         final Spec defaults = new Spec(Source.GLOBAL_DEFAULTS);
         final Map<String, LimitSpec> limits = new LinkedHashMap<>();
 
