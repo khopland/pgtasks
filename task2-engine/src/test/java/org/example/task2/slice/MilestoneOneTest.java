@@ -53,8 +53,8 @@ class MilestoneOneTest {
     static PostgresExtension postgres = EngineFixture.extension();
 
     /** Retries that wait for the test: makeDue() releases them. */
-    private static final Retry PARKED = new Retry(5, Duration.ofHours(1), 1, Duration.ofHours(1), 0);
-    private static final Retry FAST = new Retry(5, Duration.ofMillis(50), 2, Duration.ofMillis(400), 0.5);
+    private static final Retry PARKED = Retry.exponential(Duration.ofHours(1), Duration.ofHours(1)).attempts(5).withJitter(0);
+    private static final Retry FAST = Retry.exponential(Duration.ofMillis(50), Duration.ofMillis(400)).attempts(5).withJitter(0.5);
 
     private EngineFixture fixture;
     private PostgresDatabase database;
@@ -239,7 +239,7 @@ class MilestoneOneTest {
             fixture.start(node, List.of(Topic.of(topic, batch -> batch.decide(task -> {
                 events.add(task.payload() + "#" + task.attempt());
                 return task.payload().equals("poison") ? Decision.failed("always fails") : Decision.success();
-            })).with(TopicSettings.defaults().withOrdering(ordering).withRetry(new Retry(3, Duration.ofMillis(50), 1, Duration.ofMillis(50), 0)))));
+            })).with(TopicSettings.defaults().withOrdering(ordering).withRetry(Retry.exponential(Duration.ofMillis(50), Duration.ofMillis(50)).attempts(3).withJitter(0)))));
         }
         fixture.engines().getFirst().tasks().independently().push(topic, Insertion.APPEND, List.of(
             Creation.of("x", "poison"), Creation.of("x", "later-1"), Creation.of("x", "later-2"), Creation.of("y", "other")

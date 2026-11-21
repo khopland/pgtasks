@@ -157,6 +157,7 @@ public abstract class CompletionTck extends StoreTck {
         long id = fixture.push(topic, "a");
         ClaimedTask first = fixture.claim(topic, node).getFirst();
         assertThat(first.failures()).isZero();
+        assertThat(first.firstFailedAt()).isNull();
 
         fixture.complete(topic, node, first, new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, Duration.ZERO, false,
             "{\"message\":\"downstream down\"}"));
@@ -173,6 +174,7 @@ public abstract class CompletionTck extends StoreTck {
         ClaimedTask again = fixture.claim(topic, node).getFirst();
         assertThat(again.attempt()).isEqualTo(1);
         assertThat(again.failures()).isEqualTo(1);
+        assertThat(again.firstFailedAt()).as("a time budget counts from it").isEqualTo(view.firstFailedAt());
     }
 
     @Test

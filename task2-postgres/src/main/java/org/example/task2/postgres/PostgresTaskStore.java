@@ -747,9 +747,9 @@ public final class PostgresTaskStore implements TaskStore {
                 UPDATE tasks.queue q
                 SET state = 'active', node_id = :node::integer, attempt = q.attempt + 1, claimed_at = clock_timestamp()
                 WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
-                RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at, q.failures
+                RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at, q.failures, q.first_failed_at
             )
-            SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at, c.failures,
+            SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at, c.failures, c.first_failed_at,
                    t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.trace_context
             FROM claimed c
             JOIN tasks.task t ON t.id = c.task_id
@@ -919,7 +919,8 @@ public final class PostgresTaskStore implements TaskStore {
                     instant(resultSet, "created_at"),
                     instant(resultSet, "claimed_at"),
                     resultSet.getString("trace_context"),
-                    resultSet.getInt("failures")
+                    resultSet.getInt("failures"),
+                    instant(resultSet, "first_failed_at")
                 ));
             }
         }

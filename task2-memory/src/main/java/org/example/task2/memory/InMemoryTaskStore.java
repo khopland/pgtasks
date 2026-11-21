@@ -321,7 +321,7 @@ public final class InMemoryTaskStore implements TaskStore {
             putQueued(memory, active);
             Rows.Task task = tasks.get(row.taskId());
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
-                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext(), row.failures()));
+                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext(), row.failures(), row.firstFailedAt()));
         }
         if (admission != null && !claimed.isEmpty()) {
             Rows.Bucket bucket = buckets.get(admission.name());

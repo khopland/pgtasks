@@ -37,7 +37,7 @@ class SliceTest {
     @RegisterExtension
     static PostgresExtension postgres = EngineFixture.extension();
 
-    private static final Retry FAST = new Retry(5, Duration.ofMillis(50), 2, Duration.ofMillis(400), 0.5);
+    private static final Retry FAST = Retry.exponential(Duration.ofMillis(50), Duration.ofMillis(400)).attempts(5).withJitter(0.5);
 
     private EngineFixture fixture;
     private PostgresDatabase database;

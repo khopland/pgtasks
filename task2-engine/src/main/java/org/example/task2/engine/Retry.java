@@ -23,15 +23,18 @@ import java.util.random.RandomGenerator;
  * budget.
  *
  * @param maxAttempts counted attempts before the task is dead-lettered; {@link Integer#MAX_VALUE}
- *                    for never
+ *                    for never, which a time budget also has
  * @param initial     backoff after the first failure
  * @param multiplier  growth per further failure
  * @param max         upper bound for the backoff
  * @param jitter      fraction of the backoff that is randomized, 0 to 1: a backoff is up to this
  *                    much shorter, so tasks that failed together don't retry together
- * @param budget      how long a task keeps trying, if the policy is a time budget; null if it is a
- *                    number of attempts. {@code maxAttempts} is worked out from it: the attempts
- *                    whose nominal backoffs fit in the budget
+ * @param budget      how long a task keeps trying after its first failure, if the policy is a time
+ *                    budget; null if it is a number of attempts. A counted failure dead-letters
+ *                    the task once its next retry would start past the budget. The clock runs
+ *                    from the first failure of any kind, so a task that failed through a long
+ *                    outage without using attempts gives up at its first counted failure after
+ *                    the budget
  * @param notCounting failures caused by these types, anywhere in the cause chain, are the
  *                    system's, not the task's: retried with the backoff, the attempt not counted,
  *                    as if the handler had said {@link org.example.task2.Decision#unavailable}
@@ -51,14 +54,6 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         NOT_COUNTED,
         /** Dead-lettered at once. */
         DEAD_LETTER
-    }
-
-    public Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter) {
-        this(maxAttempts, initial, multiplier, max, jitter, null);
-    }
-
-    public Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, Duration budget) {
-        this(maxAttempts, initial, multiplier, max, jitter, budget, List.of(), List.of());
     }
 
     public Retry {
@@ -85,7 +80,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
             if (initial.isZero()) {
                 throw new IllegalArgumentException("a time budget needs a backoff above zero");
             }
-            maxAttempts = attemptsWithin(budget, initial, multiplier, max);
+            maxAttempts = FOREVER;
         }
     }
 
@@ -99,12 +94,12 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      * days unless changed with {@link #giveUpAfter}, {@link #forever()} or {@link #attempts}.
      */
     public static Retry exponential(Duration first, Duration cap) {
-        return new Retry(1, first, 2, cap, 0.2, Duration.ofDays(7));
+        return new Retry(FOREVER, first, 2, cap, 0.2, Duration.ofDays(7), List.of(), List.of());
     }
 
     /** Dead-letters a task at its first failure. */
     public static Retry none() {
-        return new Retry(1, Duration.ZERO, 1, Duration.ZERO, 0);
+        return new Retry(1, Duration.ZERO, 1, Duration.ZERO, 0, null, List.of(), List.of());
     }
 
     /** Keeps trying for this long after the first failure, then dead-letters the task. */
@@ -122,9 +117,14 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         return new Retry(maxAttempts, initial, multiplier, max, jitter, null, notCounting, deadLetterAt);
     }
 
-    /** Same as {@link #attempts}. */
-    public Retry withMaxAttempts(int maxAttempts) {
-        return attempts(maxAttempts);
+    /** How much each backoff grows over the one before, 2 by default. */
+    public Retry withMultiplier(double multiplier) {
+        return new Retry(maxAttempts, initial, multiplier, max, jitter, budget, notCounting, deadLetterAt);
+    }
+
+    /** The share of each backoff that is random, 0 to 1; 0.2 by default. */
+    public Retry withJitter(double jitter) {
+        return new Retry(maxAttempts, initial, multiplier, max, jitter, budget, notCounting, deadLetterAt);
     }
 
     /** Another ramp, keeping how the policy gives up; a time budget is worked out again. */
@@ -183,12 +183,32 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
     }
 
     public boolean isForever() {
-        return maxAttempts == FOREVER;
+        return maxAttempts == FOREVER && budget == null;
     }
 
-    /** Whether a failure in this attempt still leaves an attempt to retry with. */
-    public boolean allowsAnotherAfter(int attempt) {
-        return attempt < maxAttempts;
+    /**
+     * Whether a counted failure of this attempt is retried after {@code backoff}: attempts are
+     * left, and with a time budget, the retry starts within it.
+     *
+     * @param firstFailedAt when the task first failed, or null if this is its first failure
+     */
+    public boolean allowsAnotherAfter(int attempt, java.time.Instant firstFailedAt, java.time.Instant now, Duration backoff) {
+        if (attempt >= maxAttempts) {
+            return false;
+        }
+        if (budget == null) {
+            return true;
+        }
+        java.time.Instant start = firstFailedAt == null ? now : firstFailedAt;
+        return !now.plus(backoff).isAfter(start.plus(budget));
+    }
+
+    /**
+     * About how many attempts a time budget allows when every run fails at once at the nominal
+     * backoff; {@link #maxAttempts} otherwise.
+     */
+    public int nominalAttempts() {
+        return budget == null ? maxAttempts : attemptsWithin(budget, initial, multiplier, max);
     }
 
     /** The backoff after the given failed attempt, starting at 1. */
@@ -200,7 +220,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         return Duration.ofNanos((long) nanos);
     }
 
-    /** "for 7 days (343 attempts), from PT10S x2.0 up to PT30M", for the effective settings. */
+    /** "for 7 days after the first failure (about 343 attempts), from PT10S x2.0 up to PT30M", for the effective settings. */
     public String describe() {
         if (maxAttempts == 1) {
             return "none: dead letter at the first failure";
@@ -211,7 +231,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         }
         if (budget != null) {
             String time = budget.toSeconds() % 86_400 == 0 ? budget.toDays() + (budget.toDays() == 1 ? " day" : " days") : budget.toString();
-            return "for " + time + " (" + maxAttempts + " attempts), " + ramp;
+            return "for " + time + " after the first failure (about " + nominalAttempts() + " attempts), " + ramp;
         }
         return maxAttempts + " attempts, " + ramp;
     }

@@ -32,25 +32,39 @@ class RetryTest {
         assertThat(retry.backoff(8, NO_JITTER)).isEqualTo(Duration.ofSeconds(1280));
         assertThat(retry.backoff(9, NO_JITTER)).isEqualTo(Duration.ofMinutes(30));
         // 10 s + ... + 1,280 s = 2,550 s ramping, then (7 days - 2,550 s) / 30 min = 334 more.
-        assertThat(retry.maxAttempts()).isEqualTo(343);
-        assertThat(retry.describe()).isEqualTo("for 7 days (343 attempts), from PT10S x2.0 up to PT30M");
+        assertThat(retry.nominalAttempts()).isEqualTo(343);
+        assertThat(retry.describe()).isEqualTo("for 7 days after the first failure (about 343 attempts), from PT10S x2.0 up to PT30M");
     }
 
     @Test
     void a_budget_forever_or_a_number_of_attempts() {
         Retry ramp = Retry.exponential(Duration.ofSeconds(10), Duration.ofMinutes(30));
-        assertThat(ramp.giveUpAfter(Duration.ofHours(1)).maxAttempts()).as("2,550 s ramping, then 1,050 s left: no room for another").isEqualTo(9);
+        assertThat(ramp.giveUpAfter(Duration.ofHours(1)).nominalAttempts()).as("2,550 s ramping, then 1,050 s left: no room for another").isEqualTo(9);
         assertThat(ramp.forever().isForever()).isTrue();
-        assertThat(ramp.forever().allowsAnotherAfter(1_000_000)).isTrue();
+        assertThat(ramp.isForever()).as("a budget gives up").isFalse();
+        assertThat(ramp.forever().allowsAnotherAfter(1_000_000, null, java.time.Instant.now(), Duration.ofMinutes(30))).isTrue();
         assertThat(ramp.forever().describe()).isEqualTo("forever, from PT10S x2.0 up to PT30M");
         assertThat(ramp.attempts(5).describe()).isEqualTo("5 attempts, from PT10S x2.0 up to PT30M");
-        assertThat(Retry.none().allowsAnotherAfter(1)).isFalse();
+        assertThat(Retry.none().allowsAnotherAfter(1, null, java.time.Instant.now(), Duration.ZERO)).isFalse();
         // A tiny backoff and a long budget: counted at once, not one by one.
-        assertThat(Retry.exponential(Duration.ofMillis(1), Duration.ofMillis(1)).giveUpAfter(Duration.ofDays(1)).maxAttempts())
+        assertThat(Retry.exponential(Duration.ofMillis(1), Duration.ofMillis(1)).giveUpAfter(Duration.ofDays(1)).nominalAttempts())
             .isEqualTo(86_400_001);
-        assertThat(Retry.exponential(Duration.ofMillis(1), Duration.ofMillis(1)).giveUpAfter(Duration.ofDays(365)).maxAttempts())
+        assertThat(Retry.exponential(Duration.ofMillis(1), Duration.ofMillis(1)).giveUpAfter(Duration.ofDays(365)).nominalAttempts())
             .as("capped below forever").isEqualTo(Retry.FOREVER - 1);
         assertThatThrownBy(() -> Retry.none().giveUpAfter(Duration.ofDays(1))).hasMessageContaining("backoff above zero");
+    }
+
+    /** Review 2026-11-21: the budget was an attempt count, so jitter gave up early and uncounted waits stretched it. */
+    @Test
+    void a_budget_is_time_since_the_first_failure() {
+        Retry week = Retry.standard();
+        java.time.Instant now = java.time.Instant.parse("2026-11-21T12:00:00Z");
+        Duration halfHour = Duration.ofMinutes(30);
+        assertThat(week.allowsAnotherAfter(400, now.minus(Duration.ofDays(6)), now, halfHour)).as("attempts don't matter").isTrue();
+        assertThat(week.allowsAnotherAfter(3, now.minus(Duration.ofDays(7)).plus(halfHour), now, halfHour)).as("the retry starts at the end").isTrue();
+        assertThat(week.allowsAnotherAfter(3, now.minus(Duration.ofDays(7)).plus(Duration.ofMinutes(29)), now, halfHour)).isFalse();
+        assertThat(week.allowsAnotherAfter(1, null, now, halfHour)).as("the first failure starts the clock").isTrue();
+        assertThat(week.attempts(3).allowsAnotherAfter(3, now, now, halfHour)).as("a number of attempts").isFalse();
     }
 
     @Test
@@ -67,7 +81,7 @@ class RetryTest {
             assertThat(retry.initial()).isEqualTo(Duration.ofSeconds(1));
             assertThat(retry.max()).isEqualTo(Duration.ofMinutes(1));
             // 1+2+4+8+16+32 = 63 s ramping, then (3,600 - 63) / 60 = 58 more: 7 + 58.
-            assertThat(retry.maxAttempts()).isEqualTo(65);
+            assertThat(retry.nominalAttempts()).isEqualTo(65);
         }
         TaskEngine never = TaskEngine.builder().store(new InMemoryTaskStore())
             .configure("work", tasks -> tasks.topic("work", String.class, batch -> batch.decide(task -> Decision.success())))

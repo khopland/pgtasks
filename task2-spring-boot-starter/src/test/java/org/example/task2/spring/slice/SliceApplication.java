@@ -30,7 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 @SpringBootApplication
 public class SliceApplication {
 
-    static final Retry FAST = new Retry(5, Duration.ofMillis(50), 2, Duration.ofMillis(400), 0.5);
+    static final Retry FAST = Retry.exponential(Duration.ofMillis(50), Duration.ofMillis(400)).attempts(5).withJitter(0.5);
 
     @Bean
     PartsRegister partsRegister() {

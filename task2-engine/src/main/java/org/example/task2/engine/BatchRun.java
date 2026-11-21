@@ -401,11 +401,15 @@ final class BatchRun<T> {
                         yield new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
                     }
                     // A probe fails while the breaker is open: likely the outage, not the task.
-                    case COUNTED -> probe
-                        ? new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error)
-                        : retry.allowsAnotherAfter(claim.attempt())
-                        ? new Resolution.Waiting(WaitState.RETRYING, retry.backoff(claim.failures() + 1, core.random()), true, error)
-                        : new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    case COUNTED -> {
+                        if (probe) {
+                            yield new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
+                        }
+                        Duration backoff = retry.backoff(claim.failures() + 1, core.random());
+                        yield retry.allowsAnotherAfter(claim.attempt(), claim.firstFailedAt(), core.clock().instant(), backoff)
+                            ? new Resolution.Waiting(WaitState.RETRYING, backoff, true, error)
+                            : new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    }
                 };
             }
         };

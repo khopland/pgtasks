@@ -87,7 +87,7 @@ class BuilderTest {
         assertThat(notify.get("batch-size")).isEqualTo(new EffectiveSettings.Setting("100", Source.DEFAULT));
         assertThat(notify.get("concurrency").value()).isEqualTo("2");
         assertThat(notify.get("ordering").value()).isEqualTo("FIFO");
-        assertThat(notify.get("retry").value()).isEqualTo("for 7 days (343 attempts), from PT10S x2.0 up to PT30M");
+        assertThat(notify.get("retry").value()).isEqualTo("for 7 days after the first failure (about 343 attempts), from PT10S x2.0 up to PT30M");
         assertThat(notify.get("retain.succeeded").value()).isEqualTo("P30D");
         assertThat(notify.get("retain.failed").value()).isEqualTo("forever");
 

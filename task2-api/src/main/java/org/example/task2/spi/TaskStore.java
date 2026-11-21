@@ -435,7 +435,8 @@ public interface TaskStore {
         Instant createdAt,
         Instant claimedAt,
         String traceContext,
-        int failures
+        int failures,
+        Instant firstFailedAt
     ) {
     }
 
