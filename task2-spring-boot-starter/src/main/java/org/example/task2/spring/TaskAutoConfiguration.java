@@ -18,6 +18,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ConditionContext;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -48,7 +49,8 @@ public class TaskAutoConfiguration {
     @ConditionalOnMissingBean
     public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ConfigurableListableBeanFactory beans,
                                  Environment environment, ObjectProvider<TaskObserver> observer,
-                                 ObjectProvider<org.springframework.boot.info.BuildProperties> build) {
+                                 ObjectProvider<org.springframework.boot.info.BuildProperties> build,
+                                 ObjectProvider<org.example.task2.engine.PayloadCodecs> codecs) {
         TaskEngineBuilder builder = TaskEngine.builder()
             .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
             .notifications(properties.notifications())
@@ -70,6 +72,7 @@ public class TaskAutoConfiguration {
         configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
         beans.getBeansOfType(TaskGlobals.class).forEach(builder::globals);
         observer.ifUnique(builder::observer);
+        codecs.ifUnique(builder::codecs);
         builder.version(properties.version() != null ? properties.version()
             : build.getIfAvailable() != null ? build.getIfAvailable().getVersion() : null);
         // A module test runs one module's topics; pushes to the others' are stored for its assertions.
@@ -81,6 +84,17 @@ public class TaskAutoConfiguration {
     @ConditionalOnMissingBean
     public Tasks tasks(TaskEngine engine) {
         return engine.tasks();
+    }
+
+    /** JSON for payload types without a codec, with the application's Jackson mapper, or a plain one. */
+    @Configuration(proxyBeanMethods = false)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnClass(name = "tools.jackson.databind.json.JsonMapper")
+    static class Json {
+        @Bean
+        @ConditionalOnMissingBean(org.example.task2.engine.PayloadCodecs.class)
+        JacksonPayloadCodecs taskPayloadCodecs(ObjectProvider<tools.jackson.databind.json.JsonMapper> mapper) {
+            return new JacksonPayloadCodecs(mapper.getIfAvailable(() -> tools.jackson.databind.json.JsonMapper.builder().build()));
+        }
     }
 
     /** Pushes the tasks the configurers' event routes make of application events. */

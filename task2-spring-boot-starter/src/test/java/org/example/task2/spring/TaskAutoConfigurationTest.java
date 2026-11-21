@@ -174,6 +174,39 @@ class TaskAutoConfigurationTest {
             });
     }
 
+    record Order(String id, int quantity) {
+    }
+
+    static final TopicRef<Order> ORDERS = TopicRef.of("orders", Order.class);
+
+    @Configuration(proxyBeanMethods = false)
+    static class RecordTopic {
+        final List<Order> handled = new CopyOnWriteArrayList<>();
+
+        @Bean
+        TaskConfigurer orderTasks() {
+            return tasks -> tasks.topic(ORDERS, batch -> batch.decide(task -> {
+                handled.add(task.payload());
+                return Decision.success();
+            }));
+        }
+    }
+
+    @Test
+    void a_record_payload_needs_no_codec_it_is_stored_as_json() {
+        memory().withUserConfiguration(RecordTopic.class).run(context -> {
+            assertThat(context).hasNotFailed();
+            TaskEngine engine = context.getBean(TaskEngine.class);
+            long id = context.getBean(Tasks.class).independently().push(ORDERS, "o-1", new Order("o-1", 3)).id();
+            EngineFixture.await("the order", Duration.ofSeconds(5), () -> !context.getBean(RecordTopic.class).handled.isEmpty());
+
+            assertThat(context.getBean(RecordTopic.class).handled).containsExactly(new Order("o-1", 3));
+            org.example.task2.spi.TaskStore.TaskView view = engine.find(id).orElseThrow();
+            assertThat(view.payloadType()).isEqualTo("json");
+            assertThat(view.payload()).isEqualTo("{\"id\":\"o-1\",\"quantity\":3}");
+        });
+    }
+
     record Greeted(String name) {
     }
 

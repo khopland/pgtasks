@@ -138,6 +138,11 @@ public final class TaskEngine implements AutoCloseable {
         return this;
     }
 
+    TaskEngine withFallbackCodecs(PayloadCodecs codecs) {
+        tasks.fallbackCodecs(codecs);
+        return this;
+    }
+
     TaskEngine withTopicsCreatedOnPush() {
         directory.createOnPush();
         return this;

@@ -79,6 +79,12 @@
       <artifactId>spring-boot-health</artifactId>
       <optional>true</optional>
     </dependency>
+    <!-- JSON payloads, when the app has Jackson. -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <optional>true</optional>
+    </dependency>
     <!-- Module names from Spring Modulith, when the app uses it. -->
     <dependency>
       <groupId>org.springframework.modulith</groupId>

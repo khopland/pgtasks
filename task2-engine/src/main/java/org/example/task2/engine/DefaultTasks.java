@@ -47,6 +47,8 @@ final class DefaultTasks implements Tasks {
     private final TransactionBinding transactions;
     private final Consumer<String> wakeLocally;
     private final TaskObserver taskObserver;
+    private volatile PayloadCodecs fallbackCodecs;
+    private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile Observer observer = (topic, insertion, creations, results) -> { };
 
     DefaultTasks(
@@ -67,6 +69,10 @@ final class DefaultTasks implements Tasks {
         this.transactions = transactions;
         this.wakeLocally = wakeLocally;
         this.taskObserver = taskObserver;
+    }
+
+    void fallbackCodecs(PayloadCodecs codecs) {
+        this.fallbackCodecs = codecs;
     }
 
     void observe(Observer observer) {
@@ -220,6 +226,10 @@ final class DefaultTasks implements Tasks {
         }
         if (codec == null && topic.payloadType() == String.class) {
             codec = PayloadCodec.string();
+        }
+        PayloadCodecs fallback = fallbackCodecs;
+        if (codec == null && fallback != null) {
+            codec = fallbackByType.computeIfAbsent(topic.payloadType(), fallback::codecFor);
         }
         if (codec == null) {
             throw new IllegalArgumentException("No payload codec for " + topic.payloadType().getName() + " (topic " + topic + ")");

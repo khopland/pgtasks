@@ -67,6 +67,7 @@ public final class TaskEngineBuilder {
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
     private String version;
+    private PayloadCodecs fallbackCodecs;
     private boolean topicsCreatedOnPush;
     private boolean notifications = true;
     private Notifier notifier;
@@ -157,6 +158,12 @@ public final class TaskEngineBuilder {
      */
     public TaskEngineBuilder version(String version) {
         this.version = version;
+        return this;
+    }
+
+    /** Codecs for payload types without one of their own, such as JSON; see {@link PayloadCodecs}. */
+    public TaskEngineBuilder codecs(PayloadCodecs codecs) {
+        this.fallbackCodecs = codecs;
         return this;
     }
 
@@ -555,7 +562,7 @@ public final class TaskEngineBuilder {
                 }
             });
             try {
-                Object built = build(topic, values, global, allCodecs);
+                Object built = build(topic, values, global, allCodecs, fallbackCodecs);
                 if (built instanceof TopicTemplate<?> template) {
                     templates.add(template);
                 } else {
@@ -592,6 +599,7 @@ public final class TaskEngineBuilder {
         TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes)
             .withRecurring(recurring);
         engine.withVersion(version);
+        engine.withFallbackCodecs(fallbackCodecs);
         return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
     }
 
@@ -631,13 +639,17 @@ public final class TaskEngineBuilder {
 
     /** A {@link Topic}, or a {@link TopicTemplate} for a pattern. */
     @SuppressWarnings("unchecked")
-    private static <T> Object build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs) {
+    private static <T> Object build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
+                                     PayloadCodecs fallback) {
         PayloadCodec<T> codec = (PayloadCodec<T>) codecs.get(topic.type);
         if (codec == null && topic.type == String.class) {
             codec = (PayloadCodec<T>) PayloadCodec.string();
         }
+        if (codec == null && fallback != null) {
+            codec = (PayloadCodec<T>) fallback.codecFor(topic.type);
+        }
         if (codec == null) {
-            throw new IllegalArgumentException("no payload codec for " + topic.type.getName() + "; register one with codec(...)");
+            throw new IllegalArgumentException("no payload codec for " + topic.type.getName() + "; register one with codec(...), or give the builder codecs(...)");
         }
         RateLimit rateLimit = null;
         if (values.containsKey("limit")) {
