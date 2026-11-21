@@ -45,6 +45,34 @@ class FailureHandlingTest {
         return engine.find(id).orElseThrow();
     }
 
+    /** Review 2026-11-21: an undecodable payload was retried as a counted failure for a week, about 343 times. */
+    @Test
+    void a_payload_the_codec_cant_decode_is_dead_lettered_at_once() throws Exception {
+        TopicRef<Integer> numbers = TopicRef.of("numbers", Integer.class);
+        List<Integer> handled = new CopyOnWriteArrayList<>();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure("numbers", tasks -> tasks
+                // Writes what it can't read for negative numbers, like a codec changed in a later version.
+                .codec(Integer.class, org.example.task2.PayloadCodec.<Integer>of(n -> n < 0 ? "minus one" : String.valueOf(n), Integer::valueOf))
+                .topic(numbers, batch -> batch.decide(task -> {
+                    handled.add(task.payload());
+                    return Decision.success();
+                }), topic -> topic.retry(Retry.standard())))
+            .build()
+            .start();
+        long good = engine.tasks().independently().push(numbers, "a", 1).id();
+        long bad = engine.tasks().independently().push(numbers, "b", -1).id();
+        TaskTester.of(engine).awaitIdle();
+
+        assertThat(handled).containsExactly(1);
+        assertThat(engine.find(good).orElseThrow().finished()).isTrue();
+        TaskView view = engine.find(bad).orElseThrow();
+        assertThat(view.state()).as("no retries: the stored text won't change").isEqualTo("failed");
+        assertThat(view.attempt()).isEqualTo(1);
+        assertThat(view.error()).contains("Could not decode the payload").contains("NumberFormatException");
+    }
+
     /** Review F2: an Error escaped, and the orphan sweep handed the claim back uncounted, forever. */
     @Test
     @DisplayName("A handler that throws an Error fails its batch like an exception, counted and recorded")

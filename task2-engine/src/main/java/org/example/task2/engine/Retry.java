@@ -147,9 +147,12 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         return new Retry(maxAttempts, initial, multiplier, max, jitter, budget, notCounting, append(deadLetterAt, types));
     }
 
-    /** What a failure with this cause means, by the types anywhere in its cause chain. */
+    /**
+     * What a failure with this cause means, by the types anywhere in its cause chain. A payload
+     * the codec can't decode is always dead-lettered at once: retrying won't change it.
+     */
     public Kind classify(Throwable cause) {
-        if (matches(cause, deadLetterAt)) {
+        if (cause instanceof UndecodablePayload || matches(cause, deadLetterAt)) {
             return Kind.DEAD_LETTER;
         }
         return matches(cause, notCounting) ? Kind.NOT_COUNTED : Kind.COUNTED;

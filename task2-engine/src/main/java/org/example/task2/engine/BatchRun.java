@@ -91,7 +91,7 @@ final class BatchRun<T> {
             } catch (RuntimeException | LinkageError e) {
                 Task<T> undecoded = task(claim, null);
                 all.add(undecoded);
-                early.decide(undecoded, Decision.failed(new IllegalStateException("Could not decode the payload", e)));
+                early.decide(undecoded, Decision.failed(new UndecodablePayload(claim.payloadType(), e)));
                 continue;
             }
             Task<T> task = task(claim, payload);
