@@ -1,7 +1,6 @@
 package org.example.task2.engine;
 
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -36,9 +35,5 @@ final class Signal {
         } finally {
             lock.unlock();
         }
-    }
-
-    static void sleep(Duration duration) throws InterruptedException {
-        TimeUnit.NANOSECONDS.sleep(duration.toNanos());
     }
 }

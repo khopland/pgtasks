@@ -42,7 +42,7 @@ public final class RateLimits {
     private final TaskStore store;
     private final Map<String, RateLimit> configured = new TreeMap<>();
     private final Consumer<String> changed;
-    private final Coalesced refreshSoon = new Coalesced("rate limit overrides", this::refresh);
+    private final Coalesced refreshSoon = new Coalesced("limits", "rate limit overrides", this::refresh);
     private volatile Map<String, LimitOverride> overrides = Map.of();
     private Map<String, RateLimit> lastEffective = Map.of();
 
@@ -157,6 +157,11 @@ public final class RateLimits {
     /** Reloads the overrides soon, on another thread: for notifications, which mustn't wait on the store. */
     void refreshSoon() {
         refreshSoon.request();
+    }
+
+    /** No more reloads on notifications; waits for one in progress. */
+    void stopRefreshing(Duration patience) throws InterruptedException {
+        refreshSoon.stop(patience);
     }
 
     @Override

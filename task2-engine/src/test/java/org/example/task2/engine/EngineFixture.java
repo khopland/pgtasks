@@ -45,9 +45,13 @@ public final class EngineFixture implements AutoCloseable {
     }
 
     public TaskEngine create(String node, List<Topic<?>> topics, UnaryOperator<EngineSettings> customize) {
+        return create(node, topics, List.of(), customize);
+    }
+
+    public TaskEngine create(String node, List<Topic<?>> topics, List<TopicTemplate<?>> templates, UnaryOperator<EngineSettings> customize) {
         HikariDataSource pool = database.newPool(node, 12);
         EngineSettings settings = customize.apply(settings(node).withNotifier(new PostgresNotifier(database::connect)));
-        TaskEngine engine = new TaskEngine(new PostgresTaskStore(pool), settings, topics);
+        TaskEngine engine = new TaskEngine(new PostgresTaskStore(pool), settings, topics, templates);
         engines.add(engine);
         return engine;
     }

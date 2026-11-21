@@ -102,9 +102,15 @@ final class Housekeeper {
     /** Stops the jobs and gives the lease up, so another node can take over at once. */
     void stop() {
         if (executor != null) {
-            executor.shutdownNow();
+            // Lets a job in progress finish: interrupting it would close its connection mid-statement.
+            executor.shutdown();
             try {
-                executor.awaitTermination(5, TimeUnit.SECONDS);
+                if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
+                    executor.shutdownNow();
+                    if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
+                        LOGGER.log(System.Logger.Level.WARNING, "A housekeeping job ignored the stop and is still running");
+                    }
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

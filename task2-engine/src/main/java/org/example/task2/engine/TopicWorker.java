@@ -24,12 +24,16 @@ final class TopicWorker<T> {
 
     private static final Duration FIRST_BACKOFF = Duration.ofMillis(100);
 
+    /** How long past a stop's deadline threads get to react to being cancelled. */
+    static final Duration PATIENCE = Duration.ofSeconds(5);
+
     private final Topic<T> topic;
     private final int topicId;
     private final EngineCore core;
     private final Semaphore permits;
     private final Signal signal = new Signal();
     private final Signal limitSignal = new Signal();
+    private final Signal stopSignal = new Signal();
     private final ExecutorService batches;
     private volatile boolean running, stopping;
     private Thread poller;
@@ -100,6 +104,10 @@ final class TopicWorker<T> {
             } catch (InterruptedException e) {
                 return;
             }
+            if (!running) {
+                release();
+                return;
+            }
             boolean dispatched = false;
             long claim = claims.incrementAndGet();
             try {
@@ -128,9 +136,18 @@ final class TopicWorker<T> {
                             }
                         });
                     } catch (RejectedExecutionException e) {
-                        // Stopping: hand the tasks back instead of leaving them until expiry.
+                        // Stopping: hand the tasks back instead of leaving them until expiry. A stop
+                        // past its deadline interrupts this thread, and a pool refuses an interrupted
+                        // thread a connection, so the interrupt waits until they are back.
                         runningBatches.decrementAndGet();
-                        run.releaseAll();
+                        boolean interrupted = Thread.interrupted();
+                        try {
+                            run.releaseAll();
+                        } finally {
+                            if (interrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
                         throw e;
                     }
                     dispatched = true;
@@ -159,7 +176,7 @@ final class TopicWorker<T> {
                 Duration backoff = backoff(failures);
                 LOGGER.log(System.Logger.Level.WARNING, "Polling " + topic.ref() + " failed " + failures + " time(s) in a row, retrying in " + backoff, e);
                 try {
-                    Signal.sleep(backoff);
+                    stopSignal.await(backoff);
                 } catch (InterruptedException interrupted) {
                     return;
                 }
@@ -195,17 +212,25 @@ final class TopicWorker<T> {
         permits.release();
     }
 
-    /** Stops polling; batches already running carry on. */
+    /**
+     * Stops polling; batches already running carry on. The poller isn't interrupted, only woken:
+     * interrupting a virtual thread in a socket read closes the socket, and a claim whose commit is
+     * cut off that way may be committed without this node knowing. It stops at its next wait, or
+     * once its claim returns, handing back what that claim got.
+     */
     void stopPolling() {
         running = false;
-        Thread current = poller;
-        if (current != null) {
-            current.interrupt();
-        }
+        signal.signal();
+        limitSignal.signal();
+        stopSignal.signal();
         batches.shutdown();
     }
 
-    /** Waits for running batches until the deadline, then cancels what is left. */
+    /**
+     * Waits for running batches until the deadline, then cancels what is left: a cancelled batch
+     * hands its tasks back without counting the attempt. Returns once the poller and every batch
+     * thread have ended, or have ignored cancellation for {@link #PATIENCE} past the deadline.
+     */
     void awaitBatches(long deadlineNanos) throws InterruptedException {
         Thread current = poller;
         if (current != null) {
@@ -214,8 +239,15 @@ final class TopicWorker<T> {
         if (!batches.awaitTermination(Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS)) {
             stopping = true;
             batches.shutdownNow();
-            if (!batches.awaitTermination(5, TimeUnit.SECONDS)) {
-                LOGGER.log(System.Logger.Level.WARNING, "Batches in " + topic.ref() + " ignored cancellation");
+            if (!batches.awaitTermination(PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
+                LOGGER.log(System.Logger.Level.WARNING, "Batches in " + topic.ref() + " ignored cancellation and are still running");
+            }
+        }
+        // Past the deadline: a poller still waiting, for permits or the store, is interrupted.
+        if (current != null && current.isAlive()) {
+            current.interrupt();
+            if (!current.join(PATIENCE)) {
+                LOGGER.log(System.Logger.Level.WARNING, "Polling " + topic.ref() + " ignored the stop and is still running");
             }
         }
     }

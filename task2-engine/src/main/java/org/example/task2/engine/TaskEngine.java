@@ -48,9 +48,9 @@ public final class TaskEngine implements AutoCloseable {
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
     /** Guards starting and stopping workers. */
     private final Object topicsLock = new Object();
-    /** Workers of topics paused or gone, finishing their running batches. */
-    private final Set<TopicWorker<?>> draining = ConcurrentHashMap.newKeySet();
-    private final Coalesced reconcileSoon = new Coalesced("topics", this::reconcileTopics);
+    /** Workers of topics paused or gone, finishing their running batches, and the threads waiting for them. */
+    private final Map<TopicWorker<?>, Thread> draining = new ConcurrentHashMap<>();
+    private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
     private EngineCore core;
     private Housekeeper housekeeper;
     private RateLimits limits;
@@ -161,7 +161,7 @@ public final class TaskEngine implements AutoCloseable {
                 }
             });
         }
-        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, this::releaseOrphans, () -> {
+        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
             reconcileTopics();
             limits.refresh();
         });
@@ -242,9 +242,8 @@ public final class TaskEngine implements AutoCloseable {
         workersByName.remove(name, worker);
         workersById.remove(worker.topicId(), worker);
         worker.stopPolling();
-        draining.add(worker);
         LOGGER.log(System.Logger.Level.INFO, "Stopped processing topic " + name + " on this node; running batches finish");
-        Thread.ofVirtual().name("task2-drain-" + name).start(() -> {
+        Thread drain = Thread.ofVirtual().name("task2-drain-" + name).unstarted(() -> {
             try {
                 worker.awaitBatches(System.nanoTime() + worker.topic().settings().batchDeadline().toNanos());
             } catch (InterruptedException e) {
@@ -253,6 +252,8 @@ public final class TaskEngine implements AutoCloseable {
                 draining.remove(worker);
             }
         });
+        draining.put(worker, drain);
+        drain.start();
     }
 
     /**
@@ -344,16 +345,21 @@ public final class TaskEngine implements AutoCloseable {
         return started && housekeeper.leading();
     }
 
+    /** Covers claims on their way in: committed, but not yet known to their worker. */
+    private Duration orphanGrace() {
+        Duration twoHeartbeats = settings.heartbeat().multipliedBy(2);
+        return twoHeartbeats.compareTo(Duration.ofSeconds(2)) < 0 ? Duration.ofSeconds(2) : twoHeartbeats;
+    }
+
     /**
      * Releases tasks this node holds active but isn't processing, such as a claim whose commit
-     * succeeded while its reply was lost. A grace period covers claims that are on their way in.
+     * succeeded while its reply was lost, if claimed longer ago than the grace period.
      */
-    private void releaseOrphans() throws Exception {
-        Duration grace = settings.heartbeat().multipliedBy(2).compareTo(Duration.ofSeconds(2)) < 0 ? Duration.ofSeconds(2) : settings.heartbeat().multipliedBy(2);
+    private void releaseOrphans(Duration grace) throws Exception {
         java.time.Instant cutoff = store.clock().instant().minus(grace);
         Map<Integer, List<TaskStore.Completion>> orphans = new HashMap<>();
         for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
-            if (!held.containsKey(claim.taskId()) && claim.claimedAt() != null && claim.claimedAt().isBefore(cutoff)) {
+            if (!held.containsKey(claim.taskId()) && claim.claimedAt() != null && !claim.claimedAt().isAfter(cutoff)) {
                 orphans.computeIfAbsent(claim.topicId(), ignored -> new java.util.ArrayList<>())
                     .add(new TaskStore.Completion(claim.taskId(), claim.attempt(), claim.claimedAt(), BatchRun.RELEASED));
             }
@@ -382,30 +388,52 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /** Stops polling, waits up to the timeout for running batches, then cancels what is left. */
+    /**
+     * Drains this node: stops claiming, lets running batches finish until the timeout, then
+     * cancels what is left, whose tasks go back to the queue without counting the attempt. The
+     * node keeps heartbeating while it drains, so no other node takes its tasks meanwhile.
+     * Then it hands back any claim it holds but isn't processing, gives up the housekeeping lease,
+     * and returns once every thread it started has ended. Threads that ignore cancellation get
+     * {@link TopicWorker#PATIENCE} more, and are logged if they still run.
+     */
     public synchronized void stop(Duration timeout) {
         if (!started) {
             return;
         }
         started = false;
         long deadline = System.nanoTime() + timeout.toNanos();
-        List<TopicWorker<?>> all = new java.util.ArrayList<>();
-        synchronized (topicsLock) {
-            all.addAll(workersByName.values());
-            all.addAll(draining);
-        }
         try {
+            // Nothing new starts: no wake-ups, no reloads.
+            if (notifier != null) {
+                notifier.close();
+            }
+            reconcileSoon.stop(TopicWorker.PATIENCE);
+            limits.stopRefreshing(TopicWorker.PATIENCE);
+            List<TopicWorker<?>> all = new java.util.ArrayList<>();
+            List<Thread> drains;
+            synchronized (topicsLock) {
+                all.addAll(workersByName.values());
+                all.addAll(draining.keySet());
+                drains = List.copyOf(draining.values());
+            }
             all.forEach(TopicWorker::stopPolling);
             for (TopicWorker<?> worker : all) {
                 worker.awaitBatches(deadline);
+            }
+            for (Thread drain : drains) {
+                drain.join(TopicWorker.PATIENCE);
+            }
+            workersByName.clear();
+            workersById.clear();
+            try {
+                releaseOrphans(Duration.ZERO);
+            } catch (Exception e) {
+                LOGGER.log(System.Logger.Level.WARNING, "Could not hand back the tasks this node still holds; they are requeued once it counts as dead", e);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
             housekeeper.stop();
-            if (notifier != null) {
-                notifier.close();
-            }
         }
     }
 
