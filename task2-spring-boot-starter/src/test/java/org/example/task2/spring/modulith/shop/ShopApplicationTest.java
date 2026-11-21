@@ -49,8 +49,9 @@ class ShopApplicationTest {
         EngineFixture.await("the invoice", Duration.ofSeconds(5), () -> tester.captured().size() == 3);
         tester.awaitIdle();
 
-        // Seen from outside the modules: what was pushed where, and that every task succeeded.
-        assertThat(tester.captured()).extracting(captured -> captured.topic().name()).containsExactly("orders", "shipments", "invoices");
+        // Seen from outside the modules: what was pushed where, and that every task succeeded. In
+        // any order: the shipment can run and push its invoice before the shipment push is recorded.
+        assertThat(tester.captured()).extracting(captured -> captured.topic().name()).containsExactlyInAnyOrder("orders", "shipments", "invoices");
         assertThat(tester.captured()).allSatisfy(captured ->
             assertThat(tester.find(captured.result().id()).orElseThrow().state()).isEqualTo("succeeded"));
     }
