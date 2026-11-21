@@ -34,7 +34,9 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * complete and retention deletes as many old tasks as were completed, so history stays the same
  * size and the tables see the inserts, updates and deletes of a long-running system. Every minute
  * it records throughput, the backlog, claim and completion latency, table and index sizes, dead
- * rows, autovacuum runs and WAL written, and writes them to target/sustained-results.md.
+ * rows, autovacuum runs, WAL written and who holds the oldest snapshot, and writes them to
+ * target/sustained-results.md. The Postgres server log goes to target/postgres-logs/sustained.log,
+ * with an entry for every autovacuum and analyze: what it removed, and what it couldn't and why.
  *
  * <p>It needs room: 25 million rows take about 8 GB of disk and 4 minutes to generate per design.
  * Run it on a machine with at least 16 GB of memory, not on a small VM:
@@ -66,17 +68,31 @@ class SustainedBenchmark {
     }
 
     /** One minute of load. */
-    record Minute(int minute, long pushed, long completed, long backlog, SchemaBenchmark.Latency claims, SchemaBenchmark.Latency completions,
-                  long purged, long walBytes, List<Table> tables) {
+    record Minute(int minute, double seconds, long pushed, long completed, long backlog, SchemaBenchmark.Latency claims,
+                  SchemaBenchmark.Latency completions, long purged, long walBytes, List<Table> tables, String oldestSnapshot) {
+
+        /** False for the last minute when the run doesn't end on a whole minute. */
+        boolean full() {
+            return seconds >= MINUTE.toSeconds() - 1;
+        }
+
+        double pushedPerSecond() {
+            return pushed / seconds;
+        }
+
+        double completedPerSecond() {
+            return completed / seconds;
+        }
 
         String row() {
-            StringBuilder row = new StringBuilder(String.format(Locale.ROOT, "| %d | %,d | %,d | %,d | %s | %s | %,d | %,d |",
-                minute, pushed / 60, completed / 60, backlog, latency(claims), latency(completions), purged, walBytes / 1_000_000));
+            StringBuilder row = new StringBuilder(String.format(Locale.ROOT, "| %s | %,.0f | %,.0f | %,d | %s | %s | %,d | %,d |",
+                full() ? Integer.toString(minute) : String.format(Locale.ROOT, "%d (%.0f s)", minute, seconds),
+                pushedPerSecond(), completedPerSecond(), backlog, latency(claims), latency(completions), purged, walBytes / 1_000_000));
             for (Table table : tables) {
                 row.append(String.format(Locale.ROOT, " %,d / %,d MB | %,d | %d |",
                     table.heapBytes() / 1_000_000, table.indexBytes() / 1_000_000, table.deadRows(), table.autovacuums()));
             }
-            return row.toString();
+            return row.append(' ').append(oldestSnapshot).append(" |").toString();
         }
 
         private static String latency(SchemaBenchmark.Latency latency) {
@@ -86,6 +102,9 @@ class SustainedBenchmark {
 
     @Test
     void sustained() throws Exception {
+        Path logs = Path.of("target", "postgres-logs").toAbsolutePath();
+        Files.createDirectories(logs);
+        Files.deleteIfExists(logs.resolve("sustained.log"));
         EmbeddedPostgres.Builder builder = EmbeddedPostgres.builder()
             // Durability on: what production pays for every commit.
             .setServerConfig("fsync", "on")
@@ -96,7 +115,15 @@ class SustainedBenchmark {
             .setServerConfig("maintenance_work_mem", "512MB")
             .setServerConfig("max_wal_size", "8GB")
             .setServerConfig("checkpoint_timeout", "15min")
-            .setServerConfig("log_autovacuum_min_duration", "0");
+            // The server log: each autovacuum's tuples removed and "dead but not yet removable",
+            // its removable cutoff and how old that was, pages skipped for cleanup locks, checkpoints.
+            .setServerConfig("logging_collector", "on")
+            .setServerConfig("log_directory", logs.toString())
+            .setServerConfig("log_filename", "sustained.log")
+            .setServerConfig("log_rotation_size", "0")
+            .setServerConfig("log_autovacuum_min_duration", "0")
+            .setServerConfig("log_checkpoints", "on");
+        log("Postgres server log: %s", logs.resolve("sustained.log"));
         String directory = System.getProperty("benchmark.data-directory");
         if (directory != null) {
             builder.setDataDirectory(Path.of(directory)).setCleanDataDirectory(true);
@@ -137,7 +164,7 @@ class SustainedBenchmark {
         AtomicLong pushed = new AtomicLong(), completed = new AtomicLong(), purged = new AtomicLong(), toPurge = new AtomicLong();
         List<Double> claims = new CopyOnWriteArrayList<>(), completions = new CopyOnWriteArrayList<>();
         List<Throwable> failures = new CopyOnWriteArrayList<>();
-        long end = System.nanoTime() + LENGTH.toNanos();
+        long start = System.nanoTime(), end = start + LENGTH.toNanos();
         List<Minute> minutes = new ArrayList<>();
         try (ExecutorService threads = Executors.newFixedThreadPool(WORKERS + 2)) {
             List<Future<?>> running = new ArrayList<>();
@@ -190,17 +217,25 @@ class SustainedBenchmark {
                 return null;
             }));
 
-            long lastPushed = 0, lastCompleted = 0, lastPurged = 0, lastWal = wal(dataSource);
+            long lastPushed = 0, lastCompleted = 0, lastPurged = 0, lastWal = wal(dataSource), lastSample = start;
             for (int minute = 1; System.nanoTime() < end; minute++) {
-                Thread.sleep(Duration.ofNanos(Math.min(MINUTE.toNanos(), Math.max(0, end - System.nanoTime()))));
+                // Minutes are counted from the start, so the time spent sampling doesn't push the
+                // later ones back and leave a short last minute.
+                long wait = Math.min(start + minute * MINUTE.toNanos(), end) - System.nanoTime();
+                if (wait > 0) {
+                    Thread.sleep(Duration.ofNanos(wait));
+                }
+                long now = System.nanoTime();
                 List<Double> claimed = drain(claims), finished = drain(completions);
                 long nowPushed = pushed.get(), nowCompleted = completed.get(), nowPurged = purged.get(), nowWal = wal(dataSource);
-                Minute row = new Minute(minute, nowPushed - lastPushed, nowCompleted - lastCompleted, nowPushed - nowCompleted,
+                Minute row = new Minute(minute, (now - lastSample) / 1e9, nowPushed - lastPushed, nowCompleted - lastCompleted,
+                    nowPushed - nowCompleted,
                     claimed.isEmpty() ? null : SchemaBenchmark.Latency.of(claimed),
                     finished.isEmpty() ? null : SchemaBenchmark.Latency.of(finished),
-                    nowPurged - lastPurged, nowWal - lastWal, tables(dataSource, design.tables()));
+                    nowPurged - lastPurged, nowWal - lastWal, tables(dataSource, design.tables()), oldestSnapshot(dataSource));
                 minutes.add(row);
                 log("  %s", row.row());
+                lastSample = now;
                 lastPushed = nowPushed;
                 lastCompleted = nowCompleted;
                 lastPurged = nowPurged;
@@ -240,6 +275,32 @@ class SustainedBenchmark {
         }
     }
 
+    /**
+     * Who in this database holds the oldest snapshot, which is what keeps vacuum from removing dead
+     * rows: its age in transactions and seconds, and what it is doing. A plain vacuum's own
+     * snapshot doesn't hold back other vacuums; an analyze's, and any open transaction's, does.
+     */
+    private static String oldestSnapshot(DataSource dataSource) throws Exception {
+        try (Connection connection = dataSource.getConnection(); var statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("""
+                 SELECT age(backend_xmin), coalesce(extract(epoch FROM now() - xact_start), 0),
+                        coalesce(CASE WHEN backend_type = 'client backend' THEN state || ': ' || left(query, 50)
+                                      ELSE nullif(query, '') END, backend_type)
+                 FROM pg_stat_activity
+                 WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()
+                   AND (datname = current_database() OR datname IS NULL)
+                 ORDER BY age(backend_xmin) DESC
+                 LIMIT 1
+                 """)) {
+            if (!resultSet.next()) {
+                return "none";
+            }
+            // One line, and no pipes, so it stays one Markdown table cell.
+            String holder = resultSet.getString(3).replaceAll("\\s+", " ").replace('|', '/').strip();
+            return String.format(Locale.ROOT, "%,d XIDs, %.0f s, %s", resultSet.getLong(1), resultSet.getDouble(2), holder);
+        }
+    }
+
     private static List<Table> tables(DataSource dataSource, List<String> names) throws Exception {
         List<Table> tables = new ArrayList<>();
         try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement("""
@@ -268,7 +329,8 @@ class SustainedBenchmark {
             List<String> tables = minutes.isEmpty() ? List.of() : minutes.getFirst().tables().stream().map(Table::name).toList();
             report.append("| Minute | Pushed/s | Completed/s | Backlog | Claim p50 / p99 ms | Complete p50 / p99 ms | Purged | WAL MB |");
             tables.forEach(table -> report.append(" ").append(table).append(" heap / indexes | dead rows | autovacuums |"));
-            report.append("\n|---:|---:|---:|---:|---:|---:|---:|---:|").append("---:|---:|---:|".repeat(tables.size())).append('\n');
+            report.append(" Oldest snapshot |");
+            report.append("\n|---:|---:|---:|---:|---:|---:|---:|---:|").append("---:|---:|---:|".repeat(tables.size())).append("---|\n");
             minutes.forEach(minute -> report.append(minute.row()).append('\n'));
             report.append('\n').append(summary(minutes)).append('\n');
         });
@@ -276,16 +338,17 @@ class SustainedBenchmark {
         log("%n%s", report);
     }
 
-    /** The first five minutes against the last five: does anything drift? */
+    /** The first five whole minutes against the last five: does anything drift? */
     private static String summary(List<Minute> minutes) {
-        if (minutes.size() < 10) {
+        List<Minute> whole = minutes.stream().filter(Minute::full).toList();
+        if (whole.size() < 10) {
             return "Too short to compare the start with the end.";
         }
-        List<Minute> first = minutes.subList(0, 5), last = minutes.subList(minutes.size() - 5, minutes.size());
+        List<Minute> first = whole.subList(0, 5), last = whole.subList(whole.size() - 5, whole.size());
         return String.format(Locale.ROOT, """
             First five minutes against the last five: completed %,.0f/s against %,.0f/s; claim p99 %.1f against %.1f ms; \
             completion p99 %.1f against %.1f ms; backlog %,d at the end; total size %,d MB against %,d MB.""",
-            average(first, minute -> minute.completed() / 60.0), average(last, minute -> minute.completed() / 60.0),
+            average(first, Minute::completedPerSecond), average(last, Minute::completedPerSecond),
             average(first, minute -> minute.claims() == null ? 0 : minute.claims().p99()), average(last, minute -> minute.claims() == null ? 0 : minute.claims().p99()),
             average(first, minute -> minute.completions() == null ? 0 : minute.completions().p99()),
             average(last, minute -> minute.completions() == null ? 0 : minute.completions().p99()),
