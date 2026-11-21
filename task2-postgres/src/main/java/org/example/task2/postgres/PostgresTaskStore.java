@@ -46,6 +46,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
+    private final NamedSql deadLetters, revive, discard, notifyReady;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -236,6 +237,49 @@ public final class PostgresTaskStore implements TaskStore {
             LEFT JOIN tasks.queue q ON q.task_id = t.id
             WHERE t.id = :id::bigint
             """);
+        // Dead letters are few, so queue_failed_idx keeps these to the topic's dead letters.
+        deadLetters = sql("""
+            SELECT tp.name AS topic, t.id, t.identifier, q.state::text AS state, false AS finished,
+                   q.attempt, q.run_at, q.priority, q.node_id,
+                   t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
+                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at
+            FROM tasks.queue q
+            JOIN tasks.task t ON t.id = q.task_id
+            JOIN tasks.topic tp ON tp.id = q.topic_id
+            WHERE q.topic_id = :topic::integer AND q.state = 'failed' AND q.task_id > :after::bigint
+            ORDER BY q.task_id
+            LIMIT :limit::integer
+            """);
+        String pickDeadLetters = """
+            WITH picked AS MATERIALIZED (
+                SELECT o.ctid AS row FROM tasks.queue o
+                WHERE o.topic_id = :topic::integer AND o.state = 'failed'
+                  AND (:all::boolean OR o.task_id = ANY (:ids::bigint[]))
+                ORDER BY o.task_id
+                LIMIT :limit::integer
+                FOR UPDATE OF o SKIP LOCKED
+            )""";
+        // The statement trigger on tasks.queue wakes the workers.
+        revive = sql(pickDeadLetters + """
+            UPDATE tasks.queue q
+            SET state = 'ready', attempt = 0, run_at = NULL
+            WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+            RETURNING q.task_id
+            """);
+        discard = sql(pickDeadLetters + """
+            , gone AS (
+                DELETE FROM tasks.queue q
+                WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+                RETURNING q.task_id, q.attempt
+            )
+            UPDATE tasks.task t
+            SET outcome = 'failed', attempts = gone.attempt, completed_at = now()
+            FROM gone
+            WHERE t.topic_id = :topic::integer AND t.id = gone.task_id
+            RETURNING t.id
+            """);
+        // A discarded dead letter may have held back later tasks; no trigger sees a delete.
+        notifyReady = sql("SELECT pg_notify('tasks_ready', :topic::text)");
         countQueue = sql("""
             SELECT count(*) FILTER (WHERE state = 'scheduled'),
                    count(*) FILTER (WHERE state = 'retrying'),
@@ -1119,31 +1163,78 @@ public final class PostgresTaskStore implements TaskStore {
     public Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException {
         try (PreparedStatement statement = findTask.prepare(transaction.connection(), NamedSql.parameters().set("id", taskId));
              ResultSet resultSet = statement.executeQuery()) {
-            if (!resultSet.next()) {
-                return Optional.empty();
-            }
-            return Optional.of(new TaskView(
-                resultSet.getString("topic"),
-                resultSet.getLong("id"),
-                resultSet.getString("identifier"),
-                resultSet.getString("state"),
-                resultSet.getBoolean("finished"),
-                resultSet.getInt("attempt"),
-                instant(resultSet, "run_at"),
-                resultSet.getInt("priority"),
-                resultSet.getObject("node_id", Integer.class),
-                resultSet.getString("reference"),
-                resultSet.getObject("parent_id", Long.class),
-                resultSet.getObject("root_id", Long.class),
-                resultSet.getString("payload"),
-                resultSet.getString("payload_type"),
-                resultSet.getString("output"),
-                resultSet.getString("error"),
-                resultSet.getString("previous_outcome"),
-                instant(resultSet, "created_at"),
-                instant(resultSet, "completed_at")
-            ));
+            return resultSet.next() ? Optional.of(taskView(resultSet)) : Optional.empty();
         }
+    }
+
+    @Override
+    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) throws SQLException {
+        List<TaskView> result = new ArrayList<>();
+        try (PreparedStatement statement = deadLetters.prepare(transaction.connection(),
+                 NamedSql.parameters().set("topic", topicId).set("after", afterId).set("limit", limit));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                result.add(taskView(resultSet));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+        return deadLetterIds(revive, transaction, topicId, taskIds, limit);
+    }
+
+    @Override
+    public List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+        List<Long> discarded = deadLetterIds(discard, transaction, topicId, taskIds, limit);
+        if (!discarded.isEmpty()) {
+            try (PreparedStatement statement = notifyReady.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId))) {
+                statement.execute();
+            }
+        }
+        return discarded;
+    }
+
+    private static List<Long> deadLetterIds(NamedSql sql, StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("topic", topicId)
+            .set("all", taskIds == null)
+            .array("ids", "bigint", taskIds == null ? new Object[0] : taskIds.toArray())
+            .set("limit", taskIds == null ? limit : Math.min(limit, taskIds.size()));
+        List<Long> ids = new ArrayList<>();
+        try (PreparedStatement statement = sql.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                ids.add(resultSet.getLong(1));
+            }
+        }
+        ids.sort(null);
+        return ids;
+    }
+
+    private static TaskView taskView(ResultSet resultSet) throws SQLException {
+        return new TaskView(
+            resultSet.getString("topic"),
+            resultSet.getLong("id"),
+            resultSet.getString("identifier"),
+            resultSet.getString("state"),
+            resultSet.getBoolean("finished"),
+            resultSet.getInt("attempt"),
+            instant(resultSet, "run_at"),
+            resultSet.getInt("priority"),
+            resultSet.getObject("node_id", Integer.class),
+            resultSet.getString("reference"),
+            resultSet.getObject("parent_id", Long.class),
+            resultSet.getObject("root_id", Long.class),
+            resultSet.getString("payload"),
+            resultSet.getString("payload_type"),
+            resultSet.getString("output"),
+            resultSet.getString("error"),
+            resultSet.getString("previous_outcome"),
+            instant(resultSet, "created_at"),
+            instant(resultSet, "completed_at")
+        );
     }
 
     @Override

@@ -600,6 +600,48 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
+    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) {
+        return failed(memory(transaction), topicId, null, limit, afterId).stream()
+            .map(row -> find(transaction, row.taskId()).orElseThrow())
+            .toList();
+    }
+
+    @Override
+    public List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> revived = failed(memory, topicId, taskIds, limit, 0);
+        revived.forEach(row -> putQueued(memory, row.with(State.READY, null, 0, null, null)));
+        return revived.stream().map(Rows.Queued::taskId).toList();
+    }
+
+    @Override
+    public List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> discarded = failed(memory, topicId, taskIds, limit, 0);
+        Instant now = now();
+        for (Rows.Queued row : discarded) {
+            memory.remove(queue, row.taskId());
+            Rows.Task task = tasks.get(row.taskId());
+            memory.put(tasks, task.id(), task.finish("failed", task.output(), row.attempt(), now));
+        }
+        if (!discarded.isEmpty()) {
+            memory.ready(topicId);
+        }
+        return discarded.stream().map(Rows.Queued::taskId).toList();
+    }
+
+    /** The topic's dead letters, lowest id first: the given ones, or all, after an id. */
+    private List<Rows.Queued> failed(MemoryTransaction memory, int topicId, Collection<Long> taskIds, int limit, long afterId) {
+        Set<Long> wanted = taskIds == null ? null : Set.copyOf(taskIds);
+        return queue.values().stream()
+            .filter(row -> row.topicId() == topicId && row.state() == State.FAILED && row.taskId() > afterId)
+            .filter(row -> wanted == null || wanted.contains(row.taskId()))
+            .sorted(Comparator.comparingLong(Rows.Queued::taskId))
+            .limit(limit)
+            .toList();
+    }
+
+    @Override
     public Optional<TaskView> find(StoreTransaction transaction, long taskId) {
         memory(transaction);
         Rows.Task task = tasks.get(taskId);

@@ -184,6 +184,31 @@ public interface TaskStore {
     /** The unfinished tasks of a topic, by queue state. */
     QueueCounts count(StoreTransaction transaction, int topicId) throws SQLException;
 
+    /**
+     * A topic's dead letters, lowest id first, starting after {@code afterId} (0 for the first
+     * page), each with its last error.
+     */
+    List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) throws SQLException;
+
+    /**
+     * Gives dead letters another round of attempts: they become ready, with their attempt count
+     * back at zero, so the topic's whole retry policy applies again. Their attempt log stays.
+     *
+     * @param taskIds the dead letters to revive, or null for the topic's oldest {@code limit};
+     *                ids that aren't dead letters of the topic are skipped
+     * @return the revived ids
+     */
+    List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException;
+
+    /**
+     * Gives up on dead letters: they leave the queue and finish as failed, kept as long as the
+     * topic's retention for failed tasks says. Tasks they held back under an ordering run next.
+     *
+     * @param taskIds as for {@link #revive}
+     * @return the discarded ids
+     */
+    List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException;
+
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
 

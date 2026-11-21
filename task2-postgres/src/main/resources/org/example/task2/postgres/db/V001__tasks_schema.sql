@@ -113,6 +113,8 @@ CREATE INDEX queue_identifier_idx ON tasks.queue (topic_id, identifier, task_id)
 CREATE INDEX queue_due_idx ON tasks.queue (run_at) WHERE state IN ('scheduled', 'retrying');
 -- Requeueing tasks from dead nodes.
 CREATE INDEX queue_active_idx ON tasks.queue (node_id) WHERE state = 'active';
+-- Listing, reviving and discarding a topic's dead letters, which are few next to its backlog.
+CREATE INDEX queue_failed_idx ON tasks.queue (topic_id, task_id) WHERE state = 'failed';
 -- Idempotent push: at most one unfinished task per key. Finished tasks leave the queue. Partial,
 -- because most tasks have no key, and because a full index led by topic_id would compete with
 -- queue_identifier_idx in claims whenever the queue's statistics say it is empty.

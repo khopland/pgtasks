@@ -45,6 +45,7 @@ final class Housekeeper {
     private final Job reconcile;
     private final Object leadership = new Object();
     private Instant leaseEnds;
+    private volatile Instant lastHeartbeat;
     private ScheduledExecutorService executor;
 
     /**
@@ -63,6 +64,8 @@ final class Housekeeper {
     }
 
     void start() {
+        // Registering the node set its first heartbeat.
+        lastHeartbeat = store.clock().instant();
         executor = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name("task2-housekeeping-", 0).factory());
         schedule("heartbeat", settings.heartbeat(), this::heartbeat);
         schedule("orphan sweep", settings.heartbeat(), sweepOrphans);
@@ -132,6 +135,11 @@ final class Housekeeper {
         }
     }
 
+    /** When this node last recorded its heartbeat in the store. */
+    Instant lastHeartbeat() {
+        return lastHeartbeat;
+    }
+
     /** Whether this node holds the housekeeping lease now, by the store's clock. */
     boolean leading() {
         synchronized (leadership) {
@@ -141,10 +149,12 @@ final class Housekeeper {
 
     /** Heartbeats, then renews or takes the lease. */
     void heartbeat() throws Exception {
+        Instant beat = store.clock().instant();
         EngineCore.transact(store, transaction -> {
             store.heartbeat(transaction, nodeId);
             return null;
         });
+        lastHeartbeat = beat;
         Duration term = settings.leaseTerm();
         // Counted from before the call, so this node never believes in a lease longer than the store does.
         Instant asked = store.clock().instant();

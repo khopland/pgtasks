@@ -22,6 +22,11 @@ final class TopicDirectory {
         ids.put(name, id);
     }
 
+    /** The name of a topic id seen before, or the id as text. */
+    String name(int id) {
+        return ids.entrySet().stream().filter(entry -> entry.getValue() == id).map(Map.Entry::getKey).findFirst().orElse("#" + id);
+    }
+
     int id(StoreTransaction transaction, String name) throws SQLException {
         Integer id = ids.get(name);
         if (id != null) {

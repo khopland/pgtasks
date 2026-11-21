@@ -34,6 +34,7 @@ public final class PostgresNotifier implements Notifier {
     private final ConnectionFactory connections;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Thread thread;
+    private volatile boolean connected;
 
     public PostgresNotifier(ConnectionFactory connections) {
         this.connections = Objects.requireNonNull(connections);
@@ -57,6 +58,7 @@ public final class PostgresNotifier implements Notifier {
                     statement.execute("LISTEN " + LIMIT);
                     statement.execute("LISTEN " + TOPIC);
                 }
+                connected = true;
                 if (!first) {
                     listener.missed();
                 }
@@ -85,6 +87,7 @@ public final class PostgresNotifier implements Notifier {
                     }
                 }
             } catch (SQLException | RuntimeException e) {
+                connected = false;
                 if (!running.get()) {
                     return;
                 }
@@ -98,6 +101,11 @@ public final class PostgresNotifier implements Notifier {
                 backoff = backoff.multipliedBy(2).compareTo(Duration.ofSeconds(30)) > 0 ? Duration.ofSeconds(30) : backoff.multipliedBy(2);
             }
         }
+    }
+
+    @Override
+    public boolean connected() {
+        return connected && running.get();
     }
 
     @Override

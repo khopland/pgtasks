@@ -26,6 +26,14 @@ public interface Notifier extends AutoCloseable {
 
     void start(Listener listener);
 
+    /**
+     * Whether notifications are getting through now, for health checks. While they aren't, the
+     * engine still finds work by polling, only later.
+     */
+    default boolean connected() {
+        return true;
+    }
+
     @Override
     void close();
 }
