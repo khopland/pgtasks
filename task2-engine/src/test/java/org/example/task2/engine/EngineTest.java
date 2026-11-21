@@ -166,7 +166,9 @@ class EngineTest {
         engine.stop(Duration.ofMillis(500));
 
         assertThat(view(tester, quick).state()).isEqualTo("succeeded");
-        assertThat(view(tester, hung).state()).isEqualTo("retrying");
+        // Released as due at once, and the housekeeper keeps promoting until the end of stop(), so
+        // a promotion between the release and that may already have made it ready.
+        assertThat(view(tester, hung).state()).isIn("retrying", "ready");
         assertThat(view(tester, hung).attempt()).isZero();
     }
 
