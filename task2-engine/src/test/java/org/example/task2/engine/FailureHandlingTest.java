@@ -2,7 +2,6 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.example.task2.admin.TaskView;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -13,6 +12,7 @@ import org.example.task2.Decisions;
 import org.example.task2.Insertion;
 import org.example.task2.Junction;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.TaskView;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;

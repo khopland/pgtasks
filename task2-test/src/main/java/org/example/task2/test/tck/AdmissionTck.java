@@ -3,7 +3,6 @@ package org.example.task2.test.tck;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import org.example.task2.admin.LimitOverride;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -12,6 +11,7 @@ import java.util.Optional;
 
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
+import org.example.task2.admin.LimitOverride;
 import org.example.task2.spi.TaskStore;
 import org.junit.jupiter.api.Test;
 

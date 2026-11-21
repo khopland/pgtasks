@@ -3,7 +3,6 @@ package org.example.task2.spring;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import org.example.task2.admin.TaskView;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -11,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.example.task2.Decision;
 import org.example.task2.Tasks;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.TaskView;
 import org.example.task2.engine.EffectiveSettings;
 import org.example.task2.engine.EngineFixture;
 import org.example.task2.engine.Rate;

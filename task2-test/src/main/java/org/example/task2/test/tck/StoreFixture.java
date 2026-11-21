@@ -1,8 +1,5 @@
 package org.example.task2.test.tck;
 
-import org.example.task2.admin.AttemptView;
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
@@ -12,13 +9,16 @@ import java.util.stream.IntStream;
 import org.example.task2.Insertion;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
+import org.example.task2.admin.AttemptView;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import org.example.task2.spi.StoreTransaction;
-import org.example.task2.spi.TaskStore;
 import org.example.task2.spi.TaskStore.ClaimedTask;
 import org.example.task2.spi.TaskStore.Completion;
 import org.example.task2.spi.TaskStore.NewTask;
 import org.example.task2.spi.TaskStore.Resolution;
 import org.example.task2.spi.TaskStore.WaitState;
+import org.example.task2.spi.TaskStore;
 
 /**
  * Drives a task store for the TCK, each call in its own committed transaction. A store's test

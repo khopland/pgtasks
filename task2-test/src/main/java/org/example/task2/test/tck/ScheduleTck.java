@@ -2,13 +2,13 @@ package org.example.task2.test.tck;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.example.task2.admin.Schedule;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 import org.example.task2.Insertion;
+import org.example.task2.admin.Schedule;
 import org.example.task2.spi.TaskStore.ScheduleSpec;
 import org.junit.jupiter.api.Test;
 

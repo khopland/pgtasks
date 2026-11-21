@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.example.task2</groupId>
+    <artifactId>task2-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../task2-parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>task2-junit</artifactId>
+  <description>Task 2.0 for JUnit 5 tests without Spring: an engine on the in-memory store with a manual clock, per test.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-memory</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

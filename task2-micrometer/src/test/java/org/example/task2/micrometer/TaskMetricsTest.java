@@ -2,17 +2,17 @@ package org.example.task2.micrometer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TopicSnapshot;
+import org.example.task2.spi.ManualClock;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import org.example.task2.spi.ManualClock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

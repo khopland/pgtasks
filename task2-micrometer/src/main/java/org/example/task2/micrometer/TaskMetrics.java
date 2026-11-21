@@ -1,7 +1,5 @@
 package org.example.task2.micrometer;
 
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -14,10 +12,12 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.ToDoubleFunction;
 
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TopicSnapshot;
+import org.example.task2.engine.TaskEngine;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
-import org.example.task2.engine.TaskEngine;
 
 /**
  * Queue gauges per topic, from the counts the housekeeping leader snapshots (every minute by

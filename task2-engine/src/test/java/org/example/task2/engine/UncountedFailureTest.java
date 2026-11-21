@@ -2,7 +2,6 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.example.task2.admin.TaskView;
 import java.net.ConnectException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -10,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.example.task2.BatchHandler;
 import org.example.task2.Decision;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.TaskView;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.spi.ManualClock;
 import org.junit.jupiter.api.AfterEach;

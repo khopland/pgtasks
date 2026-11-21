@@ -2,7 +2,6 @@ package org.example.task2.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.example.task2.admin.TopicSnapshot;
 import java.time.Duration;
 import java.time.Period;
 import java.util.List;
@@ -11,6 +10,7 @@ import java.util.Map;
 import org.example.task2.Decision;
 import org.example.task2.Outcome;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.TopicSnapshot;
 import org.example.task2.spi.TaskStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;

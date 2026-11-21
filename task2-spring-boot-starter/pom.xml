@@ -79,7 +79,17 @@
       <artifactId>spring-boot-health</artifactId>
       <optional>true</optional>
     </dependency>
-    <!-- JSON payloads, when the app has Jackson. -->
+    <!-- JSON payloads, when the app has Jackson: the codec without Jackson itself. -->
+    <dependency>
+      <groupId>org.example.task2</groupId>
+      <artifactId>task2-jackson</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>tools.jackson.core</groupId>
+          <artifactId>jackson-databind</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <dependency>
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>

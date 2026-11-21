@@ -5,19 +5,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.example.task2.test.tck.StoreFixture.completion;
 import static org.example.task2.test.tck.StoreFixture.task;
 
-import org.example.task2.admin.AttemptView;
-import org.example.task2.admin.FailureGroup;
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 import org.example.task2.Insertion;
+import org.example.task2.admin.AttemptView;
+import org.example.task2.admin.FailureGroup;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import org.example.task2.spi.StaleClaimException;
-import org.example.task2.spi.TaskStore;
 import org.example.task2.spi.TaskStore.ClaimedTask;
+import org.example.task2.spi.TaskStore;
 import org.junit.jupiter.api.Test;
 
 /** TCK: fenced completion, retries, dead letters, promotion and expiry. */

@@ -1,6 +1,5 @@
 package org.example.task2.engine;
 
-import org.example.task2.admin.Schedule;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
@@ -13,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
 
 import org.example.task2.Outcome;
+import org.example.task2.admin.Schedule;
 import org.example.task2.spi.TaskStore;
 
 /**

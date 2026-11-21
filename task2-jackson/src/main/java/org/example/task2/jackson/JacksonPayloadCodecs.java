@@ -1,12 +1,20 @@
-package org.example.task2.spring;
+package org.example.task2.jackson;
 
 import org.example.task2.PayloadCodec;
 import org.example.task2.engine.PayloadCodecs;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * JSON for every payload type without a codec of its own, with the application's Jackson
- * mapper, so a topic of records needs no codec. Stored with payload type {@code json}.
+ * JSON for every payload type without a codec of its own, so a topic of records needs no codec.
+ * Stored with payload type {@code json}. The Spring starter gives one with the application's
+ * mapper; without Spring:
+ *
+ * <pre>{@code
+ * TaskEngine.builder()
+ *     .dataSource(dataSource)
+ *     .codecs(new JacksonPayloadCodecs(JsonMapper.builder().build()))
+ *     ...
+ * }</pre>
  */
 public class JacksonPayloadCodecs implements PayloadCodecs {
 

@@ -11,6 +11,7 @@
     <module>task-processor</module>
     <module>task-processor-jdbc</module>
     <!-- Task 2.0: separate parent, Java 25, JUnit 5, Postgres only -->
+    <module>task2-bom</module>
     <module>task2-parent</module>
     <module>task2-api</module>
     <module>task2-spi</module>
@@ -19,6 +20,8 @@
     <module>task2-memory</module>
     <module>task2-engine</module>
     <module>task2-micrometer</module>
+    <module>task2-jackson</module>
+    <module>task2-junit</module>
     <module>task2-spring-boot-starter</module>
   </modules>
   <profiles>

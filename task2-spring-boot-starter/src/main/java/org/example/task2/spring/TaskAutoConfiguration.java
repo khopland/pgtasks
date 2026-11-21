@@ -120,8 +120,8 @@ public class TaskAutoConfiguration {
     static class Json {
         @Bean
         @ConditionalOnMissingBean(org.example.task2.engine.PayloadCodecs.class)
-        JacksonPayloadCodecs taskPayloadCodecs(ObjectProvider<tools.jackson.databind.json.JsonMapper> mapper) {
-            return new JacksonPayloadCodecs(mapper.getIfAvailable(() -> tools.jackson.databind.json.JsonMapper.builder().build()));
+        org.example.task2.jackson.JacksonPayloadCodecs taskPayloadCodecs(ObjectProvider<tools.jackson.databind.json.JsonMapper> mapper) {
+            return new org.example.task2.jackson.JacksonPayloadCodecs(mapper.getIfAvailable(() -> tools.jackson.databind.json.JsonMapper.builder().build()));
         }
     }
 

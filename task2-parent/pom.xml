@@ -25,6 +25,7 @@
     <slf4j.version>2.0.20</slf4j.version>
     <micrometer.version>1.17.3</micrometer.version>
     <jspecify.version>1.0.0</jspecify.version>
+    <jackson.version>3.1.8</jackson.version>
     <micrometer-tracing.version>1.7.3</micrometer-tracing.version>
   </properties>
 
@@ -34,6 +35,13 @@
         <groupId>org.jspecify</groupId>
         <artifactId>jspecify</artifactId>
         <version>${jspecify.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
       <dependency>
         <groupId>org.junit</groupId>
@@ -82,6 +90,16 @@
       <dependency>
         <groupId>org.example.task2</groupId>
         <artifactId>task2-micrometer</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.example.task2</groupId>
+        <artifactId>task2-jackson</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.example.task2</groupId>
+        <artifactId>task2-junit</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

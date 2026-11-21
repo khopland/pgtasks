@@ -3,8 +3,6 @@ package org.example.task2.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import org.example.task2.admin.DeadLetterQuery;
-import org.example.task2.admin.TaskView;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -16,6 +14,8 @@ import java.util.concurrent.TimeUnit;
 import org.example.task2.Decision;
 import org.example.task2.Outcome;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.DeadLetterQuery;
+import org.example.task2.admin.TaskView;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.postgres.PostgresNotifier;
 import org.example.task2.spi.ManualClock;

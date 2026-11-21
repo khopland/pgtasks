@@ -3,8 +3,6 @@ package org.example.task2.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TaskView;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -29,6 +27,8 @@ import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import org.example.task2.spi.TaskStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;

@@ -1,7 +1,5 @@
 package org.example.task2.engine;
 
-import org.example.task2.admin.QueueCounts;
-import org.example.task2.admin.TaskView;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -16,6 +14,8 @@ import org.example.task2.Creation;
 import org.example.task2.Insertion;
 import org.example.task2.Pushed;
 import org.example.task2.TopicRef;
+import org.example.task2.admin.QueueCounts;
+import org.example.task2.admin.TaskView;
 import org.example.task2.spi.ManualClock;
 import org.example.task2.spi.StoreTransaction;
 import org.example.task2.spi.TaskStore;
@@ -161,6 +161,35 @@ public final class TaskTester {
             }
         }
         return pushed;
+    }
+
+    /** The payloads of the committed pushes to a topic, in order. */
+    public <T> List<T> pushedPayloads(TopicRef<T> topic) {
+        return pushed(topic).stream().map(Creation::payload).toList();
+    }
+
+    /** The identifiers of the committed pushes to a topic, in order. */
+    public List<String> pushedIdentifiers(TopicRef<?> topic) {
+        return pushed(topic).stream().map(Creation::identifier).toList();
+    }
+
+    /** Fails unless exactly this many committed pushes went to the topic, saying which did. */
+    public void assertPushed(TopicRef<?> topic, int count) {
+        List<String> identifiers = pushedIdentifiers(topic);
+        if (identifiers.size() != count) {
+            throw new AssertionError("Expected " + count + " push(es) to " + topic + ", but " + identifiers.size() + " committed"
+                + (identifiers.isEmpty() ? "" : ", for identifiers " + identifiers));
+        }
+    }
+
+    /** Fails if any committed push went to the topic. */
+    public void assertNothingPushed(TopicRef<?> topic) {
+        assertPushed(topic, 0);
+    }
+
+    /** The task, finished or not; fails if the store doesn't have it. */
+    public TaskView task(long taskId) {
+        return find(taskId).orElseThrow(() -> new AssertionError("No task " + taskId));
     }
 
     public List<Captured<?>> captured() {
