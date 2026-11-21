@@ -1,8 +1,10 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
@@ -28,7 +30,7 @@ final class CompositeObserver implements TaskObserver {
         return new PushObservation() {
             @Override
             public @Nullable String traceContext() {
-                return each.stream().map(PushObservation::traceContext).filter(java.util.Objects::nonNull).findFirst().orElse(null);
+                return each.stream().map(PushObservation::traceContext).filter(Objects::nonNull).findFirst().orElse(null);
             }
 
             @Override
@@ -44,7 +46,7 @@ final class CompositeObserver implements TaskObserver {
     }
 
     @Override
-    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
         observers.forEach(observer -> observer.limitWait(topic, limit, wait));
     }
 

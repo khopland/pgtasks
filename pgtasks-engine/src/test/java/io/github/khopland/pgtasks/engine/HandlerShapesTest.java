@@ -1,19 +1,22 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Creation;
+import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Review 2026-11-21: a per-task handler, topics a module pushes to, and pushes from a handler that should be staged. */
 class HandlerShapesTest {
@@ -62,14 +65,14 @@ class HandlerShapesTest {
     void a_topic_a_module_pushes_to_exists_before_the_module_that_runs_it_starts() {
         InMemoryTaskStore store = new InMemoryTaskStore();
         TaskEngine producer = TaskEngine.builder().store(store)
-            .configure("shop", tasks -> tasks.codec(Order.class, io.github.khopland.pgtasks.PayloadCodec.of(Order::id, Order::new)).pushesTo(ORDERS))
+            .configure("shop", tasks -> tasks.codec(Order.class, PayloadCodec.of(Order::id, Order::new)).pushesTo(ORDERS))
             .build().prepare();
         engines.add(producer);
         producer.tasks().independently().push(ORDERS, "o-1", new Order("o-1"));
 
         List<Order> handled = new CopyOnWriteArrayList<>();
         TaskEngine consumer = started(TaskEngine.builder().store(store)
-            .configure("billing", tasks -> tasks.codec(Order.class, io.github.khopland.pgtasks.PayloadCodec.of(Order::id, Order::new))
+            .configure("billing", tasks -> tasks.codec(Order.class, PayloadCodec.of(Order::id, Order::new))
                 .eachTask(ORDERS, task -> handled.add(task.payload()))));
         TaskTester.of(consumer).awaitIdle();
         assertThat(handled).containsExactly(new Order("o-1"));
@@ -105,7 +108,7 @@ class HandlerShapesTest {
     @Test
     void a_success_can_keep_an_output_on_the_task() {
         TaskEngine engine = started(TaskEngine.builder().store(new InMemoryTaskStore()).configure("notify", tasks -> tasks
-            .topic(NOTIFY, batch -> batch.decide(task -> io.github.khopland.pgtasks.Decision.success("receipt-" + task.identifier())))));
+            .topic(NOTIFY, batch -> batch.decide(task -> Decision.success("receipt-" + task.identifier())))));
         long id = engine.tasks().independently().push(NOTIFY, "a", "hello").id();
         TaskTester.of(engine).awaitIdle();
 

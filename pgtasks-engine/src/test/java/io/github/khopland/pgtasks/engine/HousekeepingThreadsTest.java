@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
@@ -14,8 +12,11 @@ import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Review F6: one thread ran all housekeeping, so a long purge stopped the heartbeat and cost the lease. */
 class HousekeepingThreadsTest {

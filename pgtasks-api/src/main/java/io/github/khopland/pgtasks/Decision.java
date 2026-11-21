@@ -25,7 +25,7 @@ public sealed interface Decision {
      * system: stored in {@code tasks.task.output}, shown by {@code admin().find(id)}.
      */
     static Decision success(String output) {
-        return new Success(java.util.Objects.requireNonNull(output, "output"));
+        return new Success(Objects.requireNonNull(output, "output"));
     }
 
     /** Irrelevant, so processing stops here. Not a failure, and nothing downstream runs. */

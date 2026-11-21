@@ -11,9 +11,8 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.postgresql.PGStatement;
-
 import org.jspecify.annotations.Nullable;
+import org.postgresql.PGStatement;
 
 /** SQL with {@code :name} parameters, so one value can be bound in several places. */
 final class NamedSql {

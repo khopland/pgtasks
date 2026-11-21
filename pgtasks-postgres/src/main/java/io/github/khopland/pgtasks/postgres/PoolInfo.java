@@ -5,7 +5,6 @@ import java.sql.SQLException;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
-
 import javax.sql.DataSource;
 
 import org.jspecify.annotations.Nullable;

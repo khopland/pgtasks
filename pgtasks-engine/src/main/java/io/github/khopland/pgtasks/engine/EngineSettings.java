@@ -6,6 +6,7 @@ import java.util.Objects;
 
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.spi.Notifier;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
 import org.jspecify.annotations.Nullable;
@@ -42,7 +43,7 @@ record EngineSettings(
     Duration snapshotInterval,
     Duration purgeInterval,
     TaskObserver observer,
-    io.github.khopland.pgtasks.spi.TaskStore.Expiries expiries
+    TaskStore.Expiries expiries
 ) {
 
     public EngineSettings {
@@ -114,7 +115,7 @@ record EngineSettings(
         return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer, expiries);
     }
 
-    public EngineSettings withExpiries(io.github.khopland.pgtasks.spi.TaskStore.Expiries expiries) {
+    public EngineSettings withExpiries(TaskStore.Expiries expiries) {
         return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer, expiries);
     }
 }

@@ -1,6 +1,9 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,10 +13,14 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.random.RandomGenerator;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import io.github.khopland.pgtasks.PayloadCodec;
+import io.github.khopland.pgtasks.Push;
+import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.TaskStorageException;
+import io.github.khopland.pgtasks.TaskWriter;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
@@ -26,7 +33,6 @@ import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -134,8 +140,8 @@ public final class TaskEngine implements AutoCloseable {
     /** What a topic's stored recurring tasks should be, by this node's configuration, with their payloads encoded. */
     @SuppressWarnings("unchecked")
     private <T> List<TaskStore.ScheduleSpec> scheduleSpecs(Topic<T> topic) {
-        java.time.Instant now = store.clock().instant();
-        List<TaskStore.ScheduleSpec> specs = new java.util.ArrayList<>();
+        Instant now = store.clock().instant();
+        List<TaskStore.ScheduleSpec> specs = new ArrayList<>();
         for (Recurring<?> each : recurring) {
             if (!each.topic().name().equals(topic.ref().name())) {
                 continue;
@@ -152,7 +158,7 @@ public final class TaskEngine implements AutoCloseable {
     /** Topics this node's modules push to, created when it prepares; see {@link TaskRegistry#pushesTo}. */
     private Set<String> pushedTo = Set.of();
 
-    TaskEngine withPushedTo(java.util.Collection<String> topics) {
+    TaskEngine withPushedTo(Collection<String> topics) {
         this.pushedTo = Set.copyOf(topics);
         return this;
     }
@@ -182,10 +188,10 @@ public final class TaskEngine implements AutoCloseable {
      * one, so they commit with it, or on their own if there isn't. Returns what was pushed, empty
      * if no route takes the event.
      */
-    public List<io.github.khopland.pgtasks.Pushed> publish(Object event) {
-        List<io.github.khopland.pgtasks.Pushed> pushed = new java.util.ArrayList<>();
+    public List<Pushed> publish(Object event) {
+        List<Pushed> pushed = new ArrayList<>();
         for (EventRoute<?> route : eventRoutes) {
-            io.github.khopland.pgtasks.Push<?> push = route.apply(event);
+            Push<?> push = route.apply(event);
             if (push != null) {
                 pushed.add(push(push));
             }
@@ -193,9 +199,9 @@ public final class TaskEngine implements AutoCloseable {
         return pushed;
     }
 
-    private <T> io.github.khopland.pgtasks.Pushed push(io.github.khopland.pgtasks.Push<T> push) {
+    private <T> Pushed push(Push<T> push) {
         boolean inTransaction = settings.transactions().current().isPresent();
-        io.github.khopland.pgtasks.TaskWriter writer = inTransaction ? tasks : tasks.independently();
+        TaskWriter writer = inTransaction ? tasks : tasks.independently();
         return writer.push(push.topic(), push.insertion(), List.of(push.creation())).getFirst();
     }
 
@@ -385,7 +391,7 @@ public final class TaskEngine implements AutoCloseable {
         }
         List<TaskStore.TopicInfo> registered = EngineCore.transact(store, store::topics);
         // A topic deleted anywhere is unknown here too: a push to it fails as unknown.
-        directory.retain(registered.stream().map(TaskStore.TopicInfo::name).collect(java.util.stream.Collectors.toSet()));
+        directory.retain(registered.stream().map(TaskStore.TopicInfo::name).collect(Collectors.toSet()));
         synchronized (topicsLock) {
             if (!started) {
                 return;
@@ -472,12 +478,12 @@ public final class TaskEngine implements AutoCloseable {
         if (!started) {
             return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(), List.of());
         }
-        java.time.Instant now = store.clock().instant();
-        java.time.Instant beat = running(housekeeper).lastHeartbeat();
+        Instant now = store.clock().instant();
+        Instant beat = running(housekeeper).lastHeartbeat();
         Notifier wakeUps = notifier;
         EngineHealth.Notifications notifications = wakeUps == null ? EngineHealth.Notifications.NONE
             : wakeUps.connected() ? EngineHealth.Notifications.CONNECTED : EngineHealth.Notifications.DISCONNECTED;
-        List<EngineHealth.StuckClaim> stuck = new java.util.ArrayList<>();
+        List<EngineHealth.StuckClaim> stuck = new ArrayList<>();
         for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
             TopicWorker<?> worker = workersById.get(claim.topicId());
             Duration allowed = (worker == null ? term : worker.topic().settings().batchDeadline()).plus(settings.heartbeat());
@@ -529,7 +535,7 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     /** The running workers; none once the engine has stopped. */
-    java.util.Collection<TopicWorker<?>> workers() {
+    Collection<TopicWorker<?>> workers() {
         return started ? workersByName.values() : List.of();
     }
 
@@ -573,7 +579,7 @@ public final class TaskEngine implements AutoCloseable {
     /** Revives the dead letters of topics that sweep them every so often, if it's time, once across the cluster. */
     private void reviveSweep() throws Exception {
         for (TopicWorker<?> worker : List.copyOf(workersByName.values())) {
-            java.time.Duration every = worker.topic().settings().deadLetters().reviveEvery();
+            Duration every = worker.topic().settings().deadLetters().reviveEvery();
             if (every != null && EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, worker.topicId(), every))) {
                 int revived = admin.revive(worker.topic().ref().name(), DeadLetterQuery.ALL);
                 if (revived > 0) {
@@ -627,11 +633,11 @@ public final class TaskEngine implements AutoCloseable {
      * succeeded while its reply was lost, if claimed longer ago than the grace period.
      */
     private void releaseOrphans(Duration grace) throws Exception {
-        java.time.Instant cutoff = store.clock().instant().minus(grace);
+        Instant cutoff = store.clock().instant().minus(grace);
         Map<Integer, List<TaskStore.Completion>> orphans = new HashMap<>();
         for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
             if (!held.containsKey(claim.taskId()) && claim.claimedAt() != null && !claim.claimedAt().isAfter(cutoff)) {
-                orphans.computeIfAbsent(claim.topicId(), ignored -> new java.util.ArrayList<>())
+                orphans.computeIfAbsent(claim.topicId(), ignored -> new ArrayList<>())
                     .add(new TaskStore.Completion(claim.taskId(), claim.attempt(), claim.claimedAt(), BatchRun.RELEASED));
             }
         }
@@ -682,7 +688,7 @@ public final class TaskEngine implements AutoCloseable {
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
             limits.stopRefreshing(TopicWorker.PATIENCE);
-            List<TopicWorker<?>> all = new java.util.ArrayList<>();
+            List<TopicWorker<?>> all = new ArrayList<>();
             List<Thread> drains;
             synchronized (topicsLock) {
                 all.addAll(workersByName.values());

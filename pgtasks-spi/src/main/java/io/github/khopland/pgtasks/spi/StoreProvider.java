@@ -1,7 +1,7 @@
 package io.github.khopland.pgtasks.spi;
 
 import java.util.Map;
-
+import java.util.OptionalInt;
 import javax.sql.DataSource;
 
 /**
@@ -25,7 +25,7 @@ public interface StoreProvider {
      * The most connections the DataSource's pool hands out, if it says. The engine keeps the
      * store work it does at once well below it, so heartbeats and the application still get one.
      */
-    default java.util.OptionalInt poolSize(DataSource dataSource) {
-        return java.util.OptionalInt.empty();
+    default OptionalInt poolSize(DataSource dataSource) {
+        return OptionalInt.empty();
     }
 }

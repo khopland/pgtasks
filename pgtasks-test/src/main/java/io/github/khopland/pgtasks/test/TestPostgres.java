@@ -11,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
-
 import org.jspecify.annotations.Nullable;
 
 /**

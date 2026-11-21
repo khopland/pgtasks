@@ -1,23 +1,24 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.github.khopland.pgtasks.test.PostgresDatabase;
+import io.github.khopland.pgtasks.test.TestPostgres;
+
 import liquibase.Contexts;
 import liquibase.Liquibase;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
-import io.github.khopland.pgtasks.test.PostgresDatabase;
-import io.github.khopland.pgtasks.test.TestPostgres;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The same SQL files, applied four ways: the built-in runner, Flyway, the Liquibase wrapper and a

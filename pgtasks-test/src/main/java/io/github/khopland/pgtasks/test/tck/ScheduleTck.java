@@ -1,16 +1,19 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.spi.TaskStore.ScheduleSpec;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: recurring tasks as stored: synced per topic, found when due, moved on when fired. */
 public abstract class ScheduleTck extends StoreTck {
@@ -42,7 +45,7 @@ public abstract class ScheduleTck extends StoreTck {
     void a_topics_schedules_are_stored_as_given() throws SQLException {
         StoreFixture fixture = fixture();
         int topic = fixture.topic("reports");
-        Instant next = fixture.store().clock().instant().plus(Duration.ofHours(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant next = fixture.store().clock().instant().plus(Duration.ofHours(1)).truncatedTo(ChronoUnit.SECONDS);
         sync(fixture, topic, spec("nightly", "0 2 * * *", next), spec("hourly", "@hourly", next));
 
         assertThat(schedules(fixture, "reports")).extracting(Schedule::name).containsExactly("hourly", "nightly");
@@ -62,7 +65,7 @@ public abstract class ScheduleTck extends StoreTck {
     void syncing_again_keeps_the_next_run_of_an_unchanged_cron_and_removes_what_is_gone() throws SQLException {
         StoreFixture fixture = fixture();
         int topic = fixture.topic("reports"), other = fixture.topic("other");
-        Instant now = fixture.store().clock().instant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant now = fixture.store().clock().instant().truncatedTo(ChronoUnit.SECONDS);
         Instant first = now.plus(Duration.ofHours(1)), later = now.plus(Duration.ofHours(5));
         sync(fixture, topic, spec("kept", "0 2 * * *", first), spec("changed", "0 3 * * *", first), spec("gone", "0 4 * * *", first));
         sync(fixture, other, spec("elsewhere", "0 4 * * *", first));
@@ -70,9 +73,9 @@ public abstract class ScheduleTck extends StoreTck {
         sync(fixture, topic, spec("kept", "0 2 * * *", later), spec("changed", "0 5 * * *", later), spec("new", "0 6 * * *", later));
 
         assertThat(schedules(fixture, "reports")).extracting(Schedule::name, Schedule::cron, Schedule::nextRunAt).containsExactly(
-            org.assertj.core.groups.Tuple.tuple("changed", "0 5 * * *", later),
-            org.assertj.core.groups.Tuple.tuple("kept", "0 2 * * *", first),
-            org.assertj.core.groups.Tuple.tuple("new", "0 6 * * *", later));
+            Tuple.tuple("changed", "0 5 * * *", later),
+            Tuple.tuple("kept", "0 2 * * *", first),
+            Tuple.tuple("new", "0 6 * * *", later));
         assertThat(schedules(fixture, "other")).extracting(Schedule::name).containsExactly("elsewhere");
 
         sync(fixture, topic);
@@ -83,7 +86,7 @@ public abstract class ScheduleTck extends StoreTck {
     void due_schedules_are_found_earliest_first_and_move_on_when_fired() throws SQLException {
         StoreFixture fixture = fixture();
         int topic = fixture.topic("reports");
-        Instant now = fixture.store().clock().instant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant now = fixture.store().clock().instant().truncatedTo(ChronoUnit.SECONDS);
         sync(fixture, topic, spec("late", "0 2 * * *", now.minus(Duration.ofMinutes(1))),
             spec("later", "0 3 * * *", now.minus(Duration.ofMinutes(10))),
             spec("future", "0 4 * * *", now.plus(Duration.ofHours(1))));

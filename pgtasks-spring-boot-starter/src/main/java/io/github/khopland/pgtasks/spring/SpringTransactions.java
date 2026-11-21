@@ -2,16 +2,15 @@ package io.github.khopland.pgtasks.spring;
 
 import java.sql.Connection;
 import java.util.Optional;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.spi.AppTransaction;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
+
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-
-import org.jspecify.annotations.Nullable;
 
 /**
  * Lets {@code tasks.push(...)} join the current Spring transaction: on Postgres it writes on the

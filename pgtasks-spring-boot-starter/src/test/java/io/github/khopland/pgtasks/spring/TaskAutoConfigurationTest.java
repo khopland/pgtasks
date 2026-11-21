@@ -1,13 +1,13 @@
 package io.github.khopland.pgtasks.spring;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
@@ -17,8 +17,11 @@ import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
+import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.TestPostgres;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,9 +32,13 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
 import org.springframework.transaction.support.DefaultTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TaskAutoConfigurationTest {
 
@@ -99,8 +106,8 @@ class TaskAutoConfigurationTest {
             TaskEngine engine = context.getBean(TaskEngine.class);
             assertThat(engine.processing()).containsExactlyInAnyOrder("notify", "assessment");
             assertThat(engine.effectiveSettings()).extracting(EffectiveSettings::topic, EffectiveSettings::module)
-                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("notify", "notifyTasks"),
-                    org.assertj.core.groups.Tuple.tuple("assessment", "assessmentTasks"));
+                .containsExactlyInAnyOrder(Tuple.tuple("notify", "notifyTasks"),
+                    Tuple.tuple("assessment", "assessmentTasks"));
             assertThat(setting(engine, "assessment", "concurrency")).isEqualTo(new EffectiveSettings.Setting("8", EffectiveSettings.Source.MODULE_DEFAULTS));
 
             context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
@@ -305,7 +312,7 @@ class TaskAutoConfigurationTest {
         TaskConfigurer greetingTasks() {
             return tasks -> tasks
                 .onEvent(Greeted.class, greeted -> greeted.name().isEmpty() ? null
-                    : new io.github.khopland.pgtasks.Push<>(NOTIFY, io.github.khopland.pgtasks.Insertion.APPEND, io.github.khopland.pgtasks.Creation.of(greeted.name(), "hello " + greeted.name())))
+                    : new Push<>(NOTIFY, Insertion.APPEND, Creation.of(greeted.name(), "hello " + greeted.name())))
                 .topic(NOTIFY, batch -> batch.decide(task -> Decision.success()));
         }
     }
@@ -356,7 +363,7 @@ class TaskAutoConfigurationTest {
     @Test
     void an_engine_of_the_applications_own_wins() {
         memory().withUserConfiguration(Modules.class)
-            .withBean(TaskEngine.class, () -> TaskEngine.builder().store(new io.github.khopland.pgtasks.memory.InMemoryTaskStore()).build())
+            .withBean(TaskEngine.class, () -> TaskEngine.builder().store(new InMemoryTaskStore()).build())
             .run(context -> assertThat(context.getBean(TaskEngine.class).processing()).isEmpty());
     }
 
@@ -392,7 +399,7 @@ class TaskAutoConfigurationTest {
         }
 
         @Override
-        protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {
+        protected void doBegin(Object transaction, TransactionDefinition definition) {
         }
 
         @Override

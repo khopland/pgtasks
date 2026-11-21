@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -15,9 +12,13 @@ import io.github.khopland.pgtasks.postgres.PostgresNotifier;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Topics created, paused and resumed at runtime, on the in-memory store and on Postgres. */
 class TopicDiscoveryTest {

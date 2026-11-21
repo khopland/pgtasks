@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -13,9 +10,13 @@ import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Event routes, and topics created on push for module tests, without Spring. */
 class EventRouteTest {

@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.spring.slice;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -17,6 +14,7 @@ import io.github.khopland.pgtasks.slice.PartsRegister;
 import io.github.khopland.pgtasks.slice.Slice;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.TestPostgres;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,6 +23,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Phase 4's exit test: the vertical slice runs unchanged as a Spring Boot application. The context

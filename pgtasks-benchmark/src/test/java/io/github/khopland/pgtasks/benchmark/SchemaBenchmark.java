@@ -3,6 +3,8 @@ package io.github.khopland.pgtasks.benchmark;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -14,13 +16,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-
 import javax.sql.DataSource;
+
+import io.github.khopland.pgtasks.Ordering;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
-import io.github.khopland.pgtasks.Ordering;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -271,8 +273,8 @@ class SchemaBenchmark {
     }
 
     /** Writes a line to the Postgres log, so its plans can be told apart by scenario. */
-    private static void mark(String url, String text) throws java.sql.SQLException {
-        try (var connection = java.sql.DriverManager.getConnection(url, "postgres", null);
+    private static void mark(String url, String text) throws SQLException {
+        try (var connection = DriverManager.getConnection(url, "postgres", null);
              var statement = connection.prepareStatement("SELECT set_config('benchmark.mark', ?, false)")) {
             statement.setString(1, text);
             statement.execute();

@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -27,8 +28,8 @@ public interface TaskObserver {
      * Every one of these observers, in order: each sees everything, and one that throws doesn't
      * stop the others. A push stores the first trace context any of them gives.
      */
-    static TaskObserver composite(java.util.List<? extends TaskObserver> observers) {
-        java.util.List<TaskObserver> all = observers.stream().filter(observer -> observer != NONE).<TaskObserver>map(observer -> observer).toList();
+    static TaskObserver composite(List<? extends TaskObserver> observers) {
+        List<TaskObserver> all = observers.stream().filter(observer -> observer != NONE).<TaskObserver>map(observer -> observer).toList();
         return all.isEmpty() ? NONE : all.size() == 1 ? all.getFirst() : new CompositeObserver(all);
     }
 
@@ -62,7 +63,7 @@ public interface TaskObserver {
      * A claim found the topic's rate limit spent: the topic waits this long, or until the limit
      * changes, before it claims again on this node.
      */
-    default void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+    default void limitWait(TopicRef<?> topic, String limit, Duration wait) {
     }
 
     /** What became of a task when its batch completed. */

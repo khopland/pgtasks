@@ -1,5 +1,7 @@
 package io.github.khopland.pgtasks;
 
+import java.util.Objects;
+
 /**
  * Handles a batch of claimed tasks and returns a decision for each of them, plus the downstream
  * work each one staged. The engine owns claims, fencing, retries and wake-ups.
@@ -17,7 +19,7 @@ public interface BatchHandler<T> {
      * succeeds, one whose handler throws fails, and the others carry on.
      */
     static <T> BatchHandler<T> each(TaskHandler<T> handler) {
-        java.util.Objects.requireNonNull(handler, "handler");
+        Objects.requireNonNull(handler, "handler");
         return batch -> batch.decide(task -> {
             handler.handle(task);
             return Decision.success();

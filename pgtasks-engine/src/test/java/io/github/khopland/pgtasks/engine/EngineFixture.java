@@ -1,17 +1,21 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 
-import com.zaxxer.hikari.HikariDataSource;
 import io.github.khopland.pgtasks.postgres.PostgresNotifier;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
+import com.zaxxer.hikari.HikariDataSource;
 
 /** Engines on a real Postgres. Each engine gets its own pool, so several engines stand in for several pods. */
 public final class EngineFixture implements AutoCloseable {
@@ -33,7 +37,7 @@ public final class EngineFixture implements AutoCloseable {
             .withHeartbeat(Duration.ofMillis(200), Duration.ofHours(1))
             .withPromoteInterval(Duration.ofMillis(50))
             // Tests that expire a node want its tasks back soon, not after 30 s.
-            .withExpiries(new io.github.khopland.pgtasks.spi.TaskStore.Expiries(3, Duration.ofMillis(100)));
+            .withExpiries(new TaskStore.Expiries(3, Duration.ofMillis(100)));
     }
 
     public TaskEngine start(String node, List<Topic<?>> topics) throws Exception {
@@ -82,9 +86,9 @@ public final class EngineFixture implements AutoCloseable {
     }
 
     /** Creates topics up front, so a test can queue a whole batch before any engine polls. */
-    public void createTopics(String... names) throws java.sql.SQLException {
+    public void createTopics(String... names) throws SQLException {
         PostgresTaskStore store = new PostgresTaskStore(database.dataSource());
-        try (io.github.khopland.pgtasks.spi.StoreTransaction transaction = store.begin()) {
+        try (StoreTransaction transaction = store.begin()) {
             for (String name : names) {
                 store.createTopic(transaction, name);
             }

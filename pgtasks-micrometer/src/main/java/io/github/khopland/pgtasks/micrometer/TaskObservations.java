@@ -1,25 +1,30 @@
 package io.github.khopland.pgtasks.micrometer;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.Task;
+import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.TaskObserver;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.transport.Kind;
 import io.micrometer.observation.transport.ReceiverContext;
 import io.micrometer.observation.transport.SenderContext;
-import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.Task;
-import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.engine.TaskObserver;
-import org.slf4j.MDC;
-
 import org.jspecify.annotations.Nullable;
+import org.slf4j.MDC;
 
 /**
  * The engine's observer for Micrometer.
@@ -57,7 +62,7 @@ public final class TaskObservations implements TaskObserver {
 
     private final ObservationRegistry observations;
     private final @Nullable MeterRegistry meters;
-    private final Map<String, java.util.concurrent.atomic.AtomicInteger> breakers = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> breakers = new ConcurrentHashMap<>();
 
     /** Observations and the MDC only, without counters. */
     public TaskObservations(ObservationRegistry observations) {
@@ -152,8 +157,8 @@ public final class TaskObservations implements TaskObserver {
             return;
         }
         breakers.computeIfAbsent(topic.name(), name -> {
-            java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger();
-            io.micrometer.core.instrument.Gauge.builder(BREAKER, state, java.util.concurrent.atomic.AtomicInteger::get)
+            AtomicInteger state = new AtomicInteger();
+            Gauge.builder(BREAKER, state, AtomicInteger::get)
                 .description("1 while this node has stopped claiming from the topic because most recent tasks failed")
                 .tag("topic", name)
                 .register(meters);
@@ -163,11 +168,11 @@ public final class TaskObservations implements TaskObserver {
 
     /** {@value #LIMIT_WAIT}: how long topics waited for their rate limit, by topic and limit. */
     @Override
-    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
         if (meters == null) {
             return;
         }
-        io.micrometer.core.instrument.Timer.builder(LIMIT_WAIT)
+        Timer.builder(LIMIT_WAIT)
             .description("Time a topic waited because its rate limit was spent")
             .tag("topic", topic.name())
             .tag("limit", limit)

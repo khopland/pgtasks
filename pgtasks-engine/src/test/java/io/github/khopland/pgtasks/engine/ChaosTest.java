@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static io.github.khopland.pgtasks.engine.EngineFixture.await;
-
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,10 +20,14 @@ import io.github.khopland.pgtasks.Work;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static io.github.khopland.pgtasks.engine.EngineFixture.await;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Chaos on real Postgres: nodes die mid-batch, freeze until they are presumed dead, or lose the

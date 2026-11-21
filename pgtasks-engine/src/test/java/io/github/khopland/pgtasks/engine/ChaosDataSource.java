@@ -7,12 +7,12 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLTransientConnectionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
-
 import javax.sql.DataSource;
+
+import io.github.khopland.pgtasks.test.PostgresDatabase;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import io.github.khopland.pgtasks.test.PostgresDatabase;
 
 /**
  * One node's connection pool, with switches for trouble: cut the database off, freeze the node,

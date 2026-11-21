@@ -6,6 +6,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.function.BiConsumer;
 
 import io.github.khopland.pgtasks.Batch;
 import io.github.khopland.pgtasks.BatchResource;
@@ -25,14 +31,14 @@ final class DefaultBatch<T> implements Batch<T> {
     private final List<Task<T>> tasks;
     private final Map<BatchResource<?>, Object> resources;
     /** Checks a staged push's or junction's target topic; see {@link DefaultTasks#checkTarget}. */
-    private final java.util.function.BiConsumer<TopicRef<?>, Boolean> targets;
+    private final BiConsumer<TopicRef<?>, Boolean> targets;
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources) {
         this(topic, tasks, resources, (target, codec) -> { });
     }
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources,
-                 java.util.function.BiConsumer<TopicRef<?>, Boolean> targets) {
+                 BiConsumer<TopicRef<?>, Boolean> targets) {
         this.topic = topic;
         this.tasks = List.copyOf(tasks);
         this.resources = resources;
@@ -77,11 +83,11 @@ final class DefaultBatch<T> implements Batch<T> {
             throw new IllegalArgumentException("parallelism must be at least 1");
         }
         List<StagedWork<T>> works = tasks.stream().map(task -> new StagedWork<>(task, targets)).toList();
-        java.util.concurrent.Semaphore running = new java.util.concurrent.Semaphore(parallelism);
-        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newThreadPerTaskExecutor(
+        Semaphore running = new Semaphore(parallelism);
+        ExecutorService executor = Executors.newThreadPerTaskExecutor(
             Thread.ofVirtual().name("pgtasks-" + topic.name() + "-task-", 0).factory());
         try {
-            List<java.util.concurrent.Future<Decision>> futures = new ArrayList<>(works.size());
+            List<Future<Decision>> futures = new ArrayList<>(works.size());
             for (StagedWork<T> work : works) {
                 running.acquire();
                 futures.add(executor.submit(() -> {
@@ -98,7 +104,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 Decision decision;
                 try {
                     decision = futures.get(index).get();
-                } catch (java.util.concurrent.ExecutionException e) {
+                } catch (ExecutionException e) {
                     // decideOne turns everything else into a decision: only a cancellation or a
                     // VirtualMachineError gets here, and the batch records the latter, then rethrows it.
                     if (e.getCause() instanceof VirtualMachineError fatal) {
@@ -140,11 +146,11 @@ final class DefaultBatch<T> implements Batch<T> {
     private static final class StagedWork<T> implements Work<T> {
 
         private final Task<T> task;
-        private final java.util.function.BiConsumer<TopicRef<?>, Boolean> targets;
+        private final BiConsumer<TopicRef<?>, Boolean> targets;
         private final List<Push<?>> pushes = new ArrayList<>();
         private final List<Junction> junctions = new ArrayList<>();
 
-        StagedWork(Task<T> task, java.util.function.BiConsumer<TopicRef<?>, Boolean> targets) {
+        StagedWork(Task<T> task, BiConsumer<TopicRef<?>, Boolean> targets) {
             this.task = task;
             this.targets = targets;
         }

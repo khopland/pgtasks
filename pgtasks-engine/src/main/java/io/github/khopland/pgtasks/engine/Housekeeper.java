@@ -3,21 +3,26 @@ package io.github.khopland.pgtasks.engine;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
 
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,7 +69,7 @@ final class Housekeeper {
      * one (a node that misses them loses the lease, and its health turns DOWN), the regular jobs
      * on another, and retention, which can run long after downtime, on a third.
      */
-    private final List<ScheduledExecutorService> executors = new java.util.ArrayList<>();
+    private final List<ScheduledExecutorService> executors = new ArrayList<>();
     /** How long one retention run may delete before it leaves the rest to the next run. */
     static final Duration PURGE_BUDGET = Duration.ofSeconds(30);
     private final Duration purgeBudget;
@@ -249,15 +254,15 @@ final class Housekeeper {
         List<Integer> fired;
         do {
             // Seen by the observer like any push: traced while written, counted once committed.
-            List<Runnable> committed = new java.util.ArrayList<>();
+            List<Runnable> committed = new ArrayList<>();
             fired = EngineCore.transact(store, transaction -> {
                 committed.clear();
                 Instant now = store.clock().instant();
-                List<Integer> topics = new java.util.ArrayList<>();
+                List<Integer> topics = new ArrayList<>();
                 for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
                     Instant next;
                     try {
-                        next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).following(now);
+                        next = Cron.parse(schedule.cron(), ZoneId.of(schedule.zone())).following(now);
                     } catch (RuntimeException e) {
                         // Written by a node with another idea of cron; try again in an hour rather than every second.
                         LOGGER.warn("Recurring task {} of {} has a schedule this node can't read, '{}' in {}; skipped for an hour",
@@ -265,8 +270,8 @@ final class Housekeeper {
                         store.scheduleFired(transaction, schedule.id(), now, now.plus(Duration.ofHours(1)));
                         continue;
                     }
-                    io.github.khopland.pgtasks.TopicRef<?> topic = io.github.khopland.pgtasks.TopicRef.of(schedule.topic(), Object.class);
-                    List<io.github.khopland.pgtasks.Pushed> results;
+                    TopicRef<?> topic = TopicRef.of(schedule.topic(), Object.class);
+                    List<Pushed> results;
                     try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
                         results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
                             schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.traceContext())));
@@ -292,12 +297,12 @@ final class Housekeeper {
     private void purge() throws Exception {
         Instant now = store.clock().instant();
         long deadline = System.nanoTime() + purgeBudget.toNanos();
-        Map<Integer, Map<Outcome, Period>> retention = new java.util.TreeMap<>(EngineCore.transact(store, store::retention));
-        List<Integer> order = new java.util.ArrayList<>(retention.keySet());
+        Map<Integer, Map<Outcome, Period>> retention = new TreeMap<>(EngineCore.transact(store, store::retention));
+        List<Integer> order = new ArrayList<>(retention.keySet());
         Integer stoppedAt = purgeStoppedAt;
         if (stoppedAt != null) {
             int start = (int) order.stream().filter(id -> id <= stoppedAt).count();
-            java.util.Collections.rotate(order, -start);
+            Collections.rotate(order, -start);
         }
         purgeStoppedAt = null;
         for (int topic : order) {

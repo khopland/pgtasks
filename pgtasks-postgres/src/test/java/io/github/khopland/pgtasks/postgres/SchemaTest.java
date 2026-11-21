@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Arrays;
@@ -10,12 +7,16 @@ import java.util.List;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
-import io.github.khopland.pgtasks.test.tck.StoreFixture;
-import org.postgresql.ds.PGSimpleDataSource;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+import io.github.khopland.pgtasks.test.tck.StoreFixture;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.postgresql.ds.PGSimpleDataSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SchemaTest {
 

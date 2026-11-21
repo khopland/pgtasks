@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -12,9 +10,12 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Dead letters that come back by themselves: on a new application version, or every so often. */
 class DeadLetterPolicyTest {

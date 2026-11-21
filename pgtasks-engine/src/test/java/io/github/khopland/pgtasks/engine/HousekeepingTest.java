@@ -1,19 +1,24 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.time.Period;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The housekeeper on the in-memory store: one leader among several engines, failover, and the leader's jobs. */
 class HousekeepingTest {
@@ -41,8 +46,8 @@ class HousekeepingTest {
     void one_housekeeping_run_promotes_every_due_task_not_just_one_batch() throws Exception {
         TaskEngine engine = engines.start("node-a", topic());
         engine.admin().pause("topic");
-        engine.tasks().independently().push(TOPIC, io.github.khopland.pgtasks.Insertion.APPEND, java.util.stream.IntStream.range(0, 2_500)
-            .mapToObj(index -> io.github.khopland.pgtasks.Creation.of("t" + index, "ok").withDelay(Duration.ofMinutes(1))).toList());
+        engine.tasks().independently().push(TOPIC, Insertion.APPEND, IntStream.range(0, 2_500)
+            .mapToObj(index -> Creation.of("t" + index, "ok").withDelay(Duration.ofMinutes(1))).toList());
         TaskTester tester = TaskTester.of(engine);
 
         tester.advance(Duration.ofMinutes(2));
@@ -89,8 +94,8 @@ class HousekeepingTest {
         TaskEngine nodeB = engines.start("node-b", topic());
         TaskTester tester = engines.tester();
 
-        long delayed = nodeA.tasks().independently().push(TOPIC, io.github.khopland.pgtasks.Insertion.APPEND,
-            List.of(io.github.khopland.pgtasks.Creation.of("later", "ok").withDelay(Duration.ofMinutes(5)))).getFirst().id();
+        long delayed = nodeA.tasks().independently().push(TOPIC, Insertion.APPEND,
+            List.of(Creation.of("later", "ok").withDelay(Duration.ofMinutes(5)))).getFirst().id();
         nodeA.stop(Duration.ofSeconds(5));
         EngineFixture.await("B to lead", Duration.ofSeconds(5), nodeB::leadsHousekeeping);
 
@@ -117,7 +122,7 @@ class HousekeepingTest {
         tester.awaitIdle();
 
         tester.advance(Duration.ofDays(2));
-        assertThat(java.util.stream.Stream.of(first, other).filter(id -> tester.find(id).isPresent()))
+        assertThat(Stream.of(first, other).filter(id -> tester.find(id).isPresent()))
             .as("each run purges one topic, then runs out of time").hasSize(1);
 
         tester.advance(Duration.ofSeconds(1));
@@ -169,8 +174,8 @@ class HousekeepingTest {
         TaskEngine engine = engines.start("node-a", List.of(topic().getFirst().with(TopicSettings.defaults()
             .withRetention(Map.of(Outcome.SUCCEEDED, Period.ofDays(30))))));
         TaskTester tester = engines.tester();
-        long id = engine.tasks().independently().push(TOPIC, io.github.khopland.pgtasks.Insertion.APPEND,
-            List.of(io.github.khopland.pgtasks.Creation.of("a", "ok").withDelay(Duration.ofDays(20)))).getFirst().id();
+        long id = engine.tasks().independently().push(TOPIC, Insertion.APPEND,
+            List.of(Creation.of("a", "ok").withDelay(Duration.ofDays(20)))).getFirst().id();
 
         tester.advance(Duration.ofDays(21));   // runs now, 21 days after it was created
         tester.awaitIdle();

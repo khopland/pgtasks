@@ -1,24 +1,27 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.completion;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
-import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import io.github.khopland.pgtasks.spi.TaskStore;
+import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
+
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.completion;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** TCK: fenced completion, retries, dead letters, promotion and expiry. */
 public abstract class CompletionTck extends StoreTck {
@@ -183,7 +186,7 @@ public abstract class CompletionTck extends StoreTck {
     void a_counted_failure_keeps_its_error_on_the_task_while_it_retries() throws Exception {
         StoreFixture fixture = setUp();
         long id = fixture.push(topic, "a");
-        java.time.Instant firstFailed;
+        Instant firstFailed;
         failAndRetry(fixture, id);
         firstFailed = fixture.view(id).orElseThrow().firstFailedAt();
         failAndRetry(fixture, id);
@@ -199,7 +202,7 @@ public abstract class CompletionTck extends StoreTck {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, task("a"), task("b"), task("c"), task("fine"));
         String refused = "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}";
-        for (ClaimedTask claimed : fixture.claim(topic, node, io.github.khopland.pgtasks.Ordering.FIFO, 10)) {
+        for (ClaimedTask claimed : fixture.claim(topic, node, Ordering.FIFO, 10)) {
             TaskStore.Resolution resolution = switch (claimed.identifier()) {
                 case "a", "b" -> new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, Duration.ofHours(1), false, refused);
                 case "c" -> StoreFixture.deadLetter();
@@ -213,8 +216,8 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(counts.oldestFailingAt()).isNotNull();
         List<FailureGroup> groups = fixture.inTransaction(transaction -> fixture.store().failing(transaction, topic, 10));
         assertThat(groups).extracting(FailureGroup::error, FailureGroup::tasks).containsExactly(
-            org.assertj.core.groups.Tuple.tuple("java.net.ConnectException", 2L),
-            org.assertj.core.groups.Tuple.tuple("gave up", 1L));
+            Tuple.tuple("java.net.ConnectException", 2L),
+            Tuple.tuple("gave up", 1L));
         assertThat(groups.getFirst().exampleMessage()).isEqualTo("refused");
         assertThat(groups.getFirst().oldestFailedAt()).isNotNull();
     }
@@ -343,7 +346,7 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(fixture.state(mine)).as("a node never expires itself").isEqualTo("active");
         assertThat(fixture.state(theirs)).isEqualTo("ready");
         assertThat(fixture.attempt(theirs)).isEqualTo(1);
-        assertThat(fixture.attempts(theirs)).extracting(AttemptView::result, AttemptView::nodeId).containsExactly(org.assertj.core.groups.Tuple.tuple("expired", crashed));
+        assertThat(fixture.attempts(theirs)).extracting(AttemptView::result, AttemptView::nodeId).containsExactly(Tuple.tuple("expired", crashed));
     }
 
     @Test
@@ -393,8 +396,8 @@ public abstract class CompletionTck extends StoreTck {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, task("a"), task("b"));
         int other = fixture.node("node-b");
-        ClaimedTask mine = fixture.claim(topic, node, io.github.khopland.pgtasks.Ordering.FIFO, 1).getFirst();
-        fixture.claim(topic, other, io.github.khopland.pgtasks.Ordering.FIFO, 1);
+        ClaimedTask mine = fixture.claim(topic, node, Ordering.FIFO, 1).getFirst();
+        fixture.claim(topic, other, Ordering.FIFO, 1);
 
         List<TaskStore.ActiveClaim> claims = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node));
 

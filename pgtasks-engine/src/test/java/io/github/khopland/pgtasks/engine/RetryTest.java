@@ -1,15 +1,19 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.random.RandomGenerator;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RetryTest {
 
@@ -42,10 +46,10 @@ class RetryTest {
         assertThat(ramp.giveUpAfter(Duration.ofHours(1)).nominalAttempts()).as("2,550 s ramping, then 1,050 s left: no room for another").isEqualTo(9);
         assertThat(ramp.forever().isForever()).isTrue();
         assertThat(ramp.isForever()).as("a budget gives up").isFalse();
-        assertThat(ramp.forever().allowsAnotherAfter(1_000_000, null, java.time.Instant.now(), Duration.ofMinutes(30))).isTrue();
+        assertThat(ramp.forever().allowsAnotherAfter(1_000_000, null, Instant.now(), Duration.ofMinutes(30))).isTrue();
         assertThat(ramp.forever().describe()).isEqualTo("forever, from PT10S x2.0 up to PT30M");
         assertThat(ramp.attempts(5).describe()).isEqualTo("5 attempts, from PT10S x2.0 up to PT30M");
-        assertThat(Retry.none().allowsAnotherAfter(1, null, java.time.Instant.now(), Duration.ZERO)).isFalse();
+        assertThat(Retry.none().allowsAnotherAfter(1, null, Instant.now(), Duration.ZERO)).isFalse();
         // A tiny backoff and a long budget: counted at once, not one by one.
         assertThat(Retry.exponential(Duration.ofMillis(1), Duration.ofMillis(1)).giveUpAfter(Duration.ofDays(1)).nominalAttempts())
             .isEqualTo(86_400_001);
@@ -58,7 +62,7 @@ class RetryTest {
     @Test
     void a_budget_is_time_since_the_first_failure() {
         Retry week = Retry.standard();
-        java.time.Instant now = java.time.Instant.parse("2026-11-21T12:00:00Z");
+        Instant now = Instant.parse("2026-11-21T12:00:00Z");
         Duration halfHour = Duration.ofMinutes(30);
         assertThat(week.allowsAnotherAfter(400, now.minus(Duration.ofDays(6)), now, halfHour)).as("attempts don't matter").isTrue();
         assertThat(week.allowsAnotherAfter(3, now.minus(Duration.ofDays(7)).plus(halfHour), now, halfHour)).as("the retry starts at the end").isTrue();
@@ -69,9 +73,9 @@ class RetryTest {
 
     @Test
     void overrides_change_parts_of_the_policy_in_any_order() {
-        for (Map<String, String> overrides : java.util.List.of(
-            java.util.Map.of("topics.work.retry.first-backoff", "1s", "topics.work.retry.max-backoff", "1m", "topics.work.retry.give-up-after", "1h"),
-            new java.util.TreeMap<>(java.util.Map.of("topics.work.retry.give-up-after", "1h", "topics.work.retry.max-backoff", "1m",
+        for (Map<String, String> overrides : List.of(
+            Map.of("topics.work.retry.first-backoff", "1s", "topics.work.retry.max-backoff", "1m", "topics.work.retry.give-up-after", "1h"),
+            new TreeMap<>(Map.of("topics.work.retry.give-up-after", "1h", "topics.work.retry.max-backoff", "1m",
                 "topics.work.retry.first-backoff", "1s")))) {
             TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
                 .configure("work", tasks -> tasks.topic("work", String.class, batch -> batch.decide(task -> Decision.success())))

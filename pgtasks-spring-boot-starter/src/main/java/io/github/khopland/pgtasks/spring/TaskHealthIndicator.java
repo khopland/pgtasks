@@ -6,6 +6,7 @@ import java.util.Map;
 
 import io.github.khopland.pgtasks.engine.EngineHealth;
 import io.github.khopland.pgtasks.engine.TaskEngine;
+
 import org.springframework.boot.health.contributor.AbstractHealthIndicator;
 import org.springframework.boot.health.contributor.Health;
 

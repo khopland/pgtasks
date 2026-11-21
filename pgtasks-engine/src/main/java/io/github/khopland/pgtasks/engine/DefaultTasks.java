@@ -6,6 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import io.github.khopland.pgtasks.Creation;
@@ -23,7 +25,6 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,7 +54,7 @@ final class DefaultTasks implements Tasks {
     private final Consumer<String> wakeLocally;
     private final TaskObserver taskObserver;
     private volatile @Nullable PayloadCodecs fallbackCodecs;
-    private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new ConcurrentHashMap<>();
     private volatile Observer observer = (topic, insertion, creations, results) -> { };
 
     DefaultTasks(
@@ -85,7 +86,7 @@ final class DefaultTasks implements Tasks {
     }
 
     /** Pairs of handler topic and target topic already warned about, so each is logged once. */
-    private final java.util.Set<String> warnedHandlers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Set<String> warnedHandlers = ConcurrentHashMap.newKeySet();
 
     @Override
     public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {

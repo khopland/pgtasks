@@ -1,11 +1,12 @@
 package io.github.khopland.pgtasks.spring;
 
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.micrometer.TaskMetrics;
 import io.github.khopland.pgtasks.micrometer.TaskObservations;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;

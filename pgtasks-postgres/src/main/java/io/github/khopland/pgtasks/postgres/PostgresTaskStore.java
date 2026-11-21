@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.Period;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -36,6 +37,7 @@ import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
+import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -1141,7 +1143,7 @@ public final class PostgresTaskStore implements TaskStore {
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
             .set("outcome", outcome.label())
-            .set("before", OffsetDateTime.ofInstant(completedBefore, java.time.ZoneOffset.UTC))
+            .set("before", OffsetDateTime.ofInstant(completedBefore, ZoneOffset.UTC))
             .set("limit", limit);
         try (PreparedStatement statement = purge.prepare(transaction.connection(), parameters)) {
             return statement.executeUpdate();
@@ -1321,7 +1323,7 @@ public final class PostgresTaskStore implements TaskStore {
             .set("name", name)
             .set("rate", perSecond)
             .set("burst", burst)
-            .set("until", until == null ? null : OffsetDateTime.ofInstant(until, java.time.ZoneOffset.UTC))
+            .set("until", until == null ? null : OffsetDateTime.ofInstant(until, ZoneOffset.UTC))
             .set("by", by)
             .set("expected", expectedVersion);
         try (PreparedStatement statement = overrideLimit.prepare(transaction.connection(), parameters);
@@ -1395,8 +1397,8 @@ public final class PostgresTaskStore implements TaskStore {
             .set("all", query.taskIds() == null)
             .array("ids", "bigint", query.taskIds() == null ? new Object[0] : query.taskIds().toArray())
             .set("error", query.error())
-            .set("from", query.failedFrom() == null ? null : OffsetDateTime.ofInstant(query.failedFrom(), java.time.ZoneOffset.UTC))
-            .set("until", query.failedUntil() == null ? null : OffsetDateTime.ofInstant(query.failedUntil(), java.time.ZoneOffset.UTC))
+            .set("from", query.failedFrom() == null ? null : OffsetDateTime.ofInstant(query.failedFrom(), ZoneOffset.UTC))
+            .set("until", query.failedUntil() == null ? null : OffsetDateTime.ofInstant(query.failedUntil(), ZoneOffset.UTC))
             .set("limit", query.taskIds() == null ? limit : Math.min(limit, query.taskIds().size()));
     }
 
@@ -1458,8 +1460,8 @@ public final class PostgresTaskStore implements TaskStore {
     public void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException {
         try (PreparedStatement statement = scheduleFired.prepare(transaction.connection(), NamedSql.parameters()
                  .set("id", scheduleId)
-                 .set("fired", OffsetDateTime.ofInstant(firedAt, java.time.ZoneOffset.UTC))
-                 .set("next", OffsetDateTime.ofInstant(nextRunAt, java.time.ZoneOffset.UTC)))) {
+                 .set("fired", OffsetDateTime.ofInstant(firedAt, ZoneOffset.UTC))
+                 .set("next", OffsetDateTime.ofInstant(nextRunAt, ZoneOffset.UTC)))) {
             statement.executeUpdate();
         }
     }
@@ -1586,7 +1588,7 @@ public final class PostgresTaskStore implements TaskStore {
 
     /** LISTEN/NOTIFY on a connection outside the pool when the pool says how; see {@link NotifierConnections}. */
     @Override
-    public io.github.khopland.pgtasks.spi.Notifier notifier() {
+    public Notifier notifier() {
         return new PostgresNotifier(NotifierConnections.of(dataSource));
     }
 

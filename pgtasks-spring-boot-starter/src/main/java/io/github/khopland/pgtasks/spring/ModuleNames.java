@@ -9,6 +9,7 @@ import java.util.function.Supplier;
 
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.modulith.core.ApplicationModules;
 import org.springframework.util.ClassUtils;
 
 /**
@@ -64,7 +65,7 @@ final class ModuleNames {
     }
 
     /** Loaded only with Spring Modulith on the classpath. */
-    private record Modulith(org.springframework.modulith.core.ApplicationModules modules) {
+    private record Modulith(ApplicationModules modules) {
 
         @SuppressWarnings("unchecked")
         static Optional<Modulith> find(ConfigurableListableBeanFactory beans) {
@@ -72,13 +73,13 @@ final class ModuleNames {
                 if (inModuleTest(beans)) {
                     // spring-modulith-test is a test dependency, so no compile-time reference.
                     Object execution = Objects.requireNonNull(beans.getSingleton(MODULE_TEST_EXECUTION), MODULE_TEST_EXECUTION);
-                    return Optional.of(new Modulith((org.springframework.modulith.core.ApplicationModules)
+                    return Optional.of(new Modulith((ApplicationModules)
                         execution.getClass().getMethod("getModules").invoke(execution)));
                 }
                 if (ClassUtils.isPresent(MODULES_RUNTIME, ModuleNames.class.getClassLoader())) {
                     String[] runtimes = beans.getBeanNamesForType(ClassUtils.forName(MODULES_RUNTIME, ModuleNames.class.getClassLoader()));
                     if (runtimes.length == 1) {
-                        return Optional.of(new Modulith(((Supplier<org.springframework.modulith.core.ApplicationModules>)
+                        return Optional.of(new Modulith(((Supplier<ApplicationModules>)
                             beans.getBean(runtimes[0])).get()));
                     }
                 }

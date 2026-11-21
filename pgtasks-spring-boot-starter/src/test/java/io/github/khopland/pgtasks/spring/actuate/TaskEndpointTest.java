@@ -1,13 +1,12 @@
 package io.github.khopland.pgtasks.spring.actuate;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.khopland.pgtasks.Decision;
@@ -20,6 +19,7 @@ import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +30,8 @@ import org.springframework.core.env.Environment;
 import org.springframework.test.annotation.DirtiesContext;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The tasks endpoint and health indicator over HTTP, in a Boot app with Actuator and the in-memory store. */
 @SpringBootTest(classes = TaskEndpointTest.App.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
@@ -93,7 +95,7 @@ class TaskEndpointTest {
         return new Response(response.statusCode(), response.body().isEmpty() ? null : json.readTree(response.body()));
     }
 
-    private static boolean unchecked(java.util.concurrent.Callable<Boolean> check) {
+    private static boolean unchecked(Callable<Boolean> check) {
         try {
             return check.call();
         } catch (Exception e) {

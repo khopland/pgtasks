@@ -1,22 +1,22 @@
 package io.github.khopland.pgtasks.spring;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EngineFixture;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.micrometer.TaskMetrics;
 import io.github.khopland.pgtasks.micrometer.TaskObservations;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration;
@@ -26,6 +26,8 @@ import org.springframework.boot.micrometer.observation.autoconfigure.Observation
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class TaskMicrometerAutoConfigurationTest {
 
@@ -76,7 +78,7 @@ class TaskMicrometerAutoConfigurationTest {
     void with_micrometer_the_engine_is_observed_and_counted() {
         runner.withUserConfiguration(Micrometer.class).run(context -> {
             assertThat(context).hasNotFailed().hasSingleBean(TaskObservations.class).hasSingleBean(TaskMetrics.class);
-            context.getBean(io.github.khopland.pgtasks.Tasks.class).independently().push(NOTIFY, "anna", "hello");
+            context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
 
             MeterRegistry meters = context.getBean(MeterRegistry.class);
             EngineFixture.await("the task completed", Duration.ofSeconds(5), () -> meters.find(TaskObservations.COMPLETED)
@@ -106,7 +108,7 @@ class TaskMicrometerAutoConfigurationTest {
     void an_observer_bean_of_the_application_sees_everything_next_to_the_observations() {
         runner.withUserConfiguration(Micrometer.class, OwnObserver.class).run(context -> {
             assertThat(context).hasNotFailed().hasSingleBean(TaskObservations.class);
-            context.getBean(io.github.khopland.pgtasks.Tasks.class).independently().push(NOTIFY, "anna", "hello");
+            context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
             assertThat(context.getBean(OwnObserver.class).pushedTo).containsExactly("notify");
             assertThat(context.getBean(MeterRegistry.class).get(TaskObservations.PUSHED).tags("topic", "notify", "status", "queued").counter().count())
                 .isEqualTo(1);

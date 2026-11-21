@@ -1,22 +1,31 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
+import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
+import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Handlers that fail in unusual ways: an Error instead of an exception, or decisions for some tasks only. */
 class FailureHandlingTest {
@@ -34,7 +43,7 @@ class FailureHandlingTest {
         }
     }
 
-    private TaskView deadLetterAfter(io.github.khopland.pgtasks.BatchHandler<String> handler) throws Exception {
+    private TaskView deadLetterAfter(BatchHandler<String> handler) throws Exception {
         engine = TaskEngine.builder()
             .store(new InMemoryTaskStore())
             .configure("work", tasks -> tasks.topic(WORK, handler, topic -> topic.retry(Retry.none())))
@@ -81,7 +90,7 @@ class FailureHandlingTest {
             .store(new InMemoryTaskStore())
             .configure("numbers", tasks -> tasks
                 // Writes what it can't read for negative numbers, like a codec changed in a later version.
-                .codec(Integer.class, io.github.khopland.pgtasks.PayloadCodec.<Integer>of(n -> n < 0 ? "minus one" : String.valueOf(n), Integer::valueOf))
+                .codec(Integer.class, PayloadCodec.<Integer>of(n -> n < 0 ? "minus one" : String.valueOf(n), Integer::valueOf))
                 .topic(numbers, batch -> batch.decide(task -> {
                     handled.add(task.payload());
                     return Decision.success();
@@ -129,33 +138,33 @@ class FailureHandlingTest {
     @Test
     @DisplayName("A batch past its deadline keeps its tasks claimed until its handler has really ended")
     void a_handler_ignoring_the_deadline_never_runs_next_to_its_retry() throws Exception {
-        io.github.khopland.pgtasks.spi.ManualClock clock = io.github.khopland.pgtasks.spi.ManualClock.startingNow();
-        java.util.concurrent.atomic.AtomicInteger runs = new java.util.concurrent.atomic.AtomicInteger(), running = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.atomic.AtomicInteger mostAtOnce = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.atomic.AtomicBoolean finish = new java.util.concurrent.atomic.AtomicBoolean();
+        ManualClock clock = ManualClock.startingNow();
+        AtomicInteger runs = new AtomicInteger(), running = new AtomicInteger();
+        AtomicInteger mostAtOnce = new AtomicInteger();
+        AtomicBoolean finish = new AtomicBoolean();
         engine = TaskEngine.builder()
             .store(new InMemoryTaskStore(clock))
-            .globals(globals -> globals.heartbeat(java.time.Duration.ofMillis(50), java.time.Duration.ofHours(1))
-                .housekeeping(housekeeping -> housekeeping.promoteEvery(java.time.Duration.ofMillis(20))))
+            .globals(globals -> globals.heartbeat(Duration.ofMillis(50), Duration.ofHours(1))
+                .housekeeping(housekeeping -> housekeeping.promoteEvery(Duration.ofMillis(20))))
             .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
                 runs.incrementAndGet();
                 mostAtOnce.accumulateAndGet(running.incrementAndGet(), Math::max);
                 try {
                     while (!finish.get()) {
-                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000); // returns on interrupt, and carries on
+                        LockSupport.parkNanos(1_000_000); // returns on interrupt, and carries on
                     }
                 } finally {
                     running.decrementAndGet();
                 }
                 return Decision.success();
-            }), topic -> topic.batchDeadline(java.time.Duration.ofMillis(200))))
+            }), topic -> topic.batchDeadline(Duration.ofMillis(200))))
             .build()
             .start();
         long id = engine.tasks().independently().push(WORK, "a", "payload").id();
-        EngineFixture.await("the handler to start", java.time.Duration.ofSeconds(5), () -> runs.get() == 1);
+        EngineFixture.await("the handler to start", Duration.ofSeconds(5), () -> runs.get() == 1);
 
         Thread.sleep(1_500); // past the deadline and the second the scope waits
-        clock.advance(java.time.Duration.ofHours(1)); // far past any retry backoff
+        clock.advance(Duration.ofHours(1)); // far past any retry backoff
         Thread.sleep(300);
 
         assertThat(engine.admin().find(id).orElseThrow().state()).as("still claimed").isEqualTo("active");
@@ -163,7 +172,7 @@ class FailureHandlingTest {
         assertThat(runs).hasValue(1);
 
         finish.set(true);
-        EngineFixture.await("the late batch to fail", java.time.Duration.ofSeconds(5),
+        EngineFixture.await("the late batch to fail", Duration.ofSeconds(5),
             () -> !"active".equals(unchecked(() -> engine.admin().find(id).orElseThrow().state())));
         TaskView view = engine.admin().find(id).orElseThrow();
         assertThat(view.state()).isEqualTo("retrying");
@@ -171,7 +180,7 @@ class FailureHandlingTest {
         assertThat(mostAtOnce).hasValue(1);
     }
 
-    private static <V> V unchecked(java.util.concurrent.Callable<V> call) {
+    private static <V> V unchecked(Callable<V> call) {
         try {
             return call.call();
         } catch (Exception e) {

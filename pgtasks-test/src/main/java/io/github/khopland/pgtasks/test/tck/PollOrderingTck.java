@@ -1,10 +1,5 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.ids;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.prioritized;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.HashSet;
@@ -17,13 +12,18 @@ import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
+
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import org.jspecify.annotations.Nullable;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.ids;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.prioritized;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: the per-identifier ordering contract from plan section 10, cell by cell. */
 public abstract class PollOrderingTck extends StoreTck {

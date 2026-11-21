@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.Arrays;
@@ -12,9 +10,12 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 import io.github.khopland.pgtasks.test.tck.StoreFixture;
+
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
-import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A topic that polled empty for a while must claim quickly once work arrives. With a cached

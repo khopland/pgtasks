@@ -1,8 +1,11 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -19,6 +22,7 @@ import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Push;
+import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
@@ -30,7 +34,6 @@ import io.github.khopland.pgtasks.spi.TaskStore.Resolution;
 import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +72,7 @@ final class BatchRun<T> {
      * dead-letters at once: the breaker leaves them out, since they say nothing about whether a
      * downstream system is down.
      */
-    private final Set<Long> taskFaults = new java.util.HashSet<>();
+    private final Set<Long> taskFaults = new HashSet<>();
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
         this(worker, core, claimed, false);
@@ -236,7 +239,7 @@ final class BatchRun<T> {
     }
 
     @SuppressWarnings("unchecked")
-    private static <R> void beforeCommit(BatchResource<R> resource, Object value, Decisions decisions, Connection connection) throws java.sql.SQLException {
+    private static <R> void beforeCommit(BatchResource<R> resource, Object value, Decisions decisions, Connection connection) throws SQLException {
         resource.beforeCommit((R) value, decisions, connection);
     }
 
@@ -338,7 +341,7 @@ final class BatchRun<T> {
     @SuppressWarnings("unchecked")
     private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        List<io.github.khopland.pgtasks.Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents);
+        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents);
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 
@@ -346,7 +349,7 @@ final class BatchRun<T> {
      * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
      * task pushed in the same completion can complete a group. One call per target and counts.
      */
-    private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws java.sql.SQLException {
+    private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws SQLException {
         record Target(String topic, Junction.Counts counts) {
         }
         Map<Target, List<Set<String>>> groups = new LinkedHashMap<>();
@@ -453,7 +456,7 @@ final class BatchRun<T> {
 
     /** How many of the completions ended in each result. */
     private static Map<TaskObserver.Result, Integer> results(List<Completion> completions) {
-        Map<TaskObserver.Result, Integer> results = new java.util.EnumMap<>(TaskObserver.Result.class);
+        Map<TaskObserver.Result, Integer> results = new EnumMap<>(TaskObserver.Result.class);
         for (Completion completion : completions) {
             TaskObserver.Result result = switch (completion.resolution()) {
                 case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;

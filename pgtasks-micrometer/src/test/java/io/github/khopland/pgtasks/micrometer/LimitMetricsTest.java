@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.micrometer;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.util.List;
 
@@ -11,11 +9,14 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Review 2026-11-21: rate limits had no metrics: not their values, not the time topics waited for them. */
 class LimitMetricsTest {

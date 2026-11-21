@@ -8,11 +8,10 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.khopland.pgtasks.spi.Notifier;
-import org.postgresql.PGConnection;
-import org.postgresql.PGNotification;
 
 import org.jspecify.annotations.Nullable;
-
+import org.postgresql.PGConnection;
+import org.postgresql.PGNotification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

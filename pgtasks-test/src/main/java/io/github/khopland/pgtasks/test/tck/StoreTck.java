@@ -1,8 +1,7 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import org.junit.jupiter.api.AfterEach;
-
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
 
 /**
  * Base of the store TCK. A store's test class extends each TCK class and creates its fixture;

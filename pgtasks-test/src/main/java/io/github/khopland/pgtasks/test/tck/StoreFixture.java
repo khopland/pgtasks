@@ -14,12 +14,12 @@ import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import io.github.khopland.pgtasks.spi.TaskStore.Completion;
 import io.github.khopland.pgtasks.spi.TaskStore.NewTask;
 import io.github.khopland.pgtasks.spi.TaskStore.Resolution;
 import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
-import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 

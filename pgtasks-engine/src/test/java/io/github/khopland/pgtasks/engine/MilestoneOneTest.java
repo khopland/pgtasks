@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static io.github.khopland.pgtasks.engine.EngineFixture.await;
-
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
@@ -18,7 +15,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.BatchResource;
@@ -29,8 +25,6 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.test.PostgresDatabase;
-import io.github.khopland.pgtasks.test.PostgresExtension;
 import io.github.khopland.pgtasks.slice.AssessmentHandler;
 import io.github.khopland.pgtasks.slice.AssessmentLedger;
 import io.github.khopland.pgtasks.slice.FeedPublisher;
@@ -38,6 +32,9 @@ import io.github.khopland.pgtasks.slice.IncomeFeed;
 import io.github.khopland.pgtasks.slice.NoticeHandler;
 import io.github.khopland.pgtasks.slice.PartsRegister;
 import io.github.khopland.pgtasks.slice.Slice;
+import io.github.khopland.pgtasks.test.PostgresDatabase;
+import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -46,6 +43,9 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import static io.github.khopland.pgtasks.engine.EngineFixture.await;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The milestone 1 acceptance tests from plan section 15, on real Postgres with several workers. */
 class MilestoneOneTest {

@@ -1,5 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -12,11 +14,11 @@ import java.util.Objects;
  * @param windows   rates for times of day or week: each applies from when its cron fires until
  *                  another one fires; see {@link #at(java.time.Instant)}
  */
-public record RateLimit(String name, double perSecond, int burst, java.util.List<RateWindow> windows) {
+public record RateLimit(String name, double perSecond, int burst, List<RateWindow> windows) {
 
     public RateLimit {
         Objects.requireNonNull(name, "name");
-        windows = java.util.List.copyOf(windows);
+        windows = List.copyOf(windows);
         if (!(perSecond > 0)) {
             throw new IllegalArgumentException("rate must be positive; a rate of 0 is not a pause");
         }
@@ -26,7 +28,7 @@ public record RateLimit(String name, double perSecond, int burst, java.util.List
     }
 
     public static RateLimit perSecond(String name, double perSecond, int burst) {
-        return new RateLimit(name, perSecond, burst, java.util.List.of());
+        return new RateLimit(name, perSecond, burst, List.of());
     }
 
     public RateLimit withRate(double perSecond, int burst) {
@@ -39,11 +41,11 @@ public record RateLimit(String name, double perSecond, int burst, java.util.List
      * change, such as 50/s from 07:00 on weekdays and 200/s from 17:00, since each holds until the
      * next one fires. The windows stay on the result, so its rate is the only thing that changes.
      */
-    public RateLimit at(java.time.Instant now) {
+    public RateLimit at(Instant now) {
         RateWindow current = null;
-        java.time.Instant since = null;
+        Instant since = null;
         for (RateWindow window : windows) {
-            java.time.Instant fired = window.from().previous(now);
+            Instant fired = window.from().previous(now);
             if (fired != null && (since == null || !fired.isBefore(since))) {
                 current = window;
                 since = fired;

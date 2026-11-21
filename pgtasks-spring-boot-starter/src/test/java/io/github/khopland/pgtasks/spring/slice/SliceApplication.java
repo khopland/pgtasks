@@ -2,7 +2,6 @@ package io.github.khopland.pgtasks.spring.slice;
 
 import java.sql.SQLException;
 import java.time.Duration;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Decision;
@@ -17,6 +16,7 @@ import io.github.khopland.pgtasks.slice.IncomeFeed;
 import io.github.khopland.pgtasks.slice.NoticeHandler;
 import io.github.khopland.pgtasks.slice.PartsRegister;
 import io.github.khopland.pgtasks.slice.Slice;
+
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.datasource.DataSourceUtils;

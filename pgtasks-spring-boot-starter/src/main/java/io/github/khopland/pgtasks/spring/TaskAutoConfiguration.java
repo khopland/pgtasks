@@ -1,33 +1,41 @@
 package io.github.khopland.pgtasks.spring;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Tasks;
+import io.github.khopland.pgtasks.engine.PayloadCodecs;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskEngineBuilder;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.engine.TaskTester;
+import io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore;
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.context.annotation.Conditional;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.ConditionContext;
-import org.springframework.core.type.AnnotatedTypeMetadata;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.core.env.Environment;
-import org.springframework.util.ClassUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.BeanCreationException;
+import org.springframework.beans.factory.BeanCurrentlyInCreationException;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.info.BuildProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.util.ClassUtils;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * One engine from every {@link TaskConfigurer} bean and at most one {@link TaskGlobals} bean,
@@ -54,8 +62,8 @@ public class TaskAutoConfiguration {
     @ConditionalOnMissingBean
     public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ConfigurableListableBeanFactory beans,
                                  Environment environment, ObjectProvider<TaskObserver> observer,
-                                 ObjectProvider<org.springframework.boot.info.BuildProperties> build,
-                                 ObjectProvider<io.github.khopland.pgtasks.engine.PayloadCodecs> codecs) {
+                                 ObjectProvider<BuildProperties> build,
+                                 ObjectProvider<PayloadCodecs> codecs) {
         TaskEngineBuilder builder = TaskEngine.builder()
             .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
             .notifications(properties.notifications())
@@ -73,11 +81,11 @@ public class TaskAutoConfiguration {
             builder.dataSource(dataSource).schemaMode(properties.schemaMode()).transactions(new SpringTransactions(dataSource));
         }
         Map<String, TaskConfigurer> configurers = beansOfType(beans, TaskConfigurer.class);
-        Map<String, String> modules = ModuleNames.of(beans, java.util.List.copyOf(configurers.keySet()));
+        Map<String, String> modules = ModuleNames.of(beans, List.copyOf(configurers.keySet()));
         configurers.forEach((name, configurer) -> builder.configure(modules.getOrDefault(name, name), configurer));
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
         // Every observer bean, such as pgtasks-micrometer's and the application's own.
-        java.util.List<TaskObserver> observers = observer.orderedStream().toList();
+        List<TaskObserver> observers = observer.orderedStream().toList();
         if (!observers.isEmpty()) {
             builder.observer(TaskObserver.composite(observers));
         }
@@ -95,12 +103,12 @@ public class TaskAutoConfiguration {
      * on the engine through other beans is: the engine would start without its topics.
      */
     private static <T> Map<String, T> beansOfType(ConfigurableListableBeanFactory beans, Class<T> type) {
-        Map<String, T> found = new java.util.LinkedHashMap<>();
+        Map<String, T> found = new LinkedHashMap<>();
         for (String name : beans.getBeanNamesForType(type)) {
             try {
                 found.put(name, beans.getBean(name, type));
-            } catch (org.springframework.beans.factory.BeanCreationException e) {
-                if (e.contains(org.springframework.beans.factory.BeanCurrentlyInCreationException.class)) {
+            } catch (BeanCreationException e) {
+                if (e.contains(BeanCurrentlyInCreationException.class)) {
                     throw new IllegalStateException(String.format(CYCLE, type.getSimpleName(), name), e);
                 }
                 throw e;
@@ -124,9 +132,9 @@ public class TaskAutoConfiguration {
     @org.springframework.boot.autoconfigure.condition.ConditionalOnClass(name = "tools.jackson.databind.json.JsonMapper")
     static class Json {
         @Bean
-        @ConditionalOnMissingBean(io.github.khopland.pgtasks.engine.PayloadCodecs.class)
-        io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs taskPayloadCodecs(ObjectProvider<tools.jackson.databind.json.JsonMapper> mapper) {
-            return new io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs(mapper.getIfAvailable(() -> tools.jackson.databind.json.JsonMapper.builder().build()));
+        @ConditionalOnMissingBean(PayloadCodecs.class)
+        JacksonPayloadCodecs taskPayloadCodecs(ObjectProvider<JsonMapper> mapper) {
+            return new JacksonPayloadCodecs(mapper.getIfAvailable(() -> JsonMapper.builder().build()));
         }
     }
 
@@ -148,7 +156,7 @@ public class TaskAutoConfiguration {
         return TaskTester.of(engine);
     }
 
-    static final class Testing implements org.springframework.context.annotation.Condition {
+    static final class Testing implements Condition {
         @Override
         public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
             return context.getEnvironment().getProperty("pgtasks.testing", Boolean.class, false)

@@ -5,7 +5,6 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.List;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Ordering;

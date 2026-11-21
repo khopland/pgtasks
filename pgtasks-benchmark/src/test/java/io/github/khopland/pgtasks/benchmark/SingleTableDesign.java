@@ -8,10 +8,11 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Ordering;
+
+import org.postgresql.PGStatement;
 
 /**
  * The alternative: one table holding unfinished and finished tasks, with the
@@ -141,7 +142,7 @@ final class SingleTableDesign implements Design {
                            set_config('enable_mergejoin', 'off', true)
                     """);
                 // Same treatment as the real store: plan every claim for its actual parameters.
-                statement.unwrap(org.postgresql.PGStatement.class).setPrepareThreshold(0);
+                statement.unwrap(PGStatement.class).setPrepareThreshold(0);
                 statement.setInt(1, limit);
                 statement.setInt(2, node);
                 List<Claimed> claimed = new ArrayList<>();

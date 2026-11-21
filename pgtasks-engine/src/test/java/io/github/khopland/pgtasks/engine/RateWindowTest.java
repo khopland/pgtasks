@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -10,7 +8,10 @@ import java.util.List;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Time windows on rate limits: lower in office hours, higher at night and at weekends. */
 class RateWindowTest {

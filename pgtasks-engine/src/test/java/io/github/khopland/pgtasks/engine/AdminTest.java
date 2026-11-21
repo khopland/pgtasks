@@ -1,8 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -11,20 +9,27 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
+import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.postgres.PostgresNotifier;
 import io.github.khopland.pgtasks.spi.ManualClock;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** The operator's side of the engine: topics, dead letters, purging and health. */
 class AdminTest {
@@ -105,11 +110,11 @@ class AdminTest {
         engine.admin().createTopic("elsewhere");
         engine.admin().pause("elsewhere");
 
-        assertThat(engine.admin().topics()).extracting(io.github.khopland.pgtasks.admin.TopicStatus::name, io.github.khopland.pgtasks.admin.TopicStatus::paused,
-                io.github.khopland.pgtasks.admin.TopicStatus::processing, io.github.khopland.pgtasks.admin.TopicStatus::module)
+        assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::paused,
+                TopicStatus::processing, TopicStatus::module)
             .containsExactly(
-                org.assertj.core.groups.Tuple.tuple("elsewhere", true, false, null),
-                org.assertj.core.groups.Tuple.tuple("work", false, true, "work-module"));
+                Tuple.tuple("elsewhere", true, false, null),
+                Tuple.tuple("work", false, true, "work-module"));
     }
 
     @Test
@@ -122,7 +127,7 @@ class AdminTest {
         assertThat(health(connected).healthy()).isTrue();
 
         TaskEngine cutOff = fixture.start("node-b", List.of(), settings -> settings.withNotifier(new PostgresNotifier(() -> {
-            throw new java.sql.SQLException("no route to the database");
+            throw new SQLException("no route to the database");
         })));
         EngineFixture.await("the notifier gave up for now", Duration.ofSeconds(5),
             () -> health(cutOff).notifications() == EngineHealth.Notifications.DISCONNECTED);
@@ -176,13 +181,13 @@ class AdminTest {
     /** Review 2026-11-21: a topic no longer used could never be removed. */
     @Test
     void a_topic_no_longer_used_is_deleted_with_its_history_on_every_node() throws Exception {
-        io.github.khopland.pgtasks.memory.InMemoryTaskStore store = new io.github.khopland.pgtasks.memory.InMemoryTaskStore();
+        InMemoryTaskStore store = new InMemoryTaskStore();
         TopicRef<String> retired = TopicRef.of("retired-2025", String.class);
         try (TaskEngine one = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, io.github.khopland.pgtasks.BatchHandler.each(task -> { })))
+                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
                 .build().start();
              TaskEngine other = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, io.github.khopland.pgtasks.BatchHandler.each(task -> { })))
+                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
                 .build().start()) {
             one.admin().createTopic("retired-2025");
             one.tasks().independently().push(retired, "a", "done");
@@ -199,7 +204,7 @@ class AdminTest {
 
     @Test
     void a_topic_with_unfinished_tasks_is_not_deleted() throws Exception {
-        try (TaskEngine engine = TaskEngine.builder().store(new io.github.khopland.pgtasks.memory.InMemoryTaskStore())
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
             .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().start()) {
             engine.admin().pause("work");
             engine.tasks().independently().push(WORK, "a", "waiting");

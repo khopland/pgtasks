@@ -1,14 +1,15 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** A node that only pushes: prepared, never started; other nodes process what it pushes. */
 class ProducerOnlyTest {

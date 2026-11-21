@@ -12,7 +12,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.regex.Pattern;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.TopicRef;

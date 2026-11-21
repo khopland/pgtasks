@@ -1,16 +1,18 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
+import javax.sql.DataSource;
 
-import com.zaxxer.hikari.HikariDataSource;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Review 2026-11-21: the notifier held one of the pool's connections for good, and 8 batches in
@@ -23,7 +25,7 @@ class ConnectionBudgetTest {
     @RegisterExtension
     static PostgresExtension postgres = EngineFixture.extension();
 
-    private static TaskEngineBuilder engine(javax.sql.DataSource dataSource) {
+    private static TaskEngineBuilder engine(DataSource dataSource) {
         return TaskEngine.builder().dataSource(dataSource)
             .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success())));
     }

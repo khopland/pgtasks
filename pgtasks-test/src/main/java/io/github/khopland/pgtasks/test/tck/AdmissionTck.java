@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -13,9 +10,12 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.spi.TaskStore;
-import org.junit.jupiter.api.Test;
 
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** TCK: the strict rate limit, a token bucket shared by every node, and operators' overrides of it. */
 public abstract class AdmissionTck extends StoreTck {

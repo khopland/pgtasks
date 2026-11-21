@@ -3,8 +3,9 @@ package io.github.khopland.pgtasks.postgres;
 import io.github.khopland.pgtasks.postgres.PostgresStoreFixture.QueueStatistics;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
-import io.github.khopland.pgtasks.test.tck.StoreFixture;
 import io.github.khopland.pgtasks.test.tck.ScheduleTck;
+import io.github.khopland.pgtasks.test.tck.StoreFixture;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.Parameter;

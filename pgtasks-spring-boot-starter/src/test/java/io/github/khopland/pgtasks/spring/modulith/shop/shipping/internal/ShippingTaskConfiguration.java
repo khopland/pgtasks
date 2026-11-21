@@ -8,6 +8,7 @@ import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.spring.modulith.shop.billing.api.BillingTopics;
 import io.github.khopland.pgtasks.spring.modulith.shop.orders.api.OrderPlaced;
 import io.github.khopland.pgtasks.spring.modulith.shop.shipping.api.ShippingTopics;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 

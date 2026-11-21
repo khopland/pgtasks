@@ -1,12 +1,12 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The drained-queue pass would catch a statement that reads the ballast. */
 class PlanAuditTest {

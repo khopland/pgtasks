@@ -1,8 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -11,11 +10,15 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The breaker: a topic whose tasks mostly fail stops claiming and probes, one task at a time. */
 class BreakerTest {
@@ -81,7 +84,7 @@ class BreakerTest {
 
         tester.awaitIdle();
         assertThat(engine.health().openBreakers()).containsExactly("work");
-        assertThat(engine.admin().topics()).singleElement().extracting(io.github.khopland.pgtasks.admin.TopicStatus::breakerOpen).isEqualTo(true);
+        assertThat(engine.admin().topics()).singleElement().extracting(TopicStatus::breakerOpen).isEqualTo(true);
         int beforeWaiting = runs.get();
         assertThat(beforeWaiting).as("the first batch opened it; the second ran beside it").isBetween(10, 20);
 
@@ -119,7 +122,7 @@ class BreakerTest {
         assertThat(engine.admin().find(poison).orElseThrow().state()).isEqualTo("failed");
     }
 
-    private static <V> V unchecked(java.util.concurrent.Callable<V> call) {
+    private static <V> V unchecked(Callable<V> call) {
         try {
             return call.call();
         } catch (Exception e) {

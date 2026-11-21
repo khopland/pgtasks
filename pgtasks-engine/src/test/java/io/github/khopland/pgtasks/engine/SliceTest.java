@@ -1,8 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static io.github.khopland.pgtasks.engine.EngineFixture.await;
-
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -14,8 +11,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.test.PostgresDatabase;
-import io.github.khopland.pgtasks.test.PostgresExtension;
 import io.github.khopland.pgtasks.slice.AssessmentHandler;
 import io.github.khopland.pgtasks.slice.AssessmentLedger;
 import io.github.khopland.pgtasks.slice.FeedPublisher;
@@ -23,11 +18,17 @@ import io.github.khopland.pgtasks.slice.IncomeFeed;
 import io.github.khopland.pgtasks.slice.NoticeHandler;
 import io.github.khopland.pgtasks.slice.PartsRegister;
 import io.github.khopland.pgtasks.slice.Slice;
+import io.github.khopland.pgtasks.test.PostgresDatabase;
+import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static io.github.khopland.pgtasks.engine.EngineFixture.await;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The checklist from the infra guide's "Testing a task flow", applied to the slice on Postgres:

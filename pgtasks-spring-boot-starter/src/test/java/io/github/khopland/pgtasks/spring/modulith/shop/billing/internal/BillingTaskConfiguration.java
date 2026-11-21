@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.spring.modulith.shop.billing.internal;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.spring.modulith.shop.billing.api.BillingTopics;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 

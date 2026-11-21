@@ -1,14 +1,13 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
 import java.util.List;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.TestPostgres;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A queue whose statistics say it is empty while it isn't: the normal state right after a burst

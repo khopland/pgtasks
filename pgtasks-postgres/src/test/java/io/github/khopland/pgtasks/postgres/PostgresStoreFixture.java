@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.postgres;
 
 import java.time.Duration;
+import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
@@ -51,7 +52,7 @@ class PostgresStoreFixture extends StoreFixture {
         this(database, database.dataSource());
     }
 
-    private PostgresStoreFixture(PostgresDatabase database, javax.sql.DataSource dataSource) {
+    private PostgresStoreFixture(PostgresDatabase database, DataSource dataSource) {
         this.database = database;
         this.store = new PostgresTaskStore(dataSource);
     }

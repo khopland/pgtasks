@@ -1,8 +1,13 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.random.RandomGenerator;
 
 import org.jspecify.annotations.Nullable;
@@ -169,7 +174,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
     }
 
     private static boolean matches(@Nullable Throwable cause, List<Class<? extends Throwable>> types) {
-        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Throwable current = cause; current != null && seen.add(current); current = current.getCause()) {
             for (Class<? extends Throwable> type : types) {
                 if (type.isInstance(current)) {
@@ -182,7 +187,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
 
     @SafeVarargs
     private static List<Class<? extends Throwable>> append(List<Class<? extends Throwable>> list, Class<? extends Throwable>... more) {
-        List<Class<? extends Throwable>> all = new java.util.ArrayList<>(list);
+        List<Class<? extends Throwable>> all = new ArrayList<>(list);
         for (Class<? extends Throwable> type : more) {
             all.add(Objects.requireNonNull(type, "type"));
         }
@@ -199,14 +204,14 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      *
      * @param firstFailedAt when the task first failed, or null if this is its first failure
      */
-    public boolean allowsAnotherAfter(int attempt, java.time.@Nullable Instant firstFailedAt, java.time.Instant now, Duration backoff) {
+    public boolean allowsAnotherAfter(int attempt, @Nullable Instant firstFailedAt, Instant now, Duration backoff) {
         if (attempt >= maxAttempts) {
             return false;
         }
         if (budget == null) {
             return true;
         }
-        java.time.Instant start = firstFailedAt == null ? now : firstFailedAt;
+        Instant start = firstFailedAt == null ? now : firstFailedAt;
         return !now.plus(backoff).isAfter(start.plus(budget));
     }
 

@@ -1,8 +1,8 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 
@@ -10,10 +10,13 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
-import org.junit.jupiter.api.Test;
 
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: listing, reviving and discarding dead letters. */
 public abstract class DeadLetterTck extends StoreTck {
@@ -103,11 +106,11 @@ public abstract class DeadLetterTck extends StoreTck {
         long gaveUp = deadLetter(fixture, topic, "a");
         long refusedId = fixture.push(topic, "b");
         ClaimedTask claimed = fixture.claim(topic, node).stream().filter(task -> task.id() == refusedId).findFirst().orElseThrow();
-        fixture.complete(topic, node, claimed, new io.github.khopland.pgtasks.spi.TaskStore.Resolution.Waiting(
-            io.github.khopland.pgtasks.spi.TaskStore.WaitState.DEAD_LETTER, null, true, "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}"));
+        fixture.complete(topic, node, claimed, new TaskStore.Resolution.Waiting(
+            TaskStore.WaitState.DEAD_LETTER, null, true, "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}"));
         long later = deadLetter(fixture, topic, "c");
         DeadLetterQuery all = DeadLetterQuery.ALL;
-        java.time.Instant now = fixture.store().clock().instant();
+        Instant now = fixture.store().clock().instant();
 
         assertThat(find(fixture, all.withError("java.net.ConnectException"))).containsExactly(refusedId);
         assertThat(find(fixture, all.withError("gave up"))).containsExactly(gaveUp, later);
@@ -135,7 +138,7 @@ public abstract class DeadLetterTck extends StoreTck {
 
         assertThat(claimSweep(fixture)).isTrue();
         assertThat(claimSweep(fixture)).isFalse();
-        fixture.advance(java.time.Duration.ofHours(2));
+        fixture.advance(Duration.ofHours(2));
         assertThat(claimSweep(fixture)).isTrue();
     }
 
@@ -144,7 +147,7 @@ public abstract class DeadLetterTck extends StoreTck {
     }
 
     private boolean claimSweep(StoreFixture fixture) throws SQLException {
-        return fixture.inTransaction(transaction -> fixture.store().claimReviveSweep(transaction, topic, java.time.Duration.ofHours(1)));
+        return fixture.inTransaction(transaction -> fixture.store().claimReviveSweep(transaction, topic, Duration.ofHours(1)));
     }
 
     @Test

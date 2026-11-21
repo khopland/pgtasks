@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.jackson;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -10,8 +8,11 @@ import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskTester;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class JacksonPayloadCodecsTest {
 

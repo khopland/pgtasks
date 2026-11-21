@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.spring.modulith.shop.orders;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.spring.modulith.shop.orders.api.OrderPlaced;
 import io.github.khopland.pgtasks.spring.modulith.shop.orders.api.OrderTopics;
+
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 

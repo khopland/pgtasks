@@ -1,8 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -24,17 +22,22 @@ import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Engine behaviour on the in-memory store: several engines in one JVM, a manual clock, no sleeping past backoffs. */
 class EngineTest {
@@ -347,7 +350,7 @@ class EngineTest {
                         task.push(child, task.identifier(), "child");
                         return Decision.success();
                     });
-                }, io.github.khopland.pgtasks.PayloadCodec.string(), TopicSettings.defaults(), publisherFirst ? List.of(publisher, veto) : List.of(veto, publisher)),
+                }, PayloadCodec.string(), TopicSettings.defaults(), publisherFirst ? List.of(publisher, veto) : List.of(veto, publisher)),
                 succeeding(child)
             ), settings -> settings);
             engine.tasks().independently().push(topic, Insertion.APPEND, List.of(
@@ -459,7 +462,7 @@ class EngineTest {
     @Test
     void the_in_memory_store_cannot_join_jdbc_transactions_or_lend_a_connection() throws Exception {
         TaskEngine engine = engines.start("node-a", List.of(succeeding(TOPIC)));
-        Connection connection = (Connection) java.lang.reflect.Proxy.newProxyInstance(
+        Connection connection = (Connection) Proxy.newProxyInstance(
             Connection.class.getClassLoader(), new Class<?>[] {Connection.class}, (proxy, method, arguments) -> null);
         assertThatThrownBy(() -> engine.tasks().on(connection))
             .isInstanceOf(UnsupportedOperationException.class)

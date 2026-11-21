@@ -2,9 +2,12 @@ package io.github.khopland.pgtasks.engine;
 
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchHandler;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.PayloadCodec;
+import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TaskHandler;
 import io.github.khopland.pgtasks.TopicRef;
 
@@ -96,7 +99,7 @@ public interface TaskRegistry {
      *
      * @param route the push for an event, or null to push nothing for it
      */
-    <E> TaskRegistry onEvent(Class<E> event, java.util.function.Function<? super E, io.github.khopland.pgtasks.Push<?>> route);
+    <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route);
 
     /**
      * Pushes a task to one of this module's topics on a schedule, the same identifier and payload
@@ -108,8 +111,8 @@ public interface TaskRegistry {
      * @param name unique within the topic
      */
     default <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload) {
-        return recurring(topic, name, cron, identifier, payload, io.github.khopland.pgtasks.Insertion.SUPERSEDE);
+        return recurring(topic, name, cron, identifier, payload, Insertion.SUPERSEDE);
     }
 
-    <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload, io.github.khopland.pgtasks.Insertion insertion);
+    <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload, Insertion insertion);
 }

@@ -1,8 +1,6 @@
 package io.github.khopland.pgtasks.postgres;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
+import java.util.Arrays;
 import java.util.List;
 
 import io.github.khopland.pgtasks.Ordering;
@@ -10,8 +8,12 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Review 2026-11-21: no way to move a 1.x application's queued tasks to 2.0. */
 class LegacyImportTest {
@@ -53,7 +55,7 @@ class LegacyImportTest {
     }
 
     private static List<Object> row(Object... values) {
-        return java.util.Arrays.asList(values);
+        return Arrays.asList(values);
     }
 
     @Test

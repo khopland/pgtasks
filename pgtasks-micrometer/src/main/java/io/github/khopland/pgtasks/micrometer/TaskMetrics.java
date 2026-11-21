@@ -11,6 +11,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.ToDoubleFunction;
 
 import io.github.khopland.pgtasks.admin.QueueCounts;
@@ -18,12 +20,11 @@ import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.engine.RateLimit;
 import io.github.khopland.pgtasks.engine.RateLimits;
 import io.github.khopland.pgtasks.engine.TaskEngine;
+
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
-
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -76,7 +77,7 @@ public final class TaskMetrics implements MeterBinder {
         "due", QueueCounts::due);
 
     private final Callable<List<TopicSnapshot>> snapshots;
-    private final java.util.function.Supplier<List<RateLimits.Limit>> limits;
+    private final Supplier<List<RateLimits.Limit>> limits;
     private final Duration refresh;
     private final InstantSource clock;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
@@ -94,7 +95,7 @@ public final class TaskMetrics implements MeterBinder {
     }
 
     /** @param limits this node's rate limits, read on every scrape */
-    public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, java.util.function.Supplier<List<RateLimits.Limit>> limits, Duration refresh,
+    public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Supplier<List<RateLimits.Limit>> limits, Duration refresh,
                        InstantSource clock) {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.limits = Objects.requireNonNull(limits, "limits");
@@ -202,7 +203,7 @@ public final class TaskMetrics implements MeterBinder {
         return snapshot == null ? Double.NaN : value.applyAsDouble(snapshot.counts());
     }
 
-    private double age(String topic, java.util.function.Function<TopicSnapshot, @Nullable Instant> since) {
+    private double age(String topic, Function<TopicSnapshot, @Nullable Instant> since) {
         TopicSnapshot snapshot = snapshot(topic);
         if (snapshot == null) {
             return Double.NaN;

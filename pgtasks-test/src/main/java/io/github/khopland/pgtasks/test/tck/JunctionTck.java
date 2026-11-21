@@ -1,17 +1,20 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.suspended;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
-
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
+import io.github.khopland.pgtasks.Pushed;
+
 import org.junit.jupiter.api.Test;
+
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.suspended;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: fan-in. A complete group releases its suspended tasks; nothing else changes. */
 public abstract class JunctionTck extends StoreTck {
@@ -76,8 +79,8 @@ public abstract class JunctionTck extends StoreTck {
         fixture.push(topic, Insertion.APPEND, StoreFixture.deduplicated("holder", "key"));
         // The first r is stored as redundant; the second is a duplicate and not stored at all.
         assertThat(fixture.push(topic, Insertion.SUPERSEDE, task("r"), StoreFixture.deduplicated("r", "key")))
-            .extracting(io.github.khopland.pgtasks.Pushed::status)
-            .containsExactly(io.github.khopland.pgtasks.Pushed.Status.REDUNDANT, io.github.khopland.pgtasks.Pushed.Status.DUPLICATE);
+            .extracting(Pushed::status)
+            .containsExactly(Pushed.Status.REDUNDANT, Pushed.Status.DUPLICATE);
 
         assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "r")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
@@ -98,7 +101,7 @@ public abstract class JunctionTck extends StoreTck {
     void only_suspended_tasks_are_released() throws SQLException {
         StoreFixture fixture = setUp();
         long parkedA = parked(fixture, topic, "a");
-        fixture.push(topic, Insertion.APPEND, StoreFixture.delayed("a", java.time.Duration.ofHours(1)));
+        fixture.push(topic, Insertion.APPEND, StoreFixture.delayed("a", Duration.ofHours(1)));
         long dead = fixture.push(topic, "dead");
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.deadLetter());
         long parkedDead = parked(fixture, topic, "dead");

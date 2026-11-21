@@ -8,6 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,11 +24,11 @@ final class BatchScope implements AutoCloseable {
 
     private final String name;
     private final ExecutorService executor;
-    private final java.util.function.BooleanSupplier stopping;
+    private final BooleanSupplier stopping;
     private volatile boolean abandoned;
 
     /** @param stopping whether the engine is stopping, when the scope stops waiting for work that ignores cancellation */
-    BatchScope(String name, java.util.function.BooleanSupplier stopping) {
+    BatchScope(String name, BooleanSupplier stopping) {
         this.name = name;
         this.stopping = stopping;
         this.executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(name + "-", 0).factory());

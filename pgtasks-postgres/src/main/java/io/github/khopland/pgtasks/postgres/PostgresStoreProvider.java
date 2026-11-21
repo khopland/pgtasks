@@ -4,7 +4,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Locale;
 import java.util.Map;
-
+import java.util.OptionalInt;
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.spi.StoreProvider;
@@ -29,7 +29,7 @@ public final class PostgresStoreProvider implements StoreProvider {
     }
 
     @Override
-    public java.util.OptionalInt poolSize(DataSource dataSource) {
+    public OptionalInt poolSize(DataSource dataSource) {
         return PoolInfo.maximumSize(dataSource);
     }
 }

@@ -1,14 +1,13 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
@@ -16,10 +15,15 @@ import io.github.khopland.pgtasks.spi.ManualClock;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Recurring tasks: pushed by the housekeeping leader when due, once across the cluster. */
 class RecurringTest {
@@ -106,7 +110,7 @@ class RecurringTest {
                 }
 
                 @Override
-                public void pushed(TopicRef<?> topic, List<io.github.khopland.pgtasks.Pushed> results) {
+                public void pushed(TopicRef<?> topic, List<Pushed> results) {
                     results.forEach(result -> pushed.add(topic.name() + ":" + result.identifier() + ":" + result.status()));
                 }
             })
@@ -157,7 +161,7 @@ class RecurringTest {
         start("node-a", "0 2 * * *").close();
         TaskEngine changed = start("node-a", "30 3 * * *");
         assertThat(changed.admin().schedules()).extracting(Schedule::cron, Schedule::nextRunAt)
-            .containsExactly(org.assertj.core.groups.Tuple.tuple("30 3 * * *", Instant.parse("2026-11-21T03:30:00Z")));
+            .containsExactly(Tuple.tuple("30 3 * * *", Instant.parse("2026-11-21T03:30:00Z")));
         changed.close();
 
         TaskEngine without = TaskEngine.builder().store(store)
@@ -178,7 +182,7 @@ class RecurringTest {
                     ran.add(task.identifier() + ":" + task.payload());
                     return Decision.success();
                 }))
-                .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", java.time.ZoneId.of("Europe/Oslo")), "nightly-report", "full"))
+                .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", ZoneId.of("Europe/Oslo")), "nightly-report", "full"))
             .build()
             .start();
         engines.add(engine);

@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.engine;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -30,7 +31,7 @@ final class TopicDirectory {
     }
 
     /** Forgets the topics the store no longer has. */
-    void retain(java.util.Set<String> names) {
+    void retain(Set<String> names) {
         ids.keySet().retainAll(names);
     }
 

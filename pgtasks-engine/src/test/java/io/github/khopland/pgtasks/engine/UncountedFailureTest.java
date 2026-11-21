@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.net.ConnectException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -12,9 +10,12 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Failures that aren't the task's fault don't use up its attempts; some failures dead-letter at once. */
 class UncountedFailureTest {

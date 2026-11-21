@@ -1,11 +1,12 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,7 +16,6 @@ import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +69,7 @@ final class TopicWorker<T> {
     }
 
     /** When the open breaker sends its next probe, by the store's clock; null if closed or a probe is out. */
-    java.time.@Nullable Instant nextProbe() {
+    @Nullable Instant nextProbe() {
         return breaker.nextProbe();
     }
 
@@ -161,7 +161,7 @@ final class TopicWorker<T> {
                 signalsAtEmptyClaim = signalsBefore;
                 lastEmptyClaim = claim;
                 try {
-                    java.time.Instant next = breaker.nextProbe();
+                    Instant next = breaker.nextProbe();
                     Duration wait = next == null ? topic.settings().pollInterval()
                         : Duration.between(core.store().clock().instant(), next);
                     signal.await(wait.isNegative() || wait.isZero() ? Duration.ofMillis(1)

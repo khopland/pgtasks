@@ -1,13 +1,13 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.time.Period;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 
+import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
@@ -16,8 +16,12 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** The configuration model: defaults, configurers, globals, overrides and validation. */
 class BuilderTest {
@@ -61,8 +65,8 @@ class BuilderTest {
     /** Review 2026-11-21: resources in the global defaults were accepted and never used. */
     @Test
     void resources_from_every_layer_of_defaults_are_opened_in_order() throws Exception {
-        List<String> opened = new java.util.concurrent.CopyOnWriteArrayList<>();
-        java.util.function.Function<String, io.github.khopland.pgtasks.BatchResource<String>> resource = name -> (topic, tasks) -> {
+        List<String> opened = new CopyOnWriteArrayList<>();
+        Function<String, BatchResource<String>> resource = name -> (topic, tasks) -> {
             opened.add(name + ":" + topic.name());
             return name;
         };

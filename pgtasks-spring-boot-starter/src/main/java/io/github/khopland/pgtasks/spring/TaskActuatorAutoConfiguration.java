@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.spring;
 
 import io.github.khopland.pgtasks.engine.TaskEngine;
+
 import org.springframework.boot.actuate.autoconfigure.endpoint.condition.ConditionalOnAvailableEndpoint;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;

@@ -1,11 +1,9 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
@@ -13,9 +11,13 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Operators' runtime overrides of rate limits: on the in-memory store, and the Phase 3 exit test on Postgres. */
 class RateLimitTest {
@@ -112,7 +114,7 @@ class RateLimitTest {
             fixture.start("node-b", limited(runs), settings -> settings.withHeartbeat(Duration.ofHours(1), Duration.ofHours(10))),
             fixture.start("node-c", limited(runs), settings -> settings.withHeartbeat(Duration.ofHours(1), Duration.ofHours(10))));
         nodes.getFirst().tasks().independently().push(TOPIC, Insertion.APPEND,
-            java.util.stream.IntStream.range(0, 30).mapToObj(index -> Creation.of("t" + index, "x")).toList());
+            IntStream.range(0, 30).mapToObj(index -> Creation.of("t" + index, "x")).toList());
         EngineFixture.await("the burst of one", Duration.ofSeconds(5), () -> runs.get() == 1);
         Thread.sleep(300);
         assertThat(runs.get()).as("everyone waits for the next permit").isEqualTo(1);

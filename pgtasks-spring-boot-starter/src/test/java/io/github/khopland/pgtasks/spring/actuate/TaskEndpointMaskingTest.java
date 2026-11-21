@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.spring.actuate;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -13,10 +11,13 @@ import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskTester;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spring.TaskEndpoint;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
 import org.springframework.boot.actuate.endpoint.Show;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Review 2026-11-21: the endpoint showed every payload and stack trace to anyone who could reach it. */
 class TaskEndpointMaskingTest {

@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -10,10 +8,15 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: leadership of cluster-wide jobs, retention and count snapshots. */
 public abstract class HousekeepingTck extends StoreTck {
@@ -176,8 +179,8 @@ public abstract class HousekeepingTck extends StoreTck {
         int topic = fixture.topic("busy");
         fixture.topic("idle");
         int node = fixture.node("node-a");
-        List<io.github.khopland.pgtasks.Pushed> pushed = fixture.push(topic, Insertion.APPEND, StoreFixture.many("t", 3));
-        fixture.claim(topic, node, io.github.khopland.pgtasks.Ordering.FIFO, 1);
+        List<Pushed> pushed = fixture.push(topic, Insertion.APPEND, StoreFixture.many("t", 3));
+        fixture.claim(topic, node, Ordering.FIFO, 1);
 
         fixture.inTransaction(transaction -> {
             fixture.store().snapshotCounts(transaction);

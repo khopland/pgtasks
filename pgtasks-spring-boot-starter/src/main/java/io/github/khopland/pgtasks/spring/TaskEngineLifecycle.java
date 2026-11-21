@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.spring;
 import java.time.Duration;
 
 import io.github.khopland.pgtasks.engine.TaskEngine;
+
 import org.springframework.context.SmartLifecycle;
 
 /**

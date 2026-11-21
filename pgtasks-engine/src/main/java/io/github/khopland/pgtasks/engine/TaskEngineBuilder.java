@@ -12,20 +12,23 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.BatchResource;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
+import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Setting;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
@@ -35,7 +38,6 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -442,7 +444,7 @@ public final class TaskEngineBuilder {
 
         @Override
         public HousekeepingOptions expiries(int deadLetterAt, Duration backoff) {
-            settings = settings.withExpiries(new io.github.khopland.pgtasks.spi.TaskStore.Expiries(deadLetterAt, backoff));
+            settings = settings.withExpiries(new TaskStore.Expiries(deadLetterAt, backoff));
             return this;
         }
     }
@@ -511,14 +513,14 @@ public final class TaskEngineBuilder {
                 }
 
                 @Override
-                public <E> TaskRegistry onEvent(Class<E> event, java.util.function.Function<? super E, io.github.khopland.pgtasks.Push<?>> route) {
+                public <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route) {
                     routes.add(new EventRoute<>(event, route, configurer.name()));
                     return this;
                 }
 
                 @Override
                 public <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload,
-                                                  io.github.khopland.pgtasks.Insertion insertion) {
+                                                  Insertion insertion) {
                     Recurring<T> schedule = new Recurring<>(topic, name, cron, identifier, payload, insertion, configurer.name());
                     if (registered.stream().noneMatch(spec -> !spec.pattern && spec.name.equals(topic.name()))) {
                         problems.add("Recurring task " + name + " is for topic " + topic.name() + ", which " + configurer.name()
@@ -663,7 +665,7 @@ public final class TaskEngineBuilder {
      * a heartbeat that waits for a connection long enough lets other nodes requeue this node's
      * tasks while it still runs them.
      */
-    private static void fitToPool(Globals global, java.util.OptionalInt poolSize) {
+    private static void fitToPool(Globals global, OptionalInt poolSize) {
         if (poolSize.isEmpty()) {
             return;
         }
@@ -755,7 +757,7 @@ public final class TaskEngineBuilder {
             : new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
 
-    private void splitOverrides(java.util.Set<String> topics, java.util.Set<String> limits,
+    private void splitOverrides(Set<String> topics, Set<String> limits,
                                 Map<String, Map<String, String>> topicOverrides, Map<String, Map<String, String>> limitOverrides,
                                 List<String> problems) {
         for (Map.Entry<String, String> override : new TreeMap<>(overrides).entrySet()) {
@@ -791,7 +793,7 @@ public final class TaskEngineBuilder {
         return Objects.requireNonNull(global.limits.get(name), name);
     }
 
-    private static @Nullable String longestPrefix(java.util.Set<String> names, String key) {
+    private static @Nullable String longestPrefix(Set<String> names, String key) {
         return names.stream().filter(name -> key.startsWith(name + ".")).max(Comparator.comparingInt(String::length)).orElse(null);
     }
 

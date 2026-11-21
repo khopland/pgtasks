@@ -1,16 +1,10 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.deduplicated;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.delayed;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.suspended;
-import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
-
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -20,7 +14,15 @@ import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.deduplicated;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.delayed;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.suspended;
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** TCK: pushes and the four insertion policies. */
 public abstract class PushTck extends StoreTck {
@@ -219,8 +221,8 @@ public abstract class PushTck extends StoreTck {
     void topics_are_created_once() throws SQLException {
         StoreFixture fixture = setUp();
         assertThat(fixture.topic("topic")).isEqualTo(topic);
-        java.util.OptionalInt found = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "other"));
-        java.util.OptionalInt missing = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "missing"));
+        OptionalInt found = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "other"));
+        OptionalInt missing = fixture.inTransaction(transaction -> fixture.store().findTopic(transaction, "missing"));
         assertThat(found).hasValue(other);
         assertThat(missing).isEmpty();
     }

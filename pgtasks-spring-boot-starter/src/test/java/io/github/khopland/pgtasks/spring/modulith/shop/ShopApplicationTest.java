@@ -1,7 +1,5 @@
 package io.github.khopland.pgtasks.spring.modulith.shop;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Duration;
 
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
@@ -9,10 +7,14 @@ import io.github.khopland.pgtasks.engine.EngineFixture;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskTester;
 import io.github.khopland.pgtasks.spring.modulith.shop.orders.OrderService;
+
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.context.TestConstructor;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.modulith.test.TestApplicationModules;
+import org.springframework.test.context.TestConstructor;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The whole application: every module's topics run, and an order goes through all three. */
 @SpringBootTest(classes = ShopApplication.class, properties = {"pgtasks.store=memory", "pgtasks.testing=true"})
@@ -38,9 +40,9 @@ class ShopApplicationTest {
     void topics_are_shown_by_the_module_that_registered_them() {
         assertThat(engine.effectiveSettings()).extracting(EffectiveSettings::topic, EffectiveSettings::module)
             .containsExactlyInAnyOrder(
-                org.assertj.core.groups.Tuple.tuple("orders", "orders"),
-                org.assertj.core.groups.Tuple.tuple("shipments", "shipping"),
-                org.assertj.core.groups.Tuple.tuple("invoices", "billing"));
+                Tuple.tuple("orders", "orders"),
+                Tuple.tuple("shipments", "shipping"),
+                Tuple.tuple("invoices", "billing"));
     }
 
     @Test

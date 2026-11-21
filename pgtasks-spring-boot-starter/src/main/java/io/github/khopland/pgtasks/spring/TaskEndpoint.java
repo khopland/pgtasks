@@ -2,6 +2,9 @@ package io.github.khopland.pgtasks.spring;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -9,12 +12,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
+import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
 import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.RateLimit;
@@ -22,6 +28,8 @@ import io.github.khopland.pgtasks.engine.RateLimits;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.VersionConflictException;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
 import org.springframework.boot.actuate.endpoint.Show;
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation;
@@ -30,7 +38,6 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector;
 import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
 import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse;
 import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
-import org.jspecify.annotations.Nullable;
 
 /**
  * {@code /actuator/tasks}: the topics, their settings and dead letters, and the rate limits,
@@ -75,7 +82,7 @@ public class TaskEndpoint {
      * An exception type, as errors are grouped by, or an expiry: shown even when values are
      * hidden. A message, which may hold personal data, doesn't look like one.
      */
-    private static final java.util.regex.Pattern TYPE = java.util.regex.Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+|expired");
+    private static final Pattern TYPE = Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+|expired");
 
     private final TaskEngine engine;
     private final Show show;
@@ -98,7 +105,7 @@ public class TaskEndpoint {
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, List<String>> modules = new TreeMap<>();
         List<Map<String, Object>> topics = engine.admin().topics().stream().map(status -> {
-            modules.computeIfAbsent(status.module() == null ? "(other nodes)" : status.module(), ignored -> new java.util.ArrayList<>())
+            modules.computeIfAbsent(status.module() == null ? "(other nodes)" : status.module(), ignored -> new ArrayList<>())
                 .add(status.name());
             return topic(status);
         }).toList();
@@ -173,7 +180,7 @@ public class TaskEndpoint {
         List<Long> taskIds;
         try {
             taskIds = ids == null || ids.isBlank() ? null
-                : java.util.Arrays.stream(ids.split(",")).map(String::strip).map(Long::valueOf).toList();
+                : Arrays.stream(ids.split(",")).map(String::strip).map(Long::valueOf).toList();
         } catch (NumberFormatException e) {
             return badRequest("ids is a comma-separated list of task ids, such as \"12,13\"");
         }
@@ -188,7 +195,7 @@ public class TaskEndpoint {
                 DeadLetterQuery query;
                 try {
                     query = deadLetterQuery(taskIds, error, failedFrom, failedUntil, all);
-                } catch (IllegalArgumentException | java.time.format.DateTimeParseException e) {
+                } catch (IllegalArgumentException | DateTimeParseException e) {
                     return badRequest(e.getMessage());
                 }
                 body.put(action.equals("revive") ? "revived" : "discarded",
@@ -230,7 +237,7 @@ public class TaskEndpoint {
                 until == null ? null : Duration.parse(until), who(security), version)));
         } catch (VersionConflictException e) {
             return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
-        } catch (IllegalArgumentException | java.time.format.DateTimeParseException e) {
+        } catch (IllegalArgumentException | DateTimeParseException e) {
             return badRequest(e.getMessage());
         }
     }
@@ -304,7 +311,7 @@ public class TaskEndpoint {
         }).toList();
     }
 
-    private Optional<io.github.khopland.pgtasks.admin.TopicStatus> status(String name) {
+    private Optional<TopicStatus> status(String name) {
         return engine.admin().topic(name);
     }
 
@@ -312,7 +319,7 @@ public class TaskEndpoint {
         return engine.admin().find(id);
     }
 
-    private static Map<String, Object> topic(io.github.khopland.pgtasks.admin.TopicStatus status) {
+    private static Map<String, Object> topic(TopicStatus status) {
         Map<String, Object> topic = new LinkedHashMap<>();
         topic.put("name", status.name());
         topic.put("module", status.module());
@@ -405,7 +412,7 @@ public class TaskEndpoint {
 
     /** A stored error without its message and stack: {"type": "..."}, or hidden if it has no type. */
     private static String errorType(String error) {
-        java.util.regex.Matcher type = java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(error);
+        Matcher type = Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(error);
         return type.find() ? "{\"type\":\"" + type.group(1) + "\",\"message\":\"" + HIDDEN + "\"}" : HIDDEN;
     }
 

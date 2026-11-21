@@ -1,12 +1,15 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.List;
 
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** TCK: the registered topics and pausing them. */
 public abstract class TopicTck extends StoreTck {
@@ -81,7 +84,7 @@ public abstract class TopicTck extends StoreTck {
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         fixture.inTransaction(transaction -> {
             fixture.store().syncSchedules(transaction, topic, List.of(new TaskStore.ScheduleSpec("nightly", "n", "0 2 * * *", "UTC",
-                io.github.khopland.pgtasks.Insertion.SUPERSEDE, null, null, java.time.Instant.now().plusSeconds(3600))));
+                Insertion.SUPERSEDE, null, null, Instant.now().plusSeconds(3600))));
             return null;
         });
 

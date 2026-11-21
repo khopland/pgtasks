@@ -1,10 +1,15 @@
 package io.github.khopland.pgtasks.micrometer;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+
+import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.TaskEngine;
+import io.github.khopland.pgtasks.engine.TaskTester;
+import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
@@ -17,16 +22,13 @@ import io.micrometer.tracing.handler.PropagatingReceiverTracingObservationHandle
 import io.micrometer.tracing.handler.PropagatingSenderTracingObservationHandler;
 import io.micrometer.tracing.test.simple.SimpleSpan;
 import io.micrometer.tracing.test.simple.SimpleTracer;
-import io.github.khopland.pgtasks.Decision;
-import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.engine.TaskEngine;
-import io.github.khopland.pgtasks.engine.TaskTester;
-import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class TaskObservationsTest {
 
@@ -102,7 +104,7 @@ class TaskObservationsTest {
         assertThat(seen).extracting(Seen::id).doesNotContainNull();
 
         // request -> push orders -> process orders -> push receipts -> process receipts
-        Map<String, SimpleSpan> spans = new java.util.HashMap<>();
+        Map<String, SimpleSpan> spans = new HashMap<>();
         tracer.getSpans().forEach(span -> spans.put(span.getName(), span));
         assertThat(spans).containsKeys("push orders", "process orders", "push receipts", "process receipts");
         assertThat(spans.get("push orders").getParentId()).isEqualTo(spans.get("request").getSpanId());

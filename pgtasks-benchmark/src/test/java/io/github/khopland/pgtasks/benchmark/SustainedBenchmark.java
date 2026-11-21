@@ -17,13 +17,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
-
+import java.util.function.ToDoubleFunction;
 import javax.sql.DataSource;
+
+import io.github.khopland.pgtasks.Ordering;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
-import io.github.khopland.pgtasks.Ordering;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -391,7 +392,7 @@ class SustainedBenchmark {
             minutes.getLast().backlog(), size(minutes.getFirst()) / 1_000_000, size(minutes.getLast()) / 1_000_000);
     }
 
-    private static double average(List<Minute> minutes, java.util.function.ToDoubleFunction<Minute> value) {
+    private static double average(List<Minute> minutes, ToDoubleFunction<Minute> value) {
         return minutes.stream().mapToDouble(value).average().orElse(0);
     }
 

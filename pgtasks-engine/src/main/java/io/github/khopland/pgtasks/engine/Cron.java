@@ -9,6 +9,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.time.zone.ZoneRules;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Locale;
@@ -170,7 +171,7 @@ public final class Cron {
 
     /** A local time in a gap fires right after it; one that happens twice fires the first time. */
     private Instant resolve(LocalDateTime local) {
-        java.time.zone.ZoneRules rules = zone.getRules();
+        ZoneRules rules = zone.getRules();
         if (rules.getValidOffsets(local).isEmpty()) {
             return rules.getTransition(local).getInstant();
         }

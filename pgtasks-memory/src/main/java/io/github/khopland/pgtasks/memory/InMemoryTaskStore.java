@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
@@ -904,7 +906,7 @@ public final class InMemoryTaskStore implements TaskStore {
         if (json == null) {
             return null;
         }
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\"" + name + "\":\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
+        Matcher matcher = Pattern.compile("\"" + name + "\":\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
         return matcher.find() ? matcher.group(1).replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\") : null;
     }
 

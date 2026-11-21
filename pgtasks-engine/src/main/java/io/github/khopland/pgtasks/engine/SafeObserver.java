@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -9,7 +10,6 @@ import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
 import org.jspecify.annotations.Nullable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +51,7 @@ final class SafeObserver implements TaskObserver {
     }
 
     @Override
-    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
         run(() -> observer.limitWait(topic, limit, wait));
     }
 

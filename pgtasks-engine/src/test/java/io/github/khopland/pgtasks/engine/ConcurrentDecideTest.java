@@ -1,9 +1,9 @@
 package io.github.khopland.pgtasks.engine;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -12,7 +12,10 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class ConcurrentDecideTest {
 
@@ -22,7 +25,7 @@ class ConcurrentDecideTest {
     /** Review: the node-wide cap was held for the whole batch, so hung handlers in one topic starved the others. */
     @Test
     void hung_batches_in_one_topic_dont_hold_up_another() throws Exception {
-        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
         AtomicInteger hung = new AtomicInteger();
         List<String> done = new CopyOnWriteArrayList<>();
         try (TaskEngine engine = TaskEngine.builder()
@@ -41,10 +44,10 @@ class ConcurrentDecideTest {
             .build()
             .start()) {
             engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(Creation.of("a", "a"), Creation.of("b", "b")));
-            EngineFixture.await("two hung batches, as many as the node allows", java.time.Duration.ofSeconds(5), () -> hung.get() == 2);
+            EngineFixture.await("two hung batches, as many as the node allows", Duration.ofSeconds(5), () -> hung.get() == 2);
 
             engine.tasks().independently().push(NEXT, "x", "other topic");
-            EngineFixture.await("the other topic to run", java.time.Duration.ofSeconds(5), () -> done.contains("other topic"));
+            EngineFixture.await("the other topic to run", Duration.ofSeconds(5), () -> done.contains("other topic"));
             release.countDown();
         } finally {
             release.countDown();
@@ -98,7 +101,7 @@ class ConcurrentDecideTest {
         AtomicInteger running = new AtomicInteger(), mostAtOnce = new AtomicInteger(), started = new AtomicInteger();
         try (TaskEngine engine = TaskEngine.builder()
             .store(new InMemoryTaskStore())
-            .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.promoteEvery(java.time.Duration.ofMillis(20))))
+            .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.promoteEvery(Duration.ofMillis(20))))
             .configure("work", tasks -> tasks
                 .topic(WORK, batch -> batch.decideConcurrently(2, task -> {
                     started.incrementAndGet();
@@ -112,12 +115,12 @@ class ConcurrentDecideTest {
                     } finally {
                         running.decrementAndGet();
                     }
-                }), topic -> topic.batchSize(1).batchDeadline(java.time.Duration.ofMillis(50))
-                    .retry(Retry.exponential(java.time.Duration.ofMillis(10), java.time.Duration.ofMillis(10)).attempts(10))))
+                }), topic -> topic.batchSize(1).batchDeadline(Duration.ofMillis(50))
+                    .retry(Retry.exponential(Duration.ofMillis(10), Duration.ofMillis(10)).attempts(10))))
             .build()
             .start()) {
             engine.tasks().independently().push(WORK, "one", "x");
-            EngineFixture.await("a second run", java.time.Duration.ofSeconds(5), () -> started.get() >= 2);
+            EngineFixture.await("a second run", Duration.ofSeconds(5), () -> started.get() >= 2);
 
             assertThat(mostAtOnce).as("never two runs of the task at once").hasValue(1);
         }
