@@ -46,6 +46,7 @@ public final class TaskObservations implements TaskObserver {
     public static final String BATCH = "task.batch";
     public static final String PUSHED = "task.pushed";
     public static final String COMPLETED = "task.completed";
+    public static final String BREAKER = "task.breaker.open";
     public static final String MDC_TOPIC = "task.topic";
     public static final String MDC_ID = "task.id";
     public static final String MDC_IDENTIFIER = "task.identifier";
@@ -53,6 +54,7 @@ public final class TaskObservations implements TaskObserver {
 
     private final ObservationRegistry observations;
     private final MeterRegistry meters;
+    private final Map<String, java.util.concurrent.atomic.AtomicInteger> breakers = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Observations and the MDC only, without counters. */
     public TaskObservations(ObservationRegistry observations) {
@@ -133,6 +135,22 @@ public final class TaskObservations implements TaskObserver {
                 observation.stop();
             }
         };
+    }
+
+    /** {@value #BREAKER}: 1 while this node's breaker for the topic is open, from the first time it opens. */
+    @Override
+    public void breaker(TopicRef<?> topic, boolean open) {
+        if (meters == null) {
+            return;
+        }
+        breakers.computeIfAbsent(topic.name(), name -> {
+            java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger();
+            io.micrometer.core.instrument.Gauge.builder(BREAKER, state, java.util.concurrent.atomic.AtomicInteger::get)
+                .description("1 while this node has stopped claiming from the topic because most recent tasks failed")
+                .tag("topic", name)
+                .register(meters);
+            return state;
+        }).set(open ? 1 : 0);
     }
 
     @Override

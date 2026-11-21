@@ -385,7 +385,7 @@ public final class TaskEngine implements AutoCloseable {
      * @param counts   from the last snapshot, or null if none was taken yet
      */
     public record TopicStatus(String name, boolean paused, boolean processing, String module, TaskStore.QueueCounts counts,
-                              java.time.Instant countedAt) {
+                              java.time.Instant countedAt, boolean breakerOpen) {
     }
 
     /** Every topic in the store, by name. */
@@ -400,8 +400,9 @@ public final class TaskEngine implements AutoCloseable {
             .sorted(java.util.Comparator.comparing(TaskStore.TopicInfo::name))
             .map(topic -> {
                 TaskStore.TopicSnapshot snapshot = counts.get(topic.name());
+                TopicWorker<?> worker = workersByName.get(topic.name());
                 return new TopicStatus(topic.name(), topic.paused(), processing.contains(topic.name()), modules.get(topic.name()),
-                    snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt());
+                    snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt(), worker != null && worker.breakerOpen());
             })
             .toList();
     }
@@ -502,7 +503,7 @@ public final class TaskEngine implements AutoCloseable {
     public EngineHealth health() throws Exception {
         Duration term = settings.leaseTerm();
         if (!started) {
-            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of());
+            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(), List.of());
         }
         java.time.Instant now = store.clock().instant();
         java.time.Instant beat = housekeeper.lastHeartbeat();
@@ -518,8 +519,10 @@ public final class TaskEngine implements AutoCloseable {
                     claim.taskId(), claim.attempt(), claim.claimedAt(), running));
             }
         }
+        List<String> openBreakers = workersByName.values().stream().filter(TopicWorker::breakerOpen)
+            .map(worker -> worker.topic().ref().name()).sorted().toList();
         return new EngineHealth(true, settings.nodeName(), nodeId, beat, beat == null ? null : Duration.between(beat, now), term,
-            housekeeper.leading(), notifications, stuck);
+            housekeeper.leading(), notifications, stuck, openBreakers);
     }
 
     /** The topics this node is processing now. */

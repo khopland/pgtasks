@@ -43,6 +43,10 @@ public interface TaskObserver {
         return BatchObservation.NONE;
     }
 
+    /** This node's breaker for a topic opened or closed. */
+    default void breaker(TopicRef<?> topic, boolean open) {
+    }
+
     /** What became of a task when its batch completed. */
     enum Result {
         SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED,

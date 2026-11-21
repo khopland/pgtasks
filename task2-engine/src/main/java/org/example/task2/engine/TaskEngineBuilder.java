@@ -273,6 +273,11 @@ public final class TaskEngineBuilder {
         }
 
         @Override
+        public TopicOptions breaker(Breaker breaker) {
+            return set("breaker", Objects.requireNonNull(breaker));
+        }
+
+        @Override
         public TopicOptions retainForever(Outcome outcome) {
             return set("retain." + outcome.label(), "forever");
         }
@@ -592,6 +597,7 @@ public final class TaskEngineBuilder {
         values.put("retry", defaults.retry());
         values.put("batch-deadline", defaults.batchDeadline());
         values.put("poll-interval", defaults.pollInterval());
+        values.put("breaker", defaults.breaker());
         for (Outcome outcome : Outcome.values()) {
             Period period = defaults.retention().get(outcome);
             values.put("retain." + outcome.label(), period == null ? "forever" : period);
@@ -640,7 +646,8 @@ public final class TaskEngineBuilder {
             (Duration) values.get("batch-deadline"),
             (Duration) values.get("poll-interval"),
             rateLimit,
-            retention
+            retention,
+            (Breaker) values.get("breaker")
         );
         return topic.pattern
             ? new TopicTemplate<>(topic.name, topic.type, topic.handler, codec, settings, topic.spec.resources)
@@ -689,6 +696,11 @@ public final class TaskEngineBuilder {
             }
             case "ordering" -> Ordering.valueOf(value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
             case "batch-deadline", "poll-interval" -> duration(value);
+            case "breaker" -> switch (value.trim().toLowerCase(Locale.ROOT)) {
+                case "off" -> Breaker.off();
+                case "on" -> Breaker.standard();
+                default -> throw new IllegalArgumentException("breaker is on or off");
+            };
             case "retry.max-attempts" -> value.trim().equalsIgnoreCase("forever") ? retry.forever() : retry.attempts(Integer.parseInt(value.trim()));
             case "retry.give-up-after" -> Set.of("never", "forever").contains(value.trim().toLowerCase(Locale.ROOT))
                 ? retry.forever() : retry.giveUpAfter(duration(value));
@@ -699,7 +711,7 @@ public final class TaskEngineBuilder {
                     yield value.trim().equalsIgnoreCase("forever") ? "forever" : period(value);
                 }
                 throw new IllegalArgumentException("unknown setting; known: batch-size, concurrency, ordering, batch-deadline, "
-                    + "poll-interval, retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");
+                    + "poll-interval, breaker (on or off), retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");
             }
         };
     }
@@ -741,6 +753,7 @@ public final class TaskEngineBuilder {
     private static String describe(Object value) {
         return switch (value) {
             case Retry retry -> retry.describe();
+            case Breaker breaker -> breaker.describe();
             default -> String.valueOf(value);
         };
     }

@@ -18,6 +18,8 @@ import java.util.List;
  * @param stuck          claims of this node that have run past their topic's batch deadline by
  *                       more than a heartbeat: a handler that ignores cancellation, or a
  *                       completion that can't reach the database
+ * @param openBreakers   topics this node has stopped claiming from, but for probes, because most
+ *                       of their recent tasks failed
  */
 public record EngineHealth(
     boolean running,
@@ -28,11 +30,13 @@ public record EngineHealth(
     Duration leaseTerm,
     boolean leader,
     Notifications notifications,
-    List<StuckClaim> stuck
+    List<StuckClaim> stuck,
+    List<String> openBreakers
 ) {
 
     public EngineHealth {
         stuck = List.copyOf(stuck);
+        openBreakers = List.copyOf(openBreakers);
     }
 
     public enum Notifications {

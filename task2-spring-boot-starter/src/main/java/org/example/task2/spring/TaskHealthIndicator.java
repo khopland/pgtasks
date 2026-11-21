@@ -53,7 +53,8 @@ public class TaskHealthIndicator extends AbstractHealthIndicator {
             .withDetail("lastHeartbeat", String.valueOf(health.lastHeartbeat()))
             .withDetail("heartbeatAge", String.valueOf(health.heartbeatAge()))
             .withDetail("notifications", health.notifications().name().toLowerCase(Locale.ROOT))
-            .withDetail("stuckClaims", health.stuck().size());
+            .withDetail("stuckClaims", health.stuck().size())
+            .withDetail("openBreakers", health.openBreakers());
         if (!health.stuck().isEmpty()) {
             builder.withDetail("stuck", health.stuck().stream().limit(STUCK_SHOWN).map(stuck -> {
                 Map<String, Object> claim = new LinkedHashMap<>();

@@ -20,6 +20,7 @@ import org.example.task2.Outcome;
  * @param rateLimit     optional admission limit
  * @param retention     how long finished tasks are kept per outcome, counted from completion;
  *                      an outcome that isn't listed is kept forever
+ * @param breaker       when the topic stops claiming because most recent tasks fail
  */
 public record TopicSettings(
     int batchSize,
@@ -29,8 +30,14 @@ public record TopicSettings(
     Duration batchDeadline,
     Duration pollInterval,
     RateLimit rateLimit,
-    Map<Outcome, Period> retention
+    Map<Outcome, Period> retention,
+    Breaker breaker
 ) {
+
+    public TopicSettings(int batchSize, int concurrency, Ordering ordering, Retry retry, Duration batchDeadline, Duration pollInterval,
+                         RateLimit rateLimit, Map<Outcome, Period> retention) {
+        this(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, Breaker.standard());
+    }
 
     /** Succeeded 30 days, filtered, redundant and recreated 7 days, failed forever. */
     public static final Map<Outcome, Period> DEFAULT_RETENTION = Map.of(
@@ -52,42 +59,47 @@ public record TopicSettings(
             throw new IllegalArgumentException("batchDeadline and pollInterval must be positive");
         }
         retention = Map.copyOf(retention);
+        Objects.requireNonNull(breaker, "breaker");
     }
 
     /** 100 tasks per batch, 2 batches per node, FIFO, standard retry, 30 min deadline, 30 s poll. */
     public static TopicSettings defaults() {
-        return new TopicSettings(100, 2, Ordering.FIFO, Retry.standard(), Duration.ofMinutes(30), Duration.ofSeconds(30), null, DEFAULT_RETENTION);
+        return new TopicSettings(100, 2, Ordering.FIFO, Retry.standard(), Duration.ofMinutes(30), Duration.ofSeconds(30), null, DEFAULT_RETENTION, Breaker.standard());
     }
 
     public TopicSettings withBatchSize(int batchSize) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withConcurrency(int concurrency) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withOrdering(Ordering ordering) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withRetry(Retry retry) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withBatchDeadline(Duration batchDeadline) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withPollInterval(Duration pollInterval) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withRetention(Map<Outcome, Period> retention) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 
     public TopicSettings withRateLimit(RateLimit rateLimit) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
+    }
+
+    public TopicSettings withBreaker(Breaker breaker) {
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, rateLimit, retention, breaker);
     }
 }

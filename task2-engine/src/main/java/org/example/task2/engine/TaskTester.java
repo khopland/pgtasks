@@ -129,13 +129,18 @@ public final class TaskTester {
         while (true) {
             awaitIdle(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
             TaskStore.QueueCounts counts = counts(topic);
-            if (counts.nextRunAt() == null) {
+            // Ready tasks wait for an open breaker's next probe.
+            Instant probe = counts.ready() == 0 ? null : engines.stream().flatMap(engine -> engine.workers().stream())
+                .filter(worker -> worker.topic().ref().name().equals(topic.name()))
+                .map(TopicWorker::nextProbe).filter(java.util.Objects::nonNull).min(Instant::compareTo).orElse(null);
+            Instant next = counts.nextRunAt() == null ? probe : probe == null || counts.nextRunAt().isBefore(probe) ? counts.nextRunAt() : probe;
+            if (next == null) {
                 return counts;
             }
             if (System.nanoTime() > deadline) {
                 throw new IllegalStateException("Could not drain " + topic + " within " + timeout + ": " + counts);
             }
-            Duration until = Duration.between(store.clock().instant(), counts.nextRunAt());
+            Duration until = Duration.between(store.clock().instant(), next);
             if (store.clock() instanceof ManualClock) {
                 advance(until.isNegative() ? Duration.ZERO : until);
             } else if (until.isPositive()) {

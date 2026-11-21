@@ -54,14 +54,21 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
+    /** A single task sent while the topic's breaker is open: its failure doesn't count. */
+    private final boolean probe;
     private BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private VirtualMachineError fatal;
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
+        this(worker, core, claimed, false);
+    }
+
+    BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed, boolean probe) {
         this.worker = worker;
         this.core = core;
         this.claimed = claimed;
+        this.probe = probe;
     }
 
     void run() {
@@ -114,11 +121,13 @@ final class BatchRun<T> {
         if (scope != null && scope.abandoned()) {
             // The handler still runs: handing its tasks back would let them run twice at once.
             observation.released();
+            returnProbe();
             return;
         }
         if (decisions == null) {
             release(claims, claimed.stream().map(ClaimedTask::id).toList());
             observation.released();
+            returnProbe();
             return;
         }
         try (TaskObserver.Scope ignored = observation.open()) {
@@ -248,6 +257,7 @@ final class BatchRun<T> {
             LOGGER.log(System.Logger.Level.WARNING, "Discarded the completion of a batch in " + topic.ref() + ": " + stale.getMessage());
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
             observation.released();
+            returnProbe();
             return;
         } catch (Exception | Error e) {
             if (e instanceof VirtualMachineError vm) {
@@ -259,12 +269,15 @@ final class BatchRun<T> {
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
+                worker.recordResults(breakerResults(failures), probe);
             } catch (Exception recording) {
                 LOGGER.log(System.Logger.Level.ERROR, "Could not record the failure; the tasks stay active until this node's claims expire", recording);
+                returnProbe();
             }
             return;
         }
         observation.completed(results(completions));
+        worker.recordResults(breakerResults(completions), probe);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -367,13 +380,35 @@ final class BatchRun<T> {
                 yield switch (retry.classify(failed.cause())) {
                     case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
                     case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
-                    case COUNTED -> retry.allowsAnotherAfter(claim.attempt())
+                    // A probe fails while the breaker is open: likely the outage, not the task.
+                    case COUNTED -> probe
+                        ? new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error)
+                        : retry.allowsAnotherAfter(claim.attempt())
                         ? new Resolution.Waiting(WaitState.RETRYING, retry.backoff(claim.failures() + 1, core.random()), true, error)
                         : new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
                 };
             }
         };
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
+    }
+
+    /** For the breaker: true for a task that failed, false for one that finished; waits that aren't failures left out. */
+    private static Map<Long, Boolean> breakerResults(List<Completion> completions) {
+        Map<Long, Boolean> results = new LinkedHashMap<>();
+        for (Completion completion : completions) {
+            switch (completion.resolution()) {
+                case Resolution.Finished ignored -> results.put(completion.taskId(), false);
+                case Resolution.Waiting waiting when waiting.error() != null -> results.put(completion.taskId(), true);
+                case Resolution.Waiting ignored -> { }
+            }
+        }
+        return results;
+    }
+
+    private void returnProbe() {
+        if (probe) {
+            worker.probeReturned();
+        }
     }
 
     /** How many of the completions ended in each result. */

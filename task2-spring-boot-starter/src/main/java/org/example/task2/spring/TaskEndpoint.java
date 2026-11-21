@@ -255,6 +255,7 @@ public class TaskEndpoint {
         topic.put("module", status.module());
         topic.put("paused", status.paused());
         topic.put("processing", status.processing());
+        topic.put("breaker", status.breakerOpen() ? "open" : "closed");
         TaskStore.QueueCounts counts = status.counts();
         if (counts != null) {
             Map<String, Object> queue = new LinkedHashMap<>();

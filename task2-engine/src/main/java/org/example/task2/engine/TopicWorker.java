@@ -1,6 +1,7 @@
 package org.example.task2.engine;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
@@ -37,6 +38,7 @@ final class TopicWorker<T> {
     private final ExecutorService batches;
     private volatile boolean running, stopping;
     private Thread poller;
+    private final CircuitBreaker breaker;
 
     // For telling when the engine is idle: claims started, the last one that found nothing, batches running.
     private final AtomicLong claims = new AtomicLong();
@@ -52,6 +54,39 @@ final class TopicWorker<T> {
         this.core = core;
         this.permits = new Semaphore(topic.settings().concurrency());
         this.batches = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("task2-" + topic.ref().name() + "-", 0).factory());
+        this.breaker = new CircuitBreaker(topic.settings().breaker(), core.store().clock());
+    }
+
+    /** Whether this node's breaker for the topic is open. */
+    boolean breakerOpen() {
+        return breaker.isOpen();
+    }
+
+    /** When the open breaker sends its next probe, by the store's clock; null if closed or a probe is out. */
+    java.time.Instant nextProbe() {
+        return breaker.nextProbe();
+    }
+
+    /** A batch's results for the breaker; true for a task that failed. */
+    void recordResults(Map<Long, Boolean> results, boolean probe) {
+        switch (breaker.record(results, probe)) {
+            case OPENED -> {
+                LOGGER.log(System.Logger.Level.WARNING, "Most recent tasks in " + topic.ref() + " fail; this node stops claiming and probes with one task every "
+                    + topic.settings().breaker().probeEvery() + " (" + topic.settings().breaker().describe() + ")");
+                core.observer().breaker(topic.ref(), true);
+            }
+            case CLOSED -> {
+                LOGGER.log(System.Logger.Level.INFO, "A probe in " + topic.ref() + " succeeded; this node claims as usual again");
+                core.observer().breaker(topic.ref(), false);
+                signal.signal();
+            }
+            case NONE -> { }
+        }
+    }
+
+    /** A probe that won't report results: the next one may go. */
+    void probeReturned() {
+        breaker.probeReturned();
     }
 
     Topic<T> topic() {
@@ -81,13 +116,13 @@ final class TopicWorker<T> {
     }
 
     /** The claim, with the rate limit's current values: an operator can change them at any time. */
-    private TaskStore.ClaimRequest request() {
+    private TaskStore.ClaimRequest request(int size) {
         RateLimit limit = topic.settings().rateLimit() == null ? null : core.limits().effective(topic.settings().rateLimit());
         return new TaskStore.ClaimRequest(
             topicId,
             core.nodeId(),
             topic.settings().ordering(),
-            topic.settings().batchSize(),
+            size,
             limit == null ? null : new TaskStore.Admission(limit.name(), limit.perSecond(), limit.burst())
         );
     }
@@ -113,13 +148,34 @@ final class TopicWorker<T> {
             boolean dispatched = false;
             long signalsBefore = signal.count();
             long claim = claims.incrementAndGet();
+            CircuitBreaker.Permit permit = breaker.permit();
+            if (permit == CircuitBreaker.Permit.WAIT) {
+                // Open: nothing to claim until the next probe, which counts as having found nothing.
+                release();
+                signalsAtEmptyClaim = signalsBefore;
+                lastEmptyClaim = claim;
+                try {
+                    java.time.Instant next = breaker.nextProbe();
+                    Duration wait = next == null ? topic.settings().pollInterval()
+                        : Duration.between(core.store().clock().instant(), next);
+                    signal.await(wait.isNegative() || wait.isZero() ? Duration.ofMillis(1)
+                        : wait.compareTo(topic.settings().pollInterval()) > 0 ? topic.settings().pollInterval() : wait);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                continue;
+            }
+            boolean probe = permit == CircuitBreaker.Permit.PROBE;
             try {
-                TaskStore.ClaimRequest request = request();
+                TaskStore.ClaimRequest request = request(probe ? 1 : topic.settings().batchSize());
                 TaskStore.Claim claimed = core.transact(transaction -> core.store().claim(transaction, request));
                 failures = 0;
+                if (claimed.tasks().isEmpty() && probe) {
+                    breaker.probeReturned();
+                }
                 if (!claimed.tasks().isEmpty()) {
                     claimed.tasks().forEach(task -> core.held().put(task.id(), task.attempt()));
-                    BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());
+                    BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks(), probe);
                     claimedTasks.addAndGet(claimed.tasks().size());
                     runningBatches.incrementAndGet();
                     try {
@@ -169,6 +225,9 @@ final class TopicWorker<T> {
             } catch (InterruptedException e) {
                 return;
             } catch (Exception e) {
+                if (probe && !dispatched) {
+                    breaker.probeReturned();
+                }
                 if (!dispatched) {
                     release();
                     dispatched = true;

@@ -32,4 +32,7 @@ public interface TopicOptions {
     TopicOptions retain(Outcome outcome, Period period);
 
     TopicOptions retainForever(Outcome outcome);
+
+    /** When the topic stops claiming because most of its recent tasks fail; {@link Breaker#off()} for never. */
+    TopicOptions breaker(Breaker breaker);
 }
