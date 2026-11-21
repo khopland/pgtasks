@@ -61,6 +61,17 @@ class CronTest {
     }
 
     @Test
+    void previous_finds_the_last_fire_at_or_before() {
+        Cron cron = Cron.parse("*/15 7-17 * * MON-FRI");
+        assertThat(cron.previous(at("2026-11-23T07:15:00Z"))).as("at counts").isEqualTo(at("2026-11-23T07:15:00Z"));
+        assertThat(cron.previous(at("2026-11-23T07:14:59Z"))).isEqualTo(at("2026-11-23T07:00:00Z"));
+        // Monday 06:00: the last was Friday 17:45.
+        assertThat(cron.previous(at("2026-11-23T06:00:00Z"))).isEqualTo(at("2026-11-20T17:45:00Z"));
+        assertThat(Cron.parse("0 0 29 2 *").previous(at("2026-11-21T00:00:00Z"))).isEqualTo(at("2024-02-29T00:00:00Z"));
+        assertThat(Cron.parse("0 2 * * *", OSLO).previous(at("2026-11-21T00:59:00Z"))).isEqualTo(at("2026-11-20T01:00:00Z"));
+    }
+
+    @Test
     void mistakes_are_explained() {
         assertThatThrownBy(() -> Cron.parse("0 2 * *")).hasMessageContaining("five fields");
         assertThatThrownBy(() -> Cron.parse("61 * * * *")).hasMessageContaining("minute 61 is outside 0-59");

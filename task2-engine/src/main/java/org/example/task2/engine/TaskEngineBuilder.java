@@ -286,6 +286,13 @@ public final class TaskEngineBuilder {
         Rate rate;
         Integer burst;
         boolean approximate;
+        final List<RateWindow> windows = new ArrayList<>();
+
+        @Override
+        public GlobalOptions.LimitOptions window(Cron from, Rate rate) {
+            windows.add(new RateWindow(from, rate));
+            return this;
+        }
 
         @Override
         public GlobalOptions.LimitOptions rate(Rate rate) {
@@ -607,7 +614,7 @@ public final class TaskEngineBuilder {
                 throw new IllegalArgumentException("unknown limit '" + name + "'; define it in TaskGlobals; known: " + global.limits.keySet());
             }
             int burst = limit.burst != null ? limit.burst : (int) Math.max(1, Math.ceil(limit.rate.perSecond()));
-            rateLimit = new RateLimit(name, limit.rate.perSecond(), burst, limit.approximate);
+            rateLimit = new RateLimit(name, limit.rate.perSecond(), burst, limit.approximate, limit.windows);
         }
         Map<Outcome, Period> retention = new EnumMap<>(Outcome.class);
         for (Outcome outcome : Outcome.values()) {

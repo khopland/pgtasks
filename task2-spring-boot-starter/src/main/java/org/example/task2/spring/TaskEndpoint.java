@@ -268,6 +268,10 @@ public class TaskEndpoint {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("name", limit.name());
         body.put("configured", rate(limit.configured()));
+        if (limit.configured() != null && !limit.configured().windows().isEmpty()) {
+            body.put("windows", limit.configured().windows().stream().map(window -> Map.of(
+                "from", window.from().expression(), "zone", window.from().zone().getId(), "rate", window.rate().toString())).toList());
+        }
         body.put("effective", rate(limit.effective()));
         TaskStore.LimitOverride override = limit.override();
         if (override != null && (override.perSecond() != null || override.burst() != null)) {

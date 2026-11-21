@@ -121,7 +121,9 @@ public final class RateLimits {
         return new Limit(name, limit, effective, override, override == null ? 0 : override.version());
     }
 
-    private static RateLimit apply(RateLimit limit, LimitOverride override, Instant now) {
+    /** The configured limit at this time, its window applied, then an active override on top. */
+    private static RateLimit apply(RateLimit configured, LimitOverride override, Instant now) {
+        RateLimit limit = configured.at(now);
         if (override == null || !override.activeAt(now)) {
             return limit;
         }
@@ -146,9 +148,10 @@ public final class RateLimits {
             RateLimit before = previous.get(name);
             if (before != null && !before.equals(limit)) {
                 LimitOverride override = loaded.get(name);
-                LOGGER.log(System.Logger.Level.INFO, "Rate limit " + name + " is now " + Rate.perSecond(limit.perSecond()) + ", burst " + limit.burst()
-                    + (limit.equals(configured.get(name)) ? ", as configured" : ", overridden by " + override.updatedBy()
-                    + (override.until() == null ? "" : " until " + override.until())));
+                String why = override != null && override.activeAt(now)
+                    ? ", overridden by " + override.updatedBy() + (override.until() == null ? "" : " until " + override.until())
+                    : configured.get(name).windows().isEmpty() ? ", as configured" : ", by its time window";
+                LOGGER.log(System.Logger.Level.INFO, "Rate limit " + name + " is now " + Rate.perSecond(limit.perSecond()) + ", burst " + limit.burst() + why);
                 changed.accept(name);
             }
         });

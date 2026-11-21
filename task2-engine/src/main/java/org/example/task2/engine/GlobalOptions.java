@@ -31,6 +31,20 @@ public interface GlobalOptions {
         LimitOptions burst(int permits);
 
         /**
+         * From each time {@code from} fires, the limit runs at {@code rate} until another window
+         * fires: give one window for each change, as in
+         * {@code .window(Cron.parse("0 7 * * MON-FRI", oslo), Rate.perSecond(50)).window(Cron.parse("0 17 * * MON-FRI", oslo), Rate.perSecond(200))}.
+         * Operators' overrides still win over windows. Every node works out the same rate from
+         * its clock, so the cluster-wide bucket sees one rate.
+         */
+        LimitOptions window(Cron from, Rate rate);
+
+        /** A window whose cron is in UTC. */
+        default LimitOptions window(String from, Rate rate) {
+            return window(Cron.parse(from), rate);
+        }
+
+        /**
          * Splits the rate across live nodes instead of keeping one bucket in the database. Saves
          * a write per claim, but can overshoot while nodes join or leave. Strict is the default.
          *

@@ -125,6 +125,38 @@ public final class Cron {
         return null;
     }
 
+    /** The last time at or before {@code atOrBefore} that the schedule fired, or null if it didn't within years. */
+    public Instant previous(Instant atOrBefore) {
+        LocalDateTime start = LocalDateTime.ofInstant(atOrBefore, zone).truncatedTo(ChronoUnit.MINUTES);
+        LocalDate day = start.toLocalDate();
+        LocalDate first = day.minusYears(YEARS_AHEAD);
+        LocalTime until = start.toLocalTime();
+        while (!day.isBefore(first)) {
+            if (!months.get(day.getMonthValue())) {
+                day = day.withDayOfMonth(1).minusDays(1);
+                until = LocalTime.MAX;
+                continue;
+            }
+            if (matches(day)) {
+                for (int hour = until.getHour(); hour >= 0; hour--) {
+                    if (!hours.get(hour)) {
+                        continue;
+                    }
+                    int lastMinute = hour == until.getHour() ? until.getMinute() : 59;
+                    for (int minute = minutes.previousSetBit(lastMinute); minute >= 0; minute = minutes.previousSetBit(minute - 1)) {
+                        Instant fire = resolve(day.atTime(hour, minute));
+                        if (!fire.isAfter(atOrBefore)) {
+                            return fire;
+                        }
+                    }
+                }
+            }
+            day = day.minusDays(1);
+            until = LocalTime.MAX;
+        }
+        return null;
+    }
+
     /** A local time in a gap fires right after it; one that happens twice fires the first time. */
     private Instant resolve(LocalDateTime local) {
         java.time.zone.ZoneRules rules = zone.getRules();

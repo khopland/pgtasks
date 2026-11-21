@@ -9,12 +9,20 @@ import java.util.Objects;
  * across live nodes, each with a bucket of its own: no write per claim, but it can overshoot while
  * nodes join or leave. Permits are taken before polling, and empty polls aren't charged.
  *
- * @param name a limit can be shared by several topics, named after a topic or a downstream system
+ * @param name      a limit can be shared by several topics, named after a topic or a downstream system
+ * @param perSecond the rate until one of the windows has fired
+ * @param windows   rates for times of day or week: each applies from when its cron fires until
+ *                  another one fires; see {@link #at(java.time.Instant)}
  */
-public record RateLimit(String name, double perSecond, int burst, boolean approximate) {
+public record RateLimit(String name, double perSecond, int burst, boolean approximate, java.util.List<RateWindow> windows) {
+
+    public RateLimit(String name, double perSecond, int burst, boolean approximate) {
+        this(name, perSecond, burst, approximate, java.util.List.of());
+    }
 
     public RateLimit {
         Objects.requireNonNull(name, "name");
+        windows = java.util.List.copyOf(windows);
         if (!(perSecond > 0)) {
             throw new IllegalArgumentException("rate must be positive; a rate of 0 is not a pause");
         }
@@ -28,6 +36,25 @@ public record RateLimit(String name, double perSecond, int burst, boolean approx
     }
 
     public RateLimit withRate(double perSecond, int burst) {
-        return new RateLimit(name, perSecond, burst, approximate);
+        return new RateLimit(name, perSecond, burst, approximate, windows);
+    }
+
+    /**
+     * The limit as it applies at a time: the rate of the window whose cron fired last, at or
+     * before {@code now}; the base rate if there are no windows. With windows, give one for each
+     * change, such as 50/s from 07:00 on weekdays and 200/s from 17:00, since each holds until the
+     * next one fires. The windows stay on the result, so its rate is the only thing that changes.
+     */
+    public RateLimit at(java.time.Instant now) {
+        RateWindow current = null;
+        java.time.Instant since = null;
+        for (RateWindow window : windows) {
+            java.time.Instant fired = window.from().previous(now);
+            if (fired != null && (since == null || !fired.isBefore(since))) {
+                current = window;
+                since = fired;
+            }
+        }
+        return current == null ? this : withRate(current.rate().perSecond(), burst);
     }
 }
