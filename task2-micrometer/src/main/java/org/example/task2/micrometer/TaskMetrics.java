@@ -34,6 +34,9 @@ import org.example.task2.spi.TaskStore.TopicSnapshot;
  *   <li>{@value #OLDEST_READY}: seconds since the oldest ready task was pushed, 0 if none is
  *       ready. The most useful thing to alert on: it grows when a topic stops keeping up, however
  *       fast it was going before.</li>
+ *   <li>{@value #FAILING}: unfinished tasks whose last run failed, dead letters included, and
+ *       {@value #OLDEST_FAILING}: seconds since the longest-failing of them first failed, 0 if
+ *       none is. Alert on this one rather than on dead letters, which may take days to come.</li>
  *   <li>{@value #SNAPSHOT_AGE}: seconds since the counts were taken. If it grows past a few
  *       snapshot intervals, no node is running housekeeping.</li>
  * </ul>
@@ -43,6 +46,8 @@ public final class TaskMetrics implements MeterBinder {
     public static final String TOPICS = "task.queue.topics";
     public static final String QUEUE = "task.queue";
     public static final String OLDEST_READY = "task.queue.oldest.ready";
+    public static final String FAILING = "task.queue.failing";
+    public static final String OLDEST_FAILING = "task.queue.oldest.failing";
     public static final String SNAPSHOT_AGE = "task.queue.snapshot.age";
 
     private static final System.Logger LOGGER = System.getLogger(TaskMetrics.class.getName());
@@ -116,6 +121,16 @@ public final class TaskMetrics implements MeterBinder {
             .register(registry));
         Gauge.builder(OLDEST_READY, this, metrics -> metrics.age(topic, snapshot -> snapshot.counts().oldestReadyAt()))
             .description("Seconds since the oldest ready task was pushed, from the last snapshot; 0 if none is ready")
+            .baseUnit("seconds")
+            .tag("topic", topic)
+            .register(registry);
+        Gauge.builder(FAILING, this, metrics -> metrics.count(topic, QueueCounts::failing))
+            .description("Unfinished tasks whose last run failed, from the last snapshot")
+            .baseUnit("tasks")
+            .tag("topic", topic)
+            .register(registry);
+        Gauge.builder(OLDEST_FAILING, this, metrics -> metrics.age(topic, snapshot -> snapshot.counts().oldestFailingAt()))
+            .description("Seconds since the longest-failing task first failed, from the last snapshot; 0 if none is failing")
             .baseUnit("seconds")
             .tag("topic", topic)
             .register(registry);

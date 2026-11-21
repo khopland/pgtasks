@@ -411,6 +411,12 @@ public final class TaskEngine implements AutoCloseable {
         return EngineCore.transact(store, transaction -> store.find(transaction, taskId));
     }
 
+    /** What is failing in a topic: its failing tasks grouped by error, the largest group first. */
+    public List<TaskStore.FailureGroup> failing(String topic, int limit) throws Exception {
+        int id = topicId(topic);
+        return EngineCore.transact(store, transaction -> store.failing(transaction, id, limit));
+    }
+
     /** A page of a topic's dead letters, lowest id first, after {@code afterId} (0 for the first page). */
     public List<TaskStore.TaskView> deadLetters(String topic, long afterId, int limit) throws Exception {
         int id = topicId(topic);

@@ -30,7 +30,7 @@ class TaskMetricsTest {
     }, Duration.ofSeconds(10), clock);
 
     private static TopicSnapshot snapshot(String topic, long ready, Instant oldestReady, Instant takenAt) {
-        return new TopicSnapshot(topic, new QueueCounts(1, 2, ready, 4, 5, 6, 7, null, oldestReady), takenAt);
+        return new TopicSnapshot(topic, new QueueCounts(1, 2, ready, 4, 5, 6, 7, null, oldestReady, 3, NOW.minusSeconds(600)), takenAt);
     }
 
     private double gauge(String name, String topic, String... tags) {
@@ -48,6 +48,8 @@ class TaskMetricsTest {
         assertThat(gauge(TaskMetrics.QUEUE, "orders", "state", "due")).isEqualTo(7);
         assertThat(gauge(TaskMetrics.OLDEST_READY, "orders")).isEqualTo(90);
         assertThat(gauge(TaskMetrics.SNAPSHOT_AGE, "orders")).isEqualTo(20);
+        assertThat(gauge(TaskMetrics.FAILING, "orders")).isEqualTo(3);
+        assertThat(gauge(TaskMetrics.OLDEST_FAILING, "orders")).isEqualTo(600);
 
         clock.advance(Duration.ofSeconds(5));
         assertThat(gauge(TaskMetrics.OLDEST_READY, "orders")).isEqualTo(95);

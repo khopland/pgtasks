@@ -137,6 +137,10 @@ class TaskEndpointTest {
         assertThat(dead.status()).isEqualTo(200);
         assertThat(dead.body().path("deadLetters").get(0).path("id").asLong()).isEqualTo(id);
         assertThat(dead.body().path("deadLetters").get(0).path("error").asString()).contains("not yet");
+        Response failing = get("/tasks/topics/work/failing");
+        assertThat(failing.body().path("failing").get(0).path("error").asString()).isEqualTo("not yet");
+        assertThat(failing.body().path("failing").get(0).path("tasks").asLong()).isEqualTo(1);
+        assertThat(failing.body().path("failing").get(0).path("example").asLong()).isEqualTo(id);
 
         Response revived = send("POST", "/tasks/topics/work/revive", "{\"ids\": \"" + id + "\"}");
         assertThat(revived.status()).isEqualTo(200);

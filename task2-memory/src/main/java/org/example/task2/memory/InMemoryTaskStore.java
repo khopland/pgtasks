@@ -754,11 +754,17 @@ public final class InMemoryTaskStore implements TaskStore {
         long due = 0;
         Instant next = null;
         Long oldestReady = null;
+        long failing = 0;
+        Instant oldestFailing = null;
         for (Rows.Queued row : queue.values()) {
             if (row.topicId() != topicId) {
                 continue;
             }
             counts[row.state().ordinal()]++;
+            if (row.failures() > 0) {
+                failing++;
+                oldestFailing = oldestFailing == null || row.firstFailedAt().isBefore(oldestFailing) ? row.firstFailedAt() : oldestFailing;
+            }
             if (row.state() == State.READY && (oldestReady == null || row.taskId() < oldestReady)) {
                 oldestReady = row.taskId();
             }
@@ -769,7 +775,45 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         return new QueueCounts(counts[State.SCHEDULED.ordinal()], counts[State.RETRYING.ordinal()], counts[State.READY.ordinal()],
             counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due, next,
-            oldestReady == null ? null : tasks.get(oldestReady).createdAt());
+            oldestReady == null ? null : tasks.get(oldestReady).createdAt(), failing, oldestFailing);
+    }
+
+    @Override
+    public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) {
+        memory(transaction);
+        Map<String, List<Rows.Queued>> groups = new HashMap<>();
+        queue.values().stream()
+            .filter(row -> row.topicId() == topicId && row.failures() > 0)
+            .forEach(row -> groups.computeIfAbsent(errorKey(tasks.get(row.taskId()).error()), ignored -> new ArrayList<>()).add(row));
+        return groups.entrySet().stream()
+            .map(group -> {
+                Rows.Queued example = group.getValue().stream().min(Comparator.comparingLong(Rows.Queued::taskId)).orElseThrow();
+                Instant oldest = group.getValue().stream().map(Rows.Queued::firstFailedAt).min(Comparator.naturalOrder()).orElseThrow();
+                return new FailureGroup(group.getKey(), group.getValue().size(), oldest, example.taskId(),
+                    jsonField(tasks.get(example.taskId()).error(), "message"));
+            })
+            .sorted(Comparator.comparingLong(FailureGroup::tasks).reversed().thenComparing(FailureGroup::error))
+            .limit(limit)
+            .toList();
+    }
+
+    /** The error's type, or its message if it has none, as Postgres groups them. */
+    private static String errorKey(String error) {
+        String type = jsonField(error, "type");
+        if (type != null) {
+            return type;
+        }
+        String message = jsonField(error, "message");
+        return message != null ? message : "unknown";
+    }
+
+    /** A string field of the flat JSON the engine writes; enough for grouping, not a JSON parser. */
+    private static String jsonField(String json, String name) {
+        if (json == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\"" + name + "\":\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
+        return matcher.find() ? matcher.group(1).replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\") : null;
     }
 
     @Override

@@ -47,7 +47,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired;
+    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -344,6 +344,18 @@ public final class PostgresTaskStore implements TaskStore {
             FOR UPDATE OF s SKIP LOCKED
             """);
         scheduleFired = sql("UPDATE tasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
+        // queue_failing_idx keeps this to the topic's failing tasks.
+        failingGroups = sql("""
+            SELECT coalesce(t.error->>'type', t.error->>'message', 'unknown') AS error, count(*) AS tasks,
+                   min(q.first_failed_at) AS oldest, min(q.task_id) AS example,
+                   (array_agg(t.error->>'message' ORDER BY q.task_id))[1] AS message
+            FROM tasks.queue q
+            JOIN tasks.task t ON t.id = q.task_id
+            WHERE q.topic_id = :topic::integer AND q.failures > 0
+            GROUP BY 1
+            ORDER BY count(*) DESC, 1
+            LIMIT :limit::integer
+            """);
         // A discarded dead letter may have held back later tasks; no trigger sees a delete.
         notifyReady = sql("SELECT pg_notify('tasks_ready', :topic::text)");
         countQueue = sql("""
@@ -355,7 +367,9 @@ public final class PostgresTaskStore implements TaskStore {
                    count(*) FILTER (WHERE state = 'failed'),
                    count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp()),
                    min(run_at),
-                   (SELECT created_at FROM tasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at
+                   (SELECT created_at FROM tasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at,
+                   count(*) FILTER (WHERE failures > 0) AS failing,
+                   min(first_failed_at) AS oldest_failing_at
             FROM tasks.queue
             WHERE topic_id = :topic::integer
             """);
@@ -414,7 +428,7 @@ public final class PostgresTaskStore implements TaskStore {
         limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM tasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
             INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
-                                           oldest_ready_at)
+                                           oldest_ready_at, failing, oldest_failing_at)
             SELECT t.id, now(),
                    count(q.task_id) FILTER (WHERE q.state = 'scheduled'),
                    count(q.task_id) FILTER (WHERE q.state = 'retrying'),
@@ -424,13 +438,16 @@ public final class PostgresTaskStore implements TaskStore {
                    count(q.task_id) FILTER (WHERE q.state = 'failed'),
                    count(q.task_id) FILTER (WHERE q.state IN ('scheduled', 'retrying') AND q.run_at <= now()),
                    min(q.run_at),
-                   (SELECT created_at FROM tasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready'))
+                   (SELECT created_at FROM tasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready')),
+                   count(q.task_id) FILTER (WHERE q.failures > 0),
+                   min(q.first_failed_at)
             FROM tasks.topic t
             LEFT JOIN tasks.queue q ON q.topic_id = t.id
             GROUP BY t.id
             ON CONFLICT (topic_id) DO UPDATE SET taken_at = excluded.taken_at, scheduled = excluded.scheduled, retrying = excluded.retrying,
                 ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
-                due = excluded.due, next_run_at = excluded.next_run_at, oldest_ready_at = excluded.oldest_ready_at
+                due = excluded.due, next_run_at = excluded.next_run_at, oldest_ready_at = excluded.oldest_ready_at,
+                failing = excluded.failing, oldest_failing_at = excluded.oldest_failing_at
             """);
         // Takes a lease nobody holds or whose term ran out, or renews this node's own. Two nodes
         // asking at once serialize on the row; the second sees the first's fresh term and gets nothing.
@@ -447,7 +464,7 @@ public final class PostgresTaskStore implements TaskStore {
         resign = sql("DELETE FROM tasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
             SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at,
-                   c.oldest_ready_at
+                   c.oldest_ready_at, c.failing, c.oldest_failing_at
             FROM tasks.topic_count c
             JOIN tasks.topic tp ON tp.id = c.topic_id
             ORDER BY tp.name
@@ -1115,7 +1132,7 @@ public final class PostgresTaskStore implements TaskStore {
             while (resultSet.next()) {
                 result.add(new TopicSnapshot(resultSet.getString(1), new QueueCounts(resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
                     resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), resultSet.getLong(8), instant(resultSet, "next_run_at"),
-                    instant(resultSet, "oldest_ready_at")),
+                    instant(resultSet, "oldest_ready_at"), resultSet.getLong("failing"), instant(resultSet, "oldest_failing_at")),
                     instant(resultSet, "taken_at")));
             }
         }
@@ -1373,6 +1390,19 @@ public final class PostgresTaskStore implements TaskStore {
         return result;
     }
 
+    @Override
+    public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) throws SQLException {
+        List<FailureGroup> groups = new ArrayList<>();
+        try (PreparedStatement statement = failingGroups.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("limit", limit));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                groups.add(new FailureGroup(resultSet.getString("error"), resultSet.getLong("tasks"), instant(resultSet, "oldest"),
+                    resultSet.getLong("example"), resultSet.getString("message")));
+            }
+        }
+        return groups;
+    }
+
     private static TaskView taskView(ResultSet resultSet) throws SQLException {
         return new TaskView(
             resultSet.getString("topic"),
@@ -1405,7 +1435,8 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
             return new QueueCounts(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
-                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"), instant(resultSet, "oldest_ready_at"));
+                resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"), instant(resultSet, "oldest_ready_at"),
+                resultSet.getLong("failing"), instant(resultSet, "oldest_failing_at"));
         }
     }
 

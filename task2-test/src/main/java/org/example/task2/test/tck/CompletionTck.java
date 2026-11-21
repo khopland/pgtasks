@@ -191,6 +191,31 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void failing_tasks_are_counted_and_grouped_by_error() throws Exception {
+        StoreFixture fixture = setUp();
+        fixture.push(topic, Insertion.APPEND, task("a"), task("b"), task("c"), task("fine"));
+        String refused = "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}";
+        for (ClaimedTask claimed : fixture.claim(topic, node, org.example.task2.Ordering.FIFO, 10)) {
+            TaskStore.Resolution resolution = switch (claimed.identifier()) {
+                case "a", "b" -> new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, Duration.ofHours(1), false, refused);
+                case "c" -> StoreFixture.deadLetter();
+                default -> StoreFixture.succeeded();
+            };
+            fixture.complete(topic, node, claimed, resolution);
+        }
+
+        TaskStore.QueueCounts counts = fixture.counts(topic);
+        assertThat(counts.failing()).as("retrying and dead-lettered alike").isEqualTo(3);
+        assertThat(counts.oldestFailingAt()).isNotNull();
+        List<TaskStore.FailureGroup> groups = fixture.inTransaction(transaction -> fixture.store().failing(transaction, topic, 10));
+        assertThat(groups).extracting(TaskStore.FailureGroup::error, TaskStore.FailureGroup::tasks).containsExactly(
+            org.assertj.core.groups.Tuple.tuple("java.net.ConnectException", 2L),
+            org.assertj.core.groups.Tuple.tuple("gave up", 1L));
+        assertThat(groups.getFirst().exampleMessage()).isEqualTo("refused");
+        assertThat(groups.getFirst().oldestFailedAt()).isNotNull();
+    }
+
+    @Test
     void the_attempt_log_keeps_a_tasks_first_attempt_and_its_last_ten() throws Exception {
         StoreFixture fixture = setUp();
         long id = fixture.push(topic, "a");

@@ -260,6 +260,16 @@ public interface TaskStore {
     /** Records that a recurring task fired, and when it fires next. */
     void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException;
 
+    /**
+     * A topic's failing tasks grouped by error type (or, for errors without one, by message), the
+     * largest group first, with when the longest-failing task of each first failed.
+     */
+    List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) throws SQLException;
+
+    /** @param example the lowest task id in the group, to look at */
+    record FailureGroup(String error, long tasks, Instant oldestFailedAt, long example, String exampleMessage) {
+    }
+
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
 
@@ -466,10 +476,17 @@ public interface TaskStore {
      * Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has
      * come; {@code nextRunAt} is the earliest time one of them is due, if any. {@code oldestReadyAt}
      * is when the oldest ready task (the lowest id) was pushed, if any are ready: how long the
-     * topic's work has been waiting. A delayed task's delay counts in it.
+     * topic's work has been waiting. A delayed task's delay counts in it. {@code failing} counts
+     * unfinished tasks whose last run failed, dead letters included, and {@code oldestFailingAt}
+     * is when the longest-failing of them first failed: the number to alert on.
      */
     record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
-                       Instant oldestReadyAt) {
+                       Instant oldestReadyAt, long failing, Instant oldestFailingAt) {
+
+        public QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
+                           Instant oldestReadyAt) {
+            this(scheduled, retrying, ready, active, suspended, failed, due, nextRunAt, oldestReadyAt, 0, null);
+        }
 
         public long total() {
             return scheduled + retrying + ready + active + suspended + failed;

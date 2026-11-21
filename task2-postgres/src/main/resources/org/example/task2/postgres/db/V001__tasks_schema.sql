@@ -119,6 +119,8 @@ CREATE INDEX queue_identifier_idx ON tasks.queue (topic_id, identifier, task_id)
 CREATE INDEX queue_due_idx ON tasks.queue (run_at) WHERE state IN ('scheduled', 'retrying');
 -- Requeueing tasks from dead nodes.
 CREATE INDEX queue_active_idx ON tasks.queue (node_id) WHERE state = 'active';
+-- What is failing, and since when: the failing tasks of a topic, few next to its backlog.
+CREATE INDEX queue_failing_idx ON tasks.queue (topic_id, first_failed_at) WHERE failures > 0;
 -- Listing, reviving and discarding a topic's dead letters, which are few next to its backlog.
 CREATE INDEX queue_failed_idx ON tasks.queue (topic_id, task_id) WHERE state = 'failed';
 -- Idempotent push: at most one unfinished task per key. Finished tasks leave the queue. Partial,
@@ -194,7 +196,10 @@ CREATE TABLE tasks.topic_count (
     due              bigint NOT NULL,
     next_run_at      timestamptz,
     -- When the oldest ready task was pushed: how long the topic's work has been waiting.
-    oldest_ready_at  timestamptz
+    oldest_ready_at  timestamptz,
+    -- Unfinished tasks whose last run failed, and when the longest-failing one first failed.
+    failing            bigint NOT NULL DEFAULT 0,
+    oldest_failing_at  timestamptz
 );
 
 -- Leases on cluster-wide jobs, such as housekeeping. A node holds a lease by renewing it within

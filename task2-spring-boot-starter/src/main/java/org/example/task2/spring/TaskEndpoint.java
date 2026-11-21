@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 
 import org.example.task2.Outcome;
@@ -34,6 +35,7 @@ import org.jspecify.annotations.Nullable;
  * GET    /actuator/tasks                                   topics by module, limits, this node
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
+ * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
  * POST   /actuator/tasks/topics/{topic}/pause | resume | create
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {} for all
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
@@ -97,11 +99,24 @@ public class TaskEndpoint {
     @ReadOperation
     public WebEndpointResponse<Object> readPart(@Selector String kind, @Selector String name, @Selector String part,
                                                 @Nullable Long after, @Nullable Integer limit) throws Exception {
-        if (!kind.equals("topics") || !part.equals("dead-letters")) {
+        if (!kind.equals("topics") || !Set.of("dead-letters", "failing").contains(part)) {
             return notFound();
         }
         if (status(name).isEmpty()) {
             return notFound();
+        }
+        if (part.equals("failing")) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("failing", engine.failing(name, limit == null ? 50 : Math.clamp(limit, 1, 1_000)).stream().map(group -> {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("error", group.error());
+                entry.put("tasks", group.tasks());
+                entry.put("oldestFailedAt", text(group.oldestFailedAt()));
+                entry.put("example", group.example());
+                entry.put("exampleMessage", group.exampleMessage());
+                return entry;
+            }).toList());
+            return new WebEndpointResponse<>(body);
         }
         int size = limit == null ? DEAD_LETTER_PAGE : Math.clamp(limit, 1, 1_000);
         List<TaskStore.TaskView> page = engine.deadLetters(name, after == null ? 0 : after, size);
@@ -250,6 +265,8 @@ public class TaskEndpoint {
             queue.put("suspended", counts.suspended());
             queue.put("deadLetters", counts.failed());
             queue.put("due", counts.due());
+            queue.put("failing", counts.failing());
+            queue.put("oldestFailingAt", text(counts.oldestFailingAt()));
             queue.put("oldestReadyAt", text(counts.oldestReadyAt()));
             queue.put("countedAt", text(status.countedAt()));
             topic.put("queue", queue);
