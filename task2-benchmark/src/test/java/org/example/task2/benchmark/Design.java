@@ -28,6 +28,12 @@ interface Design {
 
     void complete(int node, List<Claimed> claimed) throws SQLException;
 
+    /** Deletes the oldest finished tasks, as retention does. Returns how many it deleted. */
+    int purgeOldest(int rows) throws SQLException;
+
+    /** The design's tables, schema-qualified, for reporting their sizes and vacuum activity. */
+    List<String> tables();
+
     /** Bytes used by the design's tables and indexes. */
     long bytes() throws SQLException;
 

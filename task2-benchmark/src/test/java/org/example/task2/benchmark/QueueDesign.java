@@ -3,11 +3,13 @@ package org.example.task2.benchmark;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
 import java.util.List;
 
 import javax.sql.DataSource;
 
 import org.example.task2.Ordering;
+import org.example.task2.Outcome;
 import org.example.task2.postgres.PostgresTaskStore;
 import org.example.task2.postgres.TaskSchema;
 import org.example.task2.spi.StoreTransaction;
@@ -104,6 +106,21 @@ final class QueueDesign implements Design {
                 .toList());
             transaction.commit();
         }
+    }
+
+    @Override
+    public int purgeOldest(int rows) throws SQLException {
+        // The store's retention statement: the oldest finished tasks completed before now.
+        try (StoreTransaction transaction = store.begin()) {
+            int deleted = store.purge(transaction, topic, Outcome.SUCCEEDED, Instant.now(), rows);
+            transaction.commit();
+            return deleted;
+        }
+    }
+
+    @Override
+    public List<String> tables() {
+        return List.of("tasks.queue", "tasks.task");
     }
 
     @Override

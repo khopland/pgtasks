@@ -181,6 +181,27 @@ final class SingleTableDesign implements Design {
     }
 
     @Override
+    public int purgeOldest(int rows) throws SQLException {
+        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
+            return statement.executeUpdate("""
+                WITH doomed AS MATERIALIZED (
+                    SELECT id FROM single.task
+                    WHERE topic_id = 1 AND state = 'succeeded' AND completed_at < now()
+                    ORDER BY completed_at
+                    LIMIT %d
+                    FOR UPDATE SKIP LOCKED
+                )
+                DELETE FROM single.task t USING doomed WHERE t.id = doomed.id
+                """.formatted(rows));
+        }
+    }
+
+    @Override
+    public List<String> tables() {
+        return List.of("single.task");
+    }
+
+    @Override
     public long bytes() throws SQLException {
         try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT pg_total_relation_size('single.task')")) {
