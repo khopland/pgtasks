@@ -89,11 +89,12 @@ class EngineTest {
 
         TaskStore.QueueCounts counts = tester.drain(TOPIC);
 
-        assertThat(runs).hasValue(5);
+        // The standard policy: a week of retries, ramping to every half hour, jumped through on the clock.
+        assertThat(runs).hasValue(Retry.standard().maxAttempts());
         assertThat(counts.failed()).isEqualTo(1);
         TaskStore.TaskView dead = view(tester, id);
         assertThat(dead.state()).isEqualTo("failed");
-        assertThat(dead.attempt()).isEqualTo(5);
+        assertThat(dead.attempt()).isEqualTo(Retry.standard().maxAttempts());
         assertThat(dead.error()).contains("still broken");
     }
 

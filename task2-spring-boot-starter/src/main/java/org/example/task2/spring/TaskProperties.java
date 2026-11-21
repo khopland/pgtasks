@@ -15,7 +15,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * <pre>
  * task:
  *   topics:
- *     assessment: { concurrency: 16, retry.max-attempts: 10 }
+ *     assessment: { concurrency: 16, retry.give-up-after: 2d }
  *   limits:
  *     folkeregister: { rate: 400/s }
  * </pre>
@@ -33,7 +33,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
  *                        left is handed back without counting the attempt
  * @param topics          per topic: concurrency, batch-size, ordering, poll-interval,
- *                        batch-deadline, retry.max-attempts, retain.&lt;outcome&gt;
+ *                        batch-deadline, retry.max-attempts (a number or forever),
+ *                        retry.give-up-after (such as 7d, or never), retry.first-backoff,
+ *                        retry.max-backoff, retain.&lt;outcome&gt;
  * @param limits          per rate limit: rate (such as 400/s) and burst
  * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
  *                        Spring Modulith module tests get one without it

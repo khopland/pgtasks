@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -122,7 +123,9 @@ public final class TaskEngineBuilder {
     /**
      * Per-environment overrides, as flat properties: {@code topics.<topic>.concurrency},
      * {@code topics.<topic>.batch-size}, {@code ordering}, {@code poll-interval},
-     * {@code batch-deadline}, {@code retry.max-attempts}, {@code retain.<outcome>};
+     * {@code batch-deadline}, {@code retry.max-attempts} (a number or {@code forever}),
+     * {@code retry.give-up-after} (such as 7d, or {@code never}), {@code retry.first-backoff},
+     * {@code retry.max-backoff}, {@code retain.<outcome>};
      * {@code limits.<limit>.rate} (such as 400/s) and {@code limits.<limit>.burst}. An unknown
      * topic, limit or key fails the build.
      */
@@ -516,8 +519,8 @@ public final class TaskEngineBuilder {
             topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
                 try {
                     Object parsed = parseOverride(key, value, (Retry) values.get("retry"));
-                    // retry.max-attempts changes one part of the retry policy, which is one setting.
-                    String setting = key.equals("retry.max-attempts") ? "retry" : key;
+                    // Each retry.* key changes one part of the retry policy, which is one setting.
+                    String setting = key.startsWith("retry.") ? "retry" : key;
                     values.put(setting, parsed);
                     sources.put(setting, Source.OVERRIDE);
                 } catch (IllegalArgumentException | DateTimeParseException e) {
@@ -679,13 +682,17 @@ public final class TaskEngineBuilder {
             }
             case "ordering" -> Ordering.valueOf(value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
             case "batch-deadline", "poll-interval" -> duration(value);
-            case "retry.max-attempts" -> retry.withMaxAttempts(Integer.parseInt(value.trim()));
+            case "retry.max-attempts" -> value.trim().equalsIgnoreCase("forever") ? retry.forever() : retry.attempts(Integer.parseInt(value.trim()));
+            case "retry.give-up-after" -> Set.of("never", "forever").contains(value.trim().toLowerCase(Locale.ROOT))
+                ? retry.forever() : retry.giveUpAfter(duration(value));
+            case "retry.first-backoff" -> retry.withBackoff(duration(value), retry.max().compareTo(duration(value)) < 0 ? duration(value) : retry.max());
+            case "retry.max-backoff" -> retry.withBackoff(retry.initial().compareTo(duration(value)) > 0 ? duration(value) : retry.initial(), duration(value));
             default -> {
                 if (key.startsWith("retain.") && outcome(key.substring("retain.".length())) != null) {
                     yield value.trim().equalsIgnoreCase("forever") ? "forever" : period(value);
                 }
                 throw new IllegalArgumentException("unknown setting; known: batch-size, concurrency, ordering, batch-deadline, "
-                    + "poll-interval, retry.max-attempts, retain.<outcome>");
+                    + "poll-interval, retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");
             }
         };
     }
@@ -726,9 +733,7 @@ public final class TaskEngineBuilder {
 
     private static String describe(Object value) {
         return switch (value) {
-            case Retry retry -> retry.maxAttempts() == Integer.MAX_VALUE
-                ? "unbounded, every " + retry.initial()
-                : retry.maxAttempts() + " attempts, from " + retry.initial() + " x" + retry.multiplier() + " up to " + retry.max();
+            case Retry retry -> retry.describe();
             default -> String.valueOf(value);
         };
     }

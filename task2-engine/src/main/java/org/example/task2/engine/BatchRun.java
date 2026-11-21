@@ -83,7 +83,9 @@ final class BatchRun<T> {
             Task<T> task = task(claim, payload);
             all.add(task);
             if (claim.attempt() > topic.settings().retry().maxAttempts()) {
-                early.decide(task, Decision.failed("No attempts left; the last one expired"));
+                // The last attempt expired with its node, or the policy now allows fewer than it did.
+                early.decide(task, Decision.failed("No attempts left: this is attempt " + claim.attempt() + ", the retry policy allows "
+                    + topic.settings().retry().maxAttempts()));
             } else {
                 runnable.add(task);
             }
