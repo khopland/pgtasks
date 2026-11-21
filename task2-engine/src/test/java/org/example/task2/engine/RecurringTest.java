@@ -84,6 +84,46 @@ class RecurringTest {
         assertThat(engine.admin().schedules().getFirst().nextRunAt()).isEqualTo(Instant.parse("2026-11-25T02:00:00Z"));
     }
 
+    /** Review 2026-11-21: recurring pushes bypassed the observer, so they had no metrics or traces. */
+    @Test
+    void a_recurring_push_is_seen_by_the_observer_and_traced() throws Exception {
+        List<String> pushed = new CopyOnWriteArrayList<>();
+        List<String> traces = new CopyOnWriteArrayList<>();
+        TaskEngine engine = TaskEngine.builder().store(store)
+            .observer(new TaskObserver() {
+                @Override
+                public PushObservation pushing(TopicRef<?> topic, int tasks) {
+                    return new PushObservation() {
+                        @Override
+                        public String traceContext() {
+                            return "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+                        }
+
+                        @Override
+                        public void close() {
+                        }
+                    };
+                }
+
+                @Override
+                public void pushed(TopicRef<?> topic, List<org.example.task2.Pushed> results) {
+                    results.forEach(result -> pushed.add(topic.name() + ":" + result.identifier() + ":" + result.status()));
+                }
+            })
+            .configure("reporting", tasks -> tasks
+                .eachTask(REPORTS, task -> traces.add(task.task().traceContext()))
+                .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *"), "nightly-report", "full"))
+            .build().start();
+        engines.add(engine);
+
+        TaskTester tester = TaskTester.of(engine);
+        tester.advance(Duration.ofHours(1));
+        tester.awaitIdle();
+
+        assertThat(pushed).containsExactly("reports:nightly-report:QUEUED");
+        assertThat(traces).containsExactly("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+    }
+
     @Test
     @DisplayName("While the topic is paused, runs don't pile up: each supersedes the waiting one")
     void runs_supersede_each_other_while_waiting() throws Exception {

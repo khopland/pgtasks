@@ -42,6 +42,11 @@ final class CompositeObserver implements TaskObserver {
     }
 
     @Override
+    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+        observers.forEach(observer -> observer.limitWait(topic, limit, wait));
+    }
+
+    @Override
     public void breaker(TopicRef<?> topic, boolean open) {
         observers.forEach(observer -> observer.breaker(topic, open));
     }

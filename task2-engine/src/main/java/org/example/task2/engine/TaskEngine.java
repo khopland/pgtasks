@@ -63,7 +63,7 @@ public final class TaskEngine implements AutoCloseable {
     private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
     private EngineCore core;
     private Housekeeper housekeeper;
-    private RateLimits limits;
+    private final RateLimits limits;
     private Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
@@ -95,6 +95,8 @@ public final class TaskEngine implements AutoCloseable {
         }
         this.directory = new TopicDirectory(store);
         this.admin = new TaskAdmin(this, store);
+        // Known from the configuration, so limits() works before the store is prepared.
+        this.limits = new RateLimits(store, configuredLimits(), this::limitChanged);
         this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake,
             settings.observer());
     }
@@ -236,9 +238,7 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         store.prepare();
-        List<RateLimit> configured = Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
-            templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
-        limits = new RateLimits(store, configured, this::limitChanged);
+        List<RateLimit> configured = configuredLimits();
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
@@ -563,12 +563,17 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /** The rate limits of this node's topics, and operators' runtime overrides of them. */
+    /**
+     * The rate limits of this node's topics, and operators' runtime overrides of them. Overrides
+     * are read once the engine is prepared or started.
+     */
     public RateLimits limits() {
-        if (limits == null) {
-            throw new IllegalStateException("Neither prepared nor started");
-        }
         return limits;
+    }
+
+    private List<RateLimit> configuredLimits() {
+        return Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
+            templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
     }
 
     /** Tells the workers using a limit that it changed, so a wait for permits ends early. */

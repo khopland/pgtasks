@@ -242,7 +242,10 @@ final class Housekeeper {
     private void fireSchedules() throws Exception {
         List<Integer> fired;
         do {
+            // Seen by the observer like any push: traced while written, counted once committed.
+            List<Runnable> committed = new java.util.ArrayList<>();
             fired = EngineCore.transact(store, transaction -> {
+                committed.clear();
                 Instant now = store.clock().instant();
                 List<Integer> topics = new java.util.ArrayList<>();
                 for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
@@ -256,13 +259,19 @@ final class Housekeeper {
                         store.scheduleFired(transaction, schedule.id(), now, now.plus(Duration.ofHours(1)));
                         continue;
                     }
-                    store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
-                        schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, null)));
+                    org.example.task2.TopicRef<?> topic = org.example.task2.TopicRef.of(schedule.topic(), Object.class);
+                    List<org.example.task2.Pushed> results;
+                    try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
+                        results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
+                            schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.traceContext())));
+                    }
+                    committed.add(() -> settings.observer().pushed(topic, results));
                     store.scheduleFired(transaction, schedule.id(), now, next);
                     topics.add(schedule.topicId());
                 }
                 return topics;
             });
+            committed.forEach(Runnable::run);
             fired.forEach(wake::accept);
         } while (fired.size() == BATCH && leading());
     }

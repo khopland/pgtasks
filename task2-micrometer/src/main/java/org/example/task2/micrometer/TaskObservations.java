@@ -47,6 +47,7 @@ public final class TaskObservations implements TaskObserver {
     public static final String PUSHED = "task.pushed";
     public static final String COMPLETED = "task.completed";
     public static final String BREAKER = "task.breaker.open";
+    public static final String LIMIT_WAIT = "task.limit.wait";
     public static final String MDC_TOPIC = "task.topic";
     public static final String MDC_ID = "task.id";
     public static final String MDC_IDENTIFIER = "task.identifier";
@@ -151,6 +152,20 @@ public final class TaskObservations implements TaskObserver {
                 .register(meters);
             return state;
         }).set(open ? 1 : 0);
+    }
+
+    /** {@value #LIMIT_WAIT}: how long topics waited for their rate limit, by topic and limit. */
+    @Override
+    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+        if (meters == null) {
+            return;
+        }
+        io.micrometer.core.instrument.Timer.builder(LIMIT_WAIT)
+            .description("Time a topic waited because its rate limit was spent")
+            .tag("topic", topic.name())
+            .tag("limit", limit)
+            .register(meters)
+            .record(wait);
     }
 
     @Override

@@ -14,6 +14,8 @@ import java.util.function.ToDoubleFunction;
 
 import org.example.task2.admin.QueueCounts;
 import org.example.task2.admin.TopicSnapshot;
+import org.example.task2.engine.RateLimit;
+import org.example.task2.engine.RateLimits;
 import org.example.task2.engine.TaskEngine;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -39,6 +41,9 @@ import io.micrometer.core.instrument.binder.MeterBinder;
  *       none is. Alert on this one rather than on dead letters, which may take days to come.</li>
  *   <li>{@value #SNAPSHOT_AGE}: seconds since the counts were taken. If it grows past a few
  *       snapshot intervals, no node is running housekeeping.</li>
+ *   <li>{@value #LIMIT_RATE} and {@value #LIMIT_BURST}, by limit and kind: the configured values
+ *       and the effective ones, with an operator's override or a time window applied. Read from
+ *       this node, without a query.</li>
  * </ul>
  */
 public final class TaskMetrics implements MeterBinder {
@@ -49,6 +54,8 @@ public final class TaskMetrics implements MeterBinder {
     public static final String FAILING = "task.queue.failing";
     public static final String OLDEST_FAILING = "task.queue.oldest.failing";
     public static final String SNAPSHOT_AGE = "task.queue.snapshot.age";
+    public static final String LIMIT_RATE = "task.limit.rate";
+    public static final String LIMIT_BURST = "task.limit.burst";
 
     private static final System.Logger LOGGER = System.getLogger(TaskMetrics.class.getName());
     private static final Map<String, ToDoubleFunction<QueueCounts>> STATES = Map.of(
@@ -61,6 +68,7 @@ public final class TaskMetrics implements MeterBinder {
         "due", QueueCounts::due);
 
     private final Callable<List<TopicSnapshot>> snapshots;
+    private final java.util.function.Supplier<List<RateLimits.Limit>> limits;
     private final Duration refresh;
     private final InstantSource clock;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
@@ -70,11 +78,18 @@ public final class TaskMetrics implements MeterBinder {
 
     /** Reads the engine's snapshots at most every 10 seconds. */
     public TaskMetrics(TaskEngine engine) {
-        this(engine.admin()::snapshots, Duration.ofSeconds(10), InstantSource.system());
+        this(engine.admin()::snapshots, () -> engine.limits().list(), Duration.ofSeconds(10), InstantSource.system());
     }
 
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Duration refresh, InstantSource clock) {
+        this(snapshots, List::of, refresh, clock);
+    }
+
+    /** @param limits this node's rate limits, read on every scrape */
+    public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, java.util.function.Supplier<List<RateLimits.Limit>> limits, Duration refresh,
+                       InstantSource clock) {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
+        this.limits = Objects.requireNonNull(limits, "limits");
         this.refresh = Objects.requireNonNull(refresh, "refresh");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -89,6 +104,29 @@ public final class TaskMetrics implements MeterBinder {
             .description("Topics in the last queue snapshot")
             .register(registry);
         refresh(true);
+        // The limits a node uses are its configuration's, known from the start.
+        for (RateLimits.Limit limit : limits.get()) {
+            for (String kind : List.of("configured", "effective")) {
+                Gauge.builder(LIMIT_RATE, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::perSecond))
+                    .description("Claims per second the rate limit allows")
+                    .baseUnit("tasks/s")
+                    .tag("limit", limit.name())
+                    .tag("kind", kind)
+                    .register(registry);
+                Gauge.builder(LIMIT_BURST, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::burst))
+                    .description("Claims the rate limit allows at once")
+                    .baseUnit("tasks")
+                    .tag("limit", limit.name())
+                    .tag("kind", kind)
+                    .register(registry);
+            }
+        }
+    }
+
+    private double limit(String name, String kind, ToDoubleFunction<RateLimit> value) {
+        return limits.get().stream().filter(limit -> limit.name().equals(name)).findFirst()
+            .map(limit -> kind.equals("configured") ? limit.configured() : limit.effective())
+            .map(value::applyAsDouble).orElse(Double.NaN);
     }
 
     private TopicSnapshot snapshot(String topic) {

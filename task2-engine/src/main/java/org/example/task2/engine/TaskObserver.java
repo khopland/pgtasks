@@ -56,6 +56,13 @@ public interface TaskObserver {
     default void breaker(TopicRef<?> topic, boolean open) {
     }
 
+    /**
+     * A claim found the topic's rate limit spent: the topic waits this long, or until the limit
+     * changes, before it claims again on this node.
+     */
+    default void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+    }
+
     /** What became of a task when its batch completed. */
     enum Result {
         SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED,

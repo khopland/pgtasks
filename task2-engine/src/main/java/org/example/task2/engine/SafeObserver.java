@@ -45,6 +45,11 @@ final class SafeObserver implements TaskObserver {
     }
 
     @Override
+    public void limitWait(TopicRef<?> topic, String limit, java.time.Duration wait) {
+        run(() -> observer.limitWait(topic, limit, wait));
+    }
+
+    @Override
     public void pushed(TopicRef<?> topic, List<Pushed> results) {
         run(() -> observer.pushed(topic, results));
     }

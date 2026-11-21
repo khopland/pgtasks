@@ -225,6 +225,7 @@ final class TopicWorker<T> {
                 dispatched = true;
                 if (claimed.admissionWait() != null) {
                     // New work doesn't shorten a wait for the rate limit; a changed limit does.
+                    core.observer().limitWait(topic.ref(), topic.settings().rateLimit().name(), claimed.admissionWait());
                     limitSignal.await(claimed.admissionWait());
                 } else {
                     signalsAtEmptyClaim = signalsBefore;
