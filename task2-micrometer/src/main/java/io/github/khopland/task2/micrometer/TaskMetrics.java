@@ -47,6 +47,8 @@ import io.micrometer.core.instrument.binder.MeterBinder;
  * </ul>
  */
 public final class TaskMetrics implements MeterBinder {
+    // Every gauge holds this binder strongly: Micrometer's default weak reference let an
+    // instance bound by hand, without a reference kept, be collected, and its gauges read NaN.
 
     public static final String TOPICS = "task.queue.topics";
     public static final String QUEUE = "task.queue";
@@ -102,6 +104,7 @@ public final class TaskMetrics implements MeterBinder {
                 return metrics.latest.size();
             })
             .description("Topics in the last queue snapshot")
+            .strongReference(true)
             .register(registry);
         refresh(true);
         // The limits a node uses are its configuration's, known from the start.
@@ -112,13 +115,15 @@ public final class TaskMetrics implements MeterBinder {
                     .baseUnit("tasks/s")
                     .tag("limit", limit.name())
                     .tag("kind", kind)
-                    .register(registry);
+                    .strongReference(true)
+            .register(registry);
                 Gauge.builder(LIMIT_BURST, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::burst))
                     .description("Claims the rate limit allows at once")
                     .baseUnit("tasks")
                     .tag("limit", limit.name())
                     .tag("kind", kind)
-                    .register(registry);
+                    .strongReference(true)
+            .register(registry);
             }
         }
     }
@@ -156,26 +161,31 @@ public final class TaskMetrics implements MeterBinder {
             .baseUnit("tasks")
             .tag("topic", topic)
             .tag("state", state)
+            .strongReference(true)
             .register(registry));
         Gauge.builder(OLDEST_READY, this, metrics -> metrics.age(topic, snapshot -> snapshot.counts().oldestReadyAt()))
             .description("Seconds since the oldest ready task was pushed, from the last snapshot; 0 if none is ready")
             .baseUnit("seconds")
             .tag("topic", topic)
+            .strongReference(true)
             .register(registry);
         Gauge.builder(FAILING, this, metrics -> metrics.count(topic, QueueCounts::failing))
             .description("Unfinished tasks whose last run failed, from the last snapshot")
             .baseUnit("tasks")
             .tag("topic", topic)
+            .strongReference(true)
             .register(registry);
         Gauge.builder(OLDEST_FAILING, this, metrics -> metrics.age(topic, snapshot -> snapshot.counts().oldestFailingAt()))
             .description("Seconds since the longest-failing task first failed, from the last snapshot; 0 if none is failing")
             .baseUnit("seconds")
             .tag("topic", topic)
+            .strongReference(true)
             .register(registry);
         Gauge.builder(SNAPSHOT_AGE, this, metrics -> metrics.age(topic, TopicSnapshot::takenAt))
             .description("Seconds since the queue counts were snapshotted")
             .baseUnit("seconds")
             .tag("topic", topic)
+            .strongReference(true)
             .register(registry);
     }
 

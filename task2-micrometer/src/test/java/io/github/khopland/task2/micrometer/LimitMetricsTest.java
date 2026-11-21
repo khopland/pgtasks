@@ -49,4 +49,21 @@ class LimitMetricsTest {
             assertThat(meters.get(TaskMetrics.LIMIT_RATE).tags("limit", "register", "kind", "configured").gauge().value()).isEqualTo(20);
         }
     }
+
+    /** Found by CI: bound by hand and not kept, the binder was collected and every gauge read NaN. */
+    @Test
+    void gauges_keep_working_when_nothing_else_holds_the_binder() {
+        MeterRegistry meters = new SimpleMeterRegistry();
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .globals(globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(20))))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { }, topic -> topic.limit("register")))
+            .build()) {
+            new TaskMetrics(engine).bindTo(meters);
+            for (int round = 0; round < 3; round++) {
+                System.gc();
+            }
+            assertThat(meters.get(TaskMetrics.LIMIT_RATE).tags("limit", "register", "kind", "configured").gauge().value()).isEqualTo(20);
+            assertThat(meters.get(TaskMetrics.TOPICS).gauge().value()).isNotNaN();
+        }
+    }
 }
