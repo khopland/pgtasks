@@ -37,7 +37,8 @@ class LimitMetricsTest {
             engine.start();
             engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(Creation.of("a", "1"), Creation.of("b", "2"), Creation.of("c", "3")));
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-            while (meters.find(TaskObservations.LIMIT_WAIT).tags("topic", "work", "limit", "register").timer() == null) {
+            // Registered a moment before the worker records into it: wait for a recorded wait.
+            while (meters.find(TaskObservations.LIMIT_WAIT).tags("topic", "work", "limit", "register").timers().stream().allMatch(timer -> timer.count() == 0)) {
                 assertThat(System.nanoTime()).as("the topic waited for its limit within 5 s").isLessThan(deadline);
                 Thread.onSpinWait();
             }

@@ -1,5 +1,5 @@
-# Builds and tests every module on Linux: the 1.x modules and Task 2.0, including the store TCK
-# and the engine's Postgres tests on an embedded Postgres (no Docker needed).
+# Builds and tests every module on Linux, including the store TCK and the engine's Postgres
+# tests on an embedded Postgres (no Docker needed).
 name: build
 
 on:
