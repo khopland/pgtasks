@@ -13,7 +13,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * With Spring Boot Actuator: the {@code tasks} endpoint ({@link TaskEndpoint}, exposed like any
  * other, for example with {@code management.endpoints.web.exposure.include=health,tasks}) and the
- * {@code tasks} health indicator ({@link TaskHealthIndicator}).
+ * {@code tasks} health indicator ({@link TaskHealthIndicator}). The endpoint hides payloads and
+ * error messages unless {@code management.endpoint.tasks.show-values} says otherwise.
  */
 @AutoConfiguration(after = TaskAutoConfiguration.class)
 @ConditionalOnBean(TaskEngine.class)
@@ -24,12 +25,13 @@ public class TaskActuatorAutoConfiguration {
         "org.springframework.boot.actuate.endpoint.annotation.Endpoint",
         "org.springframework.boot.actuate.autoconfigure.endpoint.condition.ConditionalOnAvailableEndpoint"
     })
+    @org.springframework.boot.context.properties.EnableConfigurationProperties(TaskEndpointProperties.class)
     static class Endpoint {
         @Bean
         @ConditionalOnMissingBean
         @ConditionalOnAvailableEndpoint
-        TaskEndpoint taskEndpoint(TaskEngine engine) {
-            return new TaskEndpoint(engine);
+        TaskEndpoint taskEndpoint(TaskEngine engine, TaskEndpointProperties properties) {
+            return new TaskEndpoint(engine, properties.showValues(), properties.roles());
         }
     }
 

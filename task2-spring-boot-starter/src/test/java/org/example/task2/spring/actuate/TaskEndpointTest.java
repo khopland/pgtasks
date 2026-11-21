@@ -35,7 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
 @SpringBootTest(classes = TaskEndpointTest.App.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
     "task.store=memory",
     "management.endpoints.web.exposure.include=health,tasks",
-    "management.endpoint.health.show-details=always"
+    "management.endpoint.health.show-details=always",
+    "management.endpoint.tasks.show-values=always"
 })
 @DirtiesContext
 class TaskEndpointTest {

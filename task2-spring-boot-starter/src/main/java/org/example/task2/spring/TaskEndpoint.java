@@ -23,6 +23,7 @@ import org.example.task2.engine.TaskEngine;
 import org.example.task2.engine.VersionConflictException;
 import org.example.task2.spi.TaskStore;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
+import org.springframework.boot.actuate.endpoint.Show;
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.Selector;
@@ -56,17 +57,39 @@ import org.jspecify.annotations.Nullable;
  * headers, so the version travels in the body.) Without a version, a change applies
  * regardless. Request bodies are flat JSON objects of strings and numbers, as Actuator reads them,
  * so a list of ids is one comma-separated string.
+ *
+ * <p>Payloads, outputs and error messages often hold personal data, so they are shown only as
+ * {@code management.endpoint.tasks.show-values} allows, like Boot's {@code env} endpoint:
+ * {@code never} (the default), {@code when-authorized} (with {@code management.endpoint.tasks.roles})
+ * or {@code always}. Hidden, they read {@value #HIDDEN}; an error keeps its exception type, so
+ * operators can still tell failures apart and revive them by type.
  */
 @WebEndpoint(id = "tasks")
 public class TaskEndpoint {
 
     static final int CONFLICT = 409;
+    static final String HIDDEN = "******";
     private static final int DEAD_LETTER_PAGE = 50;
+    /**
+     * An exception type, as errors are grouped by, or an expiry: shown even when values are
+     * hidden. A message, which may hold personal data, doesn't look like one.
+     */
+    private static final java.util.regex.Pattern TYPE = java.util.regex.Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+|expired");
 
     private final TaskEngine engine;
+    private final Show show;
+    private final Set<String> roles;
 
+    /** Shows no payloads, outputs or error messages. */
     public TaskEndpoint(TaskEngine engine) {
+        this(engine, Show.NEVER, Set.of());
+    }
+
+    /** @param roles the roles that may see values when {@code show} is {@code WHEN_AUTHORIZED} */
+    public TaskEndpoint(TaskEngine engine, Show show, Set<String> roles) {
         this.engine = engine;
+        this.show = show;
+        this.roles = Set.copyOf(roles);
     }
 
     @ReadOperation
@@ -86,7 +109,8 @@ public class TaskEndpoint {
     }
 
     @ReadOperation
-    public WebEndpointResponse<Object> read(@Selector String kind, @Selector String name) throws Exception {
+    public WebEndpointResponse<Object> read(@Selector String kind, @Selector String name, @Nullable SecurityContext security) throws Exception {
+        boolean shown = show.isShown(security == null ? SecurityContext.NONE : security, roles);
         return switch (kind) {
             case "topics" -> found(status(name).map(status -> {
                 Map<String, Object> body = topic(status);
@@ -96,14 +120,15 @@ public class TaskEndpoint {
                 return body;
             }));
             case "limits" -> found(engine.limits().find(name).map(TaskEndpoint::limit));
-            case "tasks" -> found(number(name).flatMap(this::task).map(TaskEndpoint::task));
+            case "tasks" -> found(number(name).flatMap(this::task).map(view -> task(view, shown)));
             default -> notFound();
         };
     }
 
     @ReadOperation
     public WebEndpointResponse<Object> readPart(@Selector String kind, @Selector String name, @Selector String part,
-                                                @Nullable Long after, @Nullable Integer limit) throws Exception {
+                                                @Nullable Long after, @Nullable Integer limit, @Nullable SecurityContext security) throws Exception {
+        boolean shown = show.isShown(security == null ? SecurityContext.NONE : security, roles);
         if (!kind.equals("topics") || !Set.of("dead-letters", "failing").contains(part)) {
             return notFound();
         }
@@ -114,11 +139,11 @@ public class TaskEndpoint {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("failing", engine.admin().failing(name, limit == null ? 50 : Math.clamp(limit, 1, 1_000)).stream().map(group -> {
                 Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("error", group.error());
+                entry.put("error", shown || TYPE.matcher(group.error()).matches() ? group.error() : HIDDEN);
                 entry.put("tasks", group.tasks());
                 entry.put("oldestFailedAt", text(group.oldestFailedAt()));
                 entry.put("example", group.example());
-                entry.put("exampleMessage", group.exampleMessage());
+                entry.put("exampleMessage", shown || group.exampleMessage() == null ? group.exampleMessage() : HIDDEN);
                 return entry;
             }).toList());
             return new WebEndpointResponse<>(body);
@@ -126,7 +151,7 @@ public class TaskEndpoint {
         int size = limit == null ? DEAD_LETTER_PAGE : Math.clamp(limit, 1, 1_000);
         List<TaskView> page = engine.admin().deadLetters(name, after == null ? 0 : after, size);
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("deadLetters", page.stream().map(TaskEndpoint::task).toList());
+        body.put("deadLetters", page.stream().map(view -> task(view, shown)).toList());
         // The next page starts after the last id of a full one.
         body.put("next", page.size() == size ? page.getLast().id() : null);
         return new WebEndpointResponse<>(body);
@@ -338,7 +363,7 @@ public class TaskEndpoint {
         return rate;
     }
 
-    private static Map<String, Object> task(TaskView view) {
+    private static Map<String, Object> task(TaskView view, boolean shown) {
         Map<String, Object> task = new LinkedHashMap<>();
         task.put("id", view.id());
         task.put("topic", view.topic());
@@ -353,14 +378,20 @@ public class TaskEndpoint {
         task.put("parentId", view.parentId());
         task.put("rootId", view.rootId());
         task.put("payloadType", view.payloadType());
-        task.put("payload", view.payload());
-        task.put("output", view.output());
-        task.put("error", view.error());
+        task.put("payload", shown || view.payload() == null ? view.payload() : HIDDEN);
+        task.put("output", shown || view.output() == null ? view.output() : HIDDEN);
+        task.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
         task.put("failures", view.failures());
         task.put("firstFailedAt", text(view.firstFailedAt()));
         task.put("createdAt", text(view.createdAt()));
         task.put("completedAt", text(view.completedAt()));
         return task;
+    }
+
+    /** A stored error without its message and stack: {"type": "..."}, or hidden if it has no type. */
+    private static String errorType(String error) {
+        java.util.regex.Matcher type = java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(error);
+        return type.find() ? "{\"type\":\"" + type.group(1) + "\",\"message\":\"" + HIDDEN + "\"}" : HIDDEN;
     }
 
     private static String text(Instant instant) {
