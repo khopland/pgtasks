@@ -9,6 +9,10 @@
   </parent>
 
   <artifactId>task2-memory</artifactId>
+
+  <properties>
+    <module.name>io.github.khopland.task2.memory</module.name>
+  </properties>
   <description>
     Task 2.0 in-memory store, for running apps locally without a database and for fast tests.
     Passes the same TCK as Postgres. Nothing is durable, wake-ups are in-process, and it can't

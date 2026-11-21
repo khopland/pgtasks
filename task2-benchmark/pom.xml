@@ -15,6 +15,7 @@
   </description>
 
   <properties>
+    <module.name>io.github.khopland.task2.benchmark</module.name>
     <benchmark.history>0,1000000,10000000</benchmark.history>
   </properties>
 

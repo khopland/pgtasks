@@ -193,6 +193,14 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-jar-plugin</artifactId>
           <version>3.5.1</version>
+          <configuration>
+            <archive>
+              <manifestEntries>
+                <!-- A stable module name for applications on the module path; each module sets module.name. -->
+                <Automatic-Module-Name>${module.name}</Automatic-Module-Name>
+              </manifestEntries>
+            </archive>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

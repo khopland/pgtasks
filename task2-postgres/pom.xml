@@ -11,6 +11,10 @@
   <artifactId>task2-postgres</artifactId>
   <description>Task 2.0 storage on Postgres: the tasks schema as plain SQL files with a built-in runner, the task store and the LISTEN/NOTIFY notifier. No migration tool dependency.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.postgres</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>

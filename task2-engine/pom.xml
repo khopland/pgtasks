@@ -11,6 +11,10 @@
   <artifactId>task2-engine</artifactId>
   <description>Task 2.0 engine: workers on virtual threads, fenced completion, retries, expiry, wake-ups and rate admission. Storage-agnostic.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.engine</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>

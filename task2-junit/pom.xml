@@ -11,6 +11,10 @@
   <artifactId>task2-junit</artifactId>
   <description>Task 2.0 for JUnit 5 tests without Spring: an engine on the in-memory store with a manual clock, per test.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.junit</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>

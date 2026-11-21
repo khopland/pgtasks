@@ -16,6 +16,7 @@
   </description>
 
   <properties>
+    <module.name>io.github.khopland.task2.v1regressions</module.name>
     <v1.groupId>no.skatteetaten.fastsetting.formueinntekt.felles.task</v1.groupId>
     <v1.version>0-SNAPSHOT</v1.version>
   </properties>

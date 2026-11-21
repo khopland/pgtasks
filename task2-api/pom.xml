@@ -11,6 +11,10 @@
   <artifactId>task2-api</artifactId>
   <description>Task 2.0 public API: topics, tasks, decisions, handlers, enqueue, and the operator views. Depends only on JSpecify's annotations.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2</module.name>
+  </properties>
+
   <dependencies>
     <!-- Nullness annotations: which values can be null, for IDEs, Kotlin and NullAway. -->
     <dependency>

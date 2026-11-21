@@ -11,6 +11,10 @@
   <artifactId>task2-test</artifactId>
   <description>Test support for Task 2.0: the store TCK, and a real Postgres per test run without Docker.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.test</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>

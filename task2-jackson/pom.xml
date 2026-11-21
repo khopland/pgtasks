@@ -11,6 +11,10 @@
   <artifactId>task2-jackson</artifactId>
   <description>Task 2.0 JSON payloads with Jackson 3, for payload types without a codec of their own.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.jackson</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>

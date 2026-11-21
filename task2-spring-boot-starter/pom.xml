@@ -10,6 +10,7 @@
   <artifactId>task2-spring-boot-starter</artifactId>
   <description>Task 2.0 for Spring Boot 4: an engine from TaskConfigurer beans, task.* overrides, pushes that join Spring transactions, and a lifecycle that drains on shutdown.</description>
   <properties>
+    <module.name>io.github.khopland.task2.spring</module.name>
     <spring-boot.version>4.1.3</spring-boot.version>
     <!-- The release line built on Spring Boot 4.1. -->
     <spring-modulith.version>2.1.3</spring-modulith.version>

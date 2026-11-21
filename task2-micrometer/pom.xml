@@ -9,6 +9,10 @@
   </parent>
 
   <artifactId>task2-micrometer</artifactId>
+
+  <properties>
+    <module.name>io.github.khopland.task2.micrometer</module.name>
+  </properties>
   <description>
     Task 2.0 with Micrometer: an Observation for every push and batch, so traces continue from the
     pushing code through every topic (the traceparent is stored with the task), counters for

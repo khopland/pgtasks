@@ -11,6 +11,10 @@
   <artifactId>task2-spi</artifactId>
   <description>Task 2.0 storage SPI: what a task store, a notifier and a transaction binding implement. Applications don't need it.</description>
 
+  <properties>
+    <module.name>io.github.khopland.task2.spi</module.name>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.khopland.task2</groupId>
