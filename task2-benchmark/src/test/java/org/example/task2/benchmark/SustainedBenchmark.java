@@ -33,8 +33,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * on 25 million rows of history, with fsync and synchronous commit on, while workers claim and
  * complete and retention deletes as many old tasks as were completed, so history stays the same
  * size and the tables see the inserts, updates and deletes of a long-running system. Every minute
- * it records throughput, the backlog, claim and completion latency, table and index sizes, dead
- * rows, autovacuum runs, WAL written and who holds the oldest snapshot, and writes them to
+ * it records throughput, the backlog, claim and completion latency, table sizes and each index's,
+ * dead rows, autovacuum runs, WAL written and who holds the oldest snapshot, and writes them to
  * target/sustained-results.md. The Postgres server log goes to target/postgres-logs/sustained.log,
  * with an entry for every autovacuum and analyze: what it removed, and what it couldn't and why.
  *
@@ -69,7 +69,8 @@ class SustainedBenchmark {
 
     /** One minute of load. */
     record Minute(int minute, double seconds, long pushed, long completed, long backlog, SchemaBenchmark.Latency claims,
-                  SchemaBenchmark.Latency completions, long purged, long walBytes, List<Table> tables, String oldestSnapshot) {
+                  SchemaBenchmark.Latency completions, long purged, long walBytes, List<Table> tables,
+                  Map<String, Long> indexBytes, String oldestSnapshot) {
 
         /** False for the last minute when the run doesn't end on a whole minute. */
         boolean full() {
@@ -172,8 +173,10 @@ class SustainedBenchmark {
             running.add(threads.submit(() -> {
                 int perPush = Math.max(1, (int) (RATE * PUSH_EVERY.toMillis() / 1000));
                 long next = System.nanoTime();
-                while (System.nanoTime() < end) {
-                    design.ready(perPush, "p", 200_000);
+                // New tasks cycle through the history's 200,000 identifiers, as in a real system,
+                // where most tasks share their identifier with finished ones.
+                for (long first = 0; System.nanoTime() < end; first += perPush) {
+                    design.ready(perPush, "h", first, 200_000);
                     pushed.addAndGet(perPush);
                     next += PUSH_EVERY.toNanos();
                     long wait = next - System.nanoTime();
@@ -232,7 +235,8 @@ class SustainedBenchmark {
                     nowPushed - nowCompleted,
                     claimed.isEmpty() ? null : SchemaBenchmark.Latency.of(claimed),
                     finished.isEmpty() ? null : SchemaBenchmark.Latency.of(finished),
-                    nowPurged - lastPurged, nowWal - lastWal, tables(dataSource, design.tables()), oldestSnapshot(dataSource));
+                    nowPurged - lastPurged, nowWal - lastWal, tables(dataSource, design.tables()),
+                    indexes(dataSource, design.tables()), oldestSnapshot(dataSource));
                 minutes.add(row);
                 log("  %s", row.row());
                 lastSample = now;
@@ -320,6 +324,25 @@ class SustainedBenchmark {
         return tables;
     }
 
+    /** Each index of the given tables and its size, in name order. */
+    private static Map<String, Long> indexes(DataSource dataSource, List<String> tables) throws Exception {
+        Map<String, Long> indexes = new LinkedHashMap<>();
+        try (Connection connection = dataSource.getConnection(); PreparedStatement statement = connection.prepareStatement("""
+                 SELECT indexrelname, pg_relation_size(indexrelid)
+                 FROM pg_stat_user_indexes
+                 WHERE relid = ANY (?::regclass[])
+                 ORDER BY relname, indexrelname
+                 """)) {
+            statement.setArray(1, connection.createArrayOf("text", tables.toArray()));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    indexes.put(resultSet.getString(1), resultSet.getLong(2));
+                }
+            }
+        }
+        return indexes;
+    }
+
     private static void report(Map<String, List<Minute>> results) throws Exception {
         StringBuilder report = new StringBuilder(String.format(Locale.ROOT,
             "Sustained load: %s per design, %,d history rows, %,d tasks/s pushed, %d workers claiming batches of %d, durability on.%n",
@@ -332,6 +355,19 @@ class SustainedBenchmark {
             report.append(" Oldest snapshot |");
             report.append("\n|---:|---:|---:|---:|---:|---:|---:|---:|").append("---:|---:|---:|".repeat(tables.size())).append("---|\n");
             minutes.forEach(minute -> report.append(minute.row()).append('\n'));
+            if (!minutes.isEmpty()) {
+                // Which index grows, minute by minute.
+                List<String> indexes = List.copyOf(minutes.getFirst().indexBytes().keySet());
+                report.append("\nIndex sizes, MB:\n\n| Minute |");
+                indexes.forEach(index -> report.append(' ').append(index).append(" |"));
+                report.append("\n|---:|").append("---:|".repeat(indexes.size())).append('\n');
+                minutes.forEach(minute -> {
+                    report.append("| ").append(minute.minute()).append(" |");
+                    indexes.forEach(index -> report.append(String.format(Locale.ROOT, " %,d |",
+                        minute.indexBytes().getOrDefault(index, 0L) / 1_000_000)));
+                    report.append('\n');
+                });
+            }
             report.append('\n').append(summary(minutes)).append('\n');
         });
         Files.writeString(Path.of("target", "sustained-results.md"), report);

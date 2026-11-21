@@ -74,18 +74,18 @@ final class QueueDesign implements Design {
     }
 
     @Override
-    public void ready(int rows, String prefix, int identifiers) throws SQLException {
+    public void ready(int rows, String prefix, long first, int identifiers) throws SQLException {
         sql("""
             WITH stored AS (
                 INSERT INTO tasks.task (topic_id, id, identifier, payload)
-                SELECT :topic, nextval('tasks.task_id_seq'), '%s' || (g %% %d), repeat('x', 120)
+                SELECT :topic, nextval('tasks.task_id_seq'), '%s' || ((%d + g) %% %d), repeat('x', 120)
                 FROM generate_series(1, %d) g
                 ORDER BY g
                 RETURNING id, identifier
             )
             INSERT INTO tasks.queue (task_id, topic_id, identifier, state)
             SELECT id, :topic, identifier, 'ready' FROM stored
-            """.formatted(prefix, identifiers, rows));
+            """.formatted(prefix, first, identifiers, rows));
     }
 
     @Override

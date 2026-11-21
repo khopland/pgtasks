@@ -92,13 +92,13 @@ final class SingleTableDesign implements Design {
     }
 
     @Override
-    public void ready(int rows, String prefix, int identifiers) throws SQLException {
+    public void ready(int rows, String prefix, long first, int identifiers) throws SQLException {
         sql("""
             INSERT INTO single.task (topic_id, id, identifier, state, payload)
-            SELECT 1, nextval('single.task_id_seq'), '%s' || (g %% %d), 'ready', repeat('x', 120)
+            SELECT 1, nextval('single.task_id_seq'), '%s' || ((%d + g) %% %d), 'ready', repeat('x', 120)
             FROM generate_series(1, %d) g
             ORDER BY g
-            """.formatted(prefix, identifiers, rows));
+            """.formatted(prefix, first, identifiers, rows));
     }
 
     @Override

@@ -21,8 +21,8 @@ interface Design {
     /** Dead-lettered tasks with distinct identifiers. */
     void deadLetters(int rows) throws SQLException;
 
-    /** Ready tasks; task i gets identifier prefix + (i % identifiers). */
-    void ready(int rows, String prefix, int identifiers) throws SQLException;
+    /** Ready tasks; task i (from 1) gets identifier prefix + ((first + i) % identifiers). */
+    void ready(int rows, String prefix, long first, int identifiers) throws SQLException;
 
     List<Claimed> claim(int node, Ordering ordering, int limit, boolean admission) throws SQLException;
 

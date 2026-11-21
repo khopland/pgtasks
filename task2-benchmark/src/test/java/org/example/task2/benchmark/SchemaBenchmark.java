@@ -148,25 +148,25 @@ class SchemaBenchmark {
             results.add(idlePolls(design, history));
         }
         Drainer drainer = new Drainer(design, history, url, results);
-        design.ready(TASKS, "p", 5_000);
+        design.ready(TASKS, "p", 0, 5_000);
         drainer.drain("FIFO", Ordering.FIFO, TASKS, false);
         // Statistics decide the claim plans, so both SINGULAR runs fix them instead of leaving
         // them to autovacuum's timing: first taken with the tasks queued, then taken right
         // after a drain, which is what autovacuum usually sees on a queue.
-        design.ready(TASKS, "s", 5_000);
+        design.ready(TASKS, "s", 0, 5_000);
         design.analyze();
         drainer.drain("SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, TASKS, false);
         design.analyze();
-        design.ready(TASKS, "e", 5_000);
+        design.ready(TASKS, "e", 0, 5_000);
         drainer.drain("SINGULAR after analyzing an empty queue", Ordering.SINGULAR_BY_IDENTIFIER, TASKS, false);
         design.deadLetters(100_000);
         design.vacuum();
-        design.ready(TASKS, "f", 5_000);
+        design.ready(TASKS, "f", 0, 5_000);
         drainer.drain("ON_FAILURE, 100k dead letters", Ordering.SINGULAR_BY_IDENTIFIER_ON_FAILURE, TASKS, false);
-        design.ready(2_000, "hot", 1);
+        design.ready(2_000, "hot", 0, 1);
         drainer.drain("one hot identifier, SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, 2_000, false);
         if (design instanceof QueueDesign) {
-            design.ready(TASKS, "r", 5_000);
+            design.ready(TASKS, "r", 0, 5_000);
             drainer.drain("FIFO with strict admission", Ordering.FIFO, TASKS, true);
         }
         return results;
