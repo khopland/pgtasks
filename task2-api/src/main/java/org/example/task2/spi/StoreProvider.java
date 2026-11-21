@@ -25,4 +25,12 @@ public interface StoreProvider {
     default Notifier notifier(DataSource dataSource) {
         return null;
     }
+
+    /**
+     * The most connections the DataSource's pool hands out, if it says. The engine keeps the
+     * store work it does at once well below it, so heartbeats and the application still get one.
+     */
+    default java.util.OptionalInt poolSize(DataSource dataSource) {
+        return java.util.OptionalInt.empty();
+    }
 }

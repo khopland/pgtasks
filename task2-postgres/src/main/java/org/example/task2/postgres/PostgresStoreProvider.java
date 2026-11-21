@@ -29,9 +29,14 @@ public final class PostgresStoreProvider implements StoreProvider {
         return new PostgresTaskStore(dataSource, SchemaMode.valueOf(mode.toUpperCase(Locale.ROOT).replace('-', '_')));
     }
 
-    /** Listens on a connection of its own from the DataSource; it holds that pool slot while running. */
+    /** Listens on a connection opened outside the pool when the pool says how; see {@link NotifierConnections}. */
     @Override
     public Notifier notifier(DataSource dataSource) {
-        return new PostgresNotifier(dataSource::getConnection);
+        return new PostgresNotifier(NotifierConnections.of(dataSource));
+    }
+
+    @Override
+    public java.util.OptionalInt poolSize(DataSource dataSource) {
+        return PoolInfo.maximumSize(dataSource);
     }
 }

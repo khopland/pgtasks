@@ -50,6 +50,8 @@ import org.example.task2.spi.TransactionBinding;
  */
 public final class TaskEngineBuilder {
 
+    private static final System.Logger LOGGER = System.getLogger(TaskEngineBuilder.class.getName());
+
     static final String NO_STORE = "No task store. Give the builder a DataSource for Postgres (with task2-postgres on the "
         + "classpath), or choose the in-memory store explicitly with .store(new InMemoryTaskStore()); in Spring, "
         + "task.store=memory. The in-memory store is never chosen automatically, because it loses every task on restart.";
@@ -365,9 +367,13 @@ public final class TaskEngineBuilder {
             return this;
         }
 
+        /** Whether maxInFlightBatches was set, rather than worked out from the pool's size. */
+        boolean inFlightSet;
+
         @Override
         public GlobalOptions maxInFlightBatches(int batches) {
             settings = settings.withMaxInFlightBatches(batches);
+            inFlightSet = true;
             return this;
         }
 
@@ -594,6 +600,7 @@ public final class TaskEngineBuilder {
             if (wakeUps == null && notifications) {
                 wakeUps = provider.notifier(dataSource);
             }
+            fitToPool(global, provider.poolSize(dataSource));
         } else if (wakeUps == null && notifications) {
             wakeUps = notifierOf(chosen);
         }
@@ -603,6 +610,35 @@ public final class TaskEngineBuilder {
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
+    }
+
+    /** Connections the engine may use besides claims and completions: heartbeat, housekeeping, retention, reloads. */
+    static final int HOUSEKEEPING_CONNECTIONS = 4;
+
+    /**
+     * Keeps the engine's store work below the pool's size. Unless set, the node-wide cap on claims
+     * and completions talking to the store is half the pool, at most 8; with Spring Boot's
+     * default pool of 10 that is 5. A cap set higher than the pool leaves room for is warned about:
+     * a heartbeat that waits for a connection long enough lets other nodes requeue this node's
+     * tasks while it still runs them.
+     */
+    private static void fitToPool(Globals global, java.util.OptionalInt poolSize) {
+        if (poolSize.isEmpty()) {
+            return;
+        }
+        int pool = poolSize.getAsInt();
+        if (!global.inFlightSet) {
+            int fitted = Math.clamp(pool / 2, 1, global.settings.maxInFlightBatches());
+            if (fitted != global.settings.maxInFlightBatches()) {
+                global.settings = global.settings.withMaxInFlightBatches(fitted);
+                LOGGER.log(System.Logger.Level.INFO, "At most " + fitted + " batches claim or complete at once on this node, half the pool's "
+                    + pool + " connections; set maxInFlightBatches in TaskGlobals to change it");
+            }
+        } else if (global.settings.maxInFlightBatches() + HOUSEKEEPING_CONNECTIONS > pool) {
+            LOGGER.log(System.Logger.Level.WARNING, "maxInFlightBatches is " + global.settings.maxInFlightBatches() + ", and housekeeping needs up to "
+                + HOUSEKEEPING_CONNECTIONS + " more connections, but the pool has " + pool + ": heartbeats may wait for a connection, "
+                + "and the application's own work too. Lower maxInFlightBatches or grow the pool");
+        }
     }
 
     /** The in-memory store offers its own in-process wake-ups. */

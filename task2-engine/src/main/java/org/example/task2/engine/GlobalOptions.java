@@ -13,7 +13,10 @@ public interface GlobalOptions {
 
     GlobalOptions heartbeat(Duration interval, Duration expiry);
 
-    /** Node-wide cap on batches in flight; keep it below the connection pool size. */
+    /**
+     * Node-wide cap on batches claiming or completing at once, each on a connection of its own.
+     * By default half the pool's size when the pool says (HikariCP does), at most 8.
+     */
     GlobalOptions maxInFlightBatches(int batches);
 
     /** Defaults for every topic, below each module's own defaults. */

@@ -596,6 +596,10 @@ public final class TaskEngine implements AutoCloseable {
         return store;
     }
 
+    EngineSettings settings() {
+        return settings;
+    }
+
     /** The topics this engine processes. */
     public List<Topic<?>> topics() {
         return topics;
