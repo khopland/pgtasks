@@ -1,0 +1,2 @@
+# The Modulith test app lives in test sources, so its modules are read from the test classes.
+org.springframework.modulith.core.ApplicationModulesFactory=org.springframework.modulith.test.TestApplicationModules$Factory

@@ -57,6 +57,7 @@ public final class TaskEngine implements AutoCloseable {
     private Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
+    private List<EventRoute<?>> eventRoutes = List.of();
     private volatile boolean started;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
@@ -88,6 +89,43 @@ public final class TaskEngine implements AutoCloseable {
     TaskEngine withEffectiveSettings(List<EffectiveSettings> effectiveSettings) {
         this.effectiveSettings = List.copyOf(effectiveSettings);
         return this;
+    }
+
+    TaskEngine withEventRoutes(List<EventRoute<?>> routes) {
+        this.eventRoutes = List.copyOf(routes);
+        return this;
+    }
+
+    TaskEngine withTopicsCreatedOnPush() {
+        directory.createOnPush();
+        return this;
+    }
+
+    /** The routes from application events to tasks; see {@link TaskRegistry#onEvent}. */
+    public List<EventRoute<?>> eventRoutes() {
+        return eventRoutes;
+    }
+
+    /**
+     * Pushes the tasks the event routes make of an event: in the current transaction if there is
+     * one, so they commit with it, or on their own if there isn't. Returns what was pushed, empty
+     * if no route takes the event.
+     */
+    public List<org.example.task2.Pushed> publish(Object event) {
+        List<org.example.task2.Pushed> pushed = new java.util.ArrayList<>();
+        for (EventRoute<?> route : eventRoutes) {
+            org.example.task2.Push<?> push = route.apply(event);
+            if (push != null) {
+                pushed.add(push(push));
+            }
+        }
+        return pushed;
+    }
+
+    private <T> org.example.task2.Pushed push(org.example.task2.Push<T> push) {
+        boolean inTransaction = settings.transactions().current().isPresent();
+        org.example.task2.TaskWriter writer = inTransaction ? tasks : tasks.independently();
+        return writer.push(push.topic(), push.insertion(), List.of(push.creation())).getFirst();
     }
 
     /** Each topic's settings and where each value came from; filled in when built with {@link #builder()}. */

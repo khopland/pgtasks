@@ -13,9 +13,15 @@ final class TopicDirectory {
 
     private final TaskStore store;
     private final Map<String, Integer> ids = new ConcurrentHashMap<>();
+    private volatile boolean createOnPush;
 
     TopicDirectory(TaskStore store) {
         this.store = store;
+    }
+
+    /** See {@link TaskEngineBuilder#topicsCreatedOnPush}. */
+    void createOnPush() {
+        createOnPush = true;
     }
 
     void register(String name, int id) {
@@ -33,6 +39,11 @@ final class TopicDirectory {
             return id;
         }
         OptionalInt found = store.findTopic(transaction, name);
+        if (found.isEmpty() && createOnPush) {
+            int created = store.createTopic(transaction, name);
+            ids.put(name, created);
+            return created;
+        }
         if (found.isEmpty()) {
             throw new IllegalArgumentException("Unknown topic '" + name + "'. Topics are created when the engine that "
                 + "processes them starts, or explicitly with tasks.create_topic(); a push never creates one.");

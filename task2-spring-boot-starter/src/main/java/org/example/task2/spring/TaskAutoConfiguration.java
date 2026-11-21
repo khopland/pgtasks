@@ -10,12 +10,16 @@ import org.example.task2.engine.TaskEngine;
 import org.example.task2.engine.TaskEngineBuilder;
 import org.example.task2.engine.TaskGlobals;
 import org.example.task2.engine.TaskObserver;
+import org.example.task2.engine.TaskTester;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.example.task2.spi.TaskStore;
-import org.springframework.beans.factory.ListableBeanFactory;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
@@ -42,7 +46,7 @@ public class TaskAutoConfiguration {
 
     @Bean(destroyMethod = "") // the lifecycle drains it; close() would drain it a second time
     @ConditionalOnMissingBean
-    public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ListableBeanFactory beans,
+    public TaskEngine taskEngine(TaskProperties properties, ObjectProvider<DataSource> dataSources, ConfigurableListableBeanFactory beans,
                                  Environment environment, ObjectProvider<TaskObserver> observer) {
         TaskEngineBuilder builder = TaskEngine.builder()
             .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
@@ -60,9 +64,13 @@ public class TaskAutoConfiguration {
             }
             builder.dataSource(dataSource).schemaMode(properties.schemaMode()).transactions(new SpringTransactions(dataSource));
         }
-        beans.getBeansOfType(TaskConfigurer.class).forEach(builder::configure);
+        Map<String, TaskConfigurer> configurers = beans.getBeansOfType(TaskConfigurer.class);
+        Map<String, String> modules = ModuleNames.of(beans, java.util.List.copyOf(configurers.keySet()));
+        configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
         beans.getBeansOfType(TaskGlobals.class).forEach(builder::globals);
         observer.ifUnique(builder::observer);
+        // A module test runs one module's topics; pushes to the others' are stored for its assertions.
+        builder.topicsCreatedOnPush(ModuleNames.inModuleTest(beans));
         return builder.build();
     }
 
@@ -70,6 +78,32 @@ public class TaskAutoConfiguration {
     @ConditionalOnMissingBean
     public Tasks tasks(TaskEngine engine) {
         return engine.tasks();
+    }
+
+    /** Pushes the tasks the configurers' event routes make of application events. */
+    @Bean
+    @ConditionalOnMissingBean
+    public TaskEventBridge taskEventBridge(TaskEngine engine) {
+        return new TaskEventBridge(engine);
+    }
+
+    /**
+     * For tests: in a Spring Modulith module test, or with {@code task.testing=true}. It records
+     * every push, so it has no place in a running application.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @Conditional(Testing.class)
+    public TaskTester taskTester(TaskEngine engine) {
+        return TaskTester.of(engine);
+    }
+
+    static final class Testing implements org.springframework.context.annotation.Condition {
+        @Override
+        public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            return context.getEnvironment().getProperty("task.testing", Boolean.class, false)
+                || context.getBeanFactory() != null && ModuleNames.inModuleTest(context.getBeanFactory());
+        }
     }
 
     @Bean

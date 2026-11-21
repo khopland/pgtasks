@@ -35,6 +35,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param topics          per topic: concurrency, batch-size, ordering, poll-interval,
  *                        batch-deadline, retry.max-attempts, retain.&lt;outcome&gt;
  * @param limits          per rate limit: rate (such as 400/s) and burst
+ * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
+ *                        Spring Modulith module tests get one without it
  */
 @ConfigurationProperties("task")
 public record TaskProperties(
@@ -44,7 +46,8 @@ public record TaskProperties(
     @DefaultValue("true") boolean notifications,
     @DefaultValue("30s") Duration shutdownTimeout,
     Map<String, Map<String, String>> topics,
-    Map<String, Map<String, String>> limits
+    Map<String, Map<String, String>> limits,
+    @DefaultValue("false") boolean testing
 ) {
 
     public enum Store { POSTGRES, MEMORY }

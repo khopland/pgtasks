@@ -65,6 +65,7 @@ public final class TaskEngineBuilder {
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
+    private boolean topicsCreatedOnPush;
     private boolean notifications = true;
     private Notifier notifier;
     private final Map<Class<?>, PayloadCodec<?>> codecs = new HashMap<>();
@@ -132,6 +133,17 @@ public final class TaskEngineBuilder {
 
     public TaskEngineBuilder transactions(TransactionBinding transactions) {
         this.transactions = Objects.requireNonNull(transactions);
+        return this;
+    }
+
+    /**
+     * For module tests: a push to a topic that doesn't exist creates it, instead of failing, so a
+     * test that runs one module's topics can push to another module's and assert what was pushed.
+     * Nothing processes such a topic. Never in production, where a misspelt topic would quietly
+     * collect tasks; the Spring starter turns it on only inside Spring Modulith module tests.
+     */
+    public TaskEngineBuilder topicsCreatedOnPush(boolean create) {
+        this.topicsCreatedOnPush = create;
         return this;
     }
 
@@ -393,6 +405,7 @@ public final class TaskEngineBuilder {
 
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);
+        List<EventRoute<?>> routes = new ArrayList<>();
         for (Named<TaskConfigurer> configurer : configurers) {
             Spec moduleDefaults = new Spec(Source.MODULE_DEFAULTS);
             List<TopicSpec<?>> registered = new ArrayList<>();
@@ -426,6 +439,12 @@ public final class TaskEngineBuilder {
                     if (previous != null && previous != codec) {
                         problems.add("Two codecs for " + type.getName() + ", one from " + configurer.name());
                     }
+                    return this;
+                }
+
+                @Override
+                public <E> TaskRegistry onEvent(Class<E> event, java.util.function.Function<? super E, org.example.task2.Push<?>> route) {
+                    routes.add(new EventRoute<>(event, route, configurer.name()));
                     return this;
                 }
             });
@@ -518,7 +537,8 @@ public final class TaskEngineBuilder {
             wakeUps = notifierOf(chosen);
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        return new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes);
+        return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
     }
 
     /** The in-memory store offers its own in-process wake-ups. */

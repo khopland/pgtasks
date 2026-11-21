@@ -165,6 +165,50 @@ class TaskAutoConfigurationTest {
     }
 
     @Test
+    void a_configurer_registered_as_a_plain_singleton_is_named_by_its_bean_name() {
+        memory().withInitializer(context -> context.getBeanFactory().registerSingleton("manualTasks",
+                (TaskConfigurer) tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> Decision.success()))))
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBean(TaskEngine.class).effectiveSettings()).extracting(EffectiveSettings::module).containsExactly("manualTasks");
+            });
+    }
+
+    record Greeted(String name) {
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class GreetingRoute {
+        @Bean
+        TaskConfigurer greetingTasks() {
+            return tasks -> tasks
+                .onEvent(Greeted.class, greeted -> greeted.name().isEmpty() ? null
+                    : new org.example.task2.Push<>(NOTIFY, org.example.task2.Insertion.APPEND, org.example.task2.Creation.of(greeted.name(), "hello " + greeted.name())))
+                .topic(NOTIFY, batch -> batch.decide(task -> Decision.success()));
+        }
+    }
+
+    @Test
+    void an_event_becomes_a_task_in_the_publishers_transaction() {
+        postgres().withUserConfiguration(GreetingRoute.class).withPropertyValues("task.topics.notify.poll-interval=1h").run(context -> {
+            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+            context.getBean(TaskEngine.class).pause("notify");
+
+            assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+                context.publishEvent(new Greeted("anna"));
+                throw new IllegalStateException("the publisher's work failed");
+            })).hasMessage("the publisher's work failed");
+            assertThat(database.count("SELECT count(*) FROM tasks.task")).as("rolled back with the publisher").isZero();
+
+            transaction.executeWithoutResult(status -> context.publishEvent(new Greeted("bob")));
+            context.publishEvent(new Greeted("carl"));
+            context.publishEvent(new Greeted(""));
+            assertThat(database.rows("SELECT payload FROM tasks.task ORDER BY id")).as("committed with it, or on its own without one")
+                .containsExactly(List.of("hello bob"), List.of("hello carl"));
+        });
+    }
+
+    @Test
     void stopping_the_context_drains_the_engine() {
         postgres().withUserConfiguration(Modules.class).run(context -> {
             TaskEngine engine = context.getBean(TaskEngine.class);
