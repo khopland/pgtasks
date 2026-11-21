@@ -162,6 +162,11 @@ public final class RateLimits {
         refreshSoon.request();
     }
 
+    /** Reloads on notifications again, for an engine started again. */
+    void resumeRefreshing() {
+        refreshSoon.restart();
+    }
+
     /** No more reloads on notifications; waits for one in progress. */
     void stopRefreshing(Duration patience) throws InterruptedException {
         refreshSoon.stop(patience);

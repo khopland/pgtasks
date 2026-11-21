@@ -44,6 +44,12 @@ final class Coalesced {
         }
     }
 
+    /** Takes requests again after {@link #stop}, for an engine started again. */
+    synchronized void restart() {
+        stopped = false;
+        pending.set(false);
+    }
+
     /** Ignores requests from now on, and interrupts and waits for a run in progress. */
     void stop(Duration patience) throws InterruptedException {
         Thread current;

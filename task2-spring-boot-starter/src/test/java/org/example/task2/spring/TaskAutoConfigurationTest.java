@@ -340,6 +340,19 @@ class TaskAutoConfigurationTest {
     }
 
     @Test
+    void a_context_stopped_and_started_again_processes_again() {
+        memory().withUserConfiguration(Modules.class).run(context -> {
+            context.stop();
+            assertThat(context.getBean(TaskEngine.class).running()).isFalse();
+            context.start();
+            assertThat(context.getBean(TaskEngine.class).running()).isTrue();
+
+            context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "after the restart");
+            EngineFixture.await("the task ran", Duration.ofSeconds(5), () -> context.getBean(Modules.class).handled.contains("after the restart"));
+        });
+    }
+
+    @Test
     void an_engine_of_the_applications_own_wins() {
         memory().withUserConfiguration(Modules.class)
             .withBean(TaskEngine.class, () -> TaskEngine.builder().store(new org.example.task2.memory.InMemoryTaskStore()).build())

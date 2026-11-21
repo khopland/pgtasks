@@ -64,6 +64,8 @@ public final class TaskEngine implements AutoCloseable {
     private String version;
     private volatile boolean started;
     private boolean prepared;
+    /** Whether it was started and stopped before, so a start must switch the reloads back on. */
+    private boolean stopped;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
         this(store, settings, topics, List.of());
@@ -239,50 +241,69 @@ public final class TaskEngine implements AutoCloseable {
             throw new IllegalStateException("Already started");
         }
         prepare();
+        if (stopped) {
+            // Started again after a stop, as Spring does on context.stop() and start(): the
+            // reloads that stop() switched off take notifications again, and the overrides
+            // changed while this node was stopped are read now. It registers as a new node.
+            reconcileSoon.restart();
+            limits.resumeRefreshing();
+            limits.refresh();
+        }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version != null ? version : version()));
         core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, limits, settings.observer());
         notifier = settings.notifier();
-        if (notifier != null) {
-            notifier.start(new Notifier.Listener() {
-                @Override
-                public void ready(int topicId) {
-                    TopicWorker<?> worker = workersById.get(topicId);
-                    if (worker != null) {
-                        worker.wake();
-                    }
-                }
-
-                @Override
-                public void topicChanged(String name) {
-                    reconcileSoon.request();
-                }
-
-                @Override
-                public void limitChanged(String name) {
-                    limits.refreshSoon();
-                }
-
-                @Override
-                public void missed() {
-                    workersById.values().forEach(TopicWorker::wake);
-                    reconcileSoon.request();
-                    limits.refreshSoon();
-                }
-            });
-        }
-        housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
-            reconcileTopics();
-            limits.refresh();
-            reviveSweep();
-        });
-        housekeeper.start();
-        reviveForVersion();
-        started = true;
+        housekeeper = null;
         try {
+            if (notifier != null) {
+                notifier.start(new Notifier.Listener() {
+                    @Override
+                    public void ready(int topicId) {
+                        TopicWorker<?> worker = workersById.get(topicId);
+                        if (worker != null) {
+                            worker.wake();
+                        }
+                    }
+
+                    @Override
+                    public void topicChanged(String name) {
+                        reconcileSoon.request();
+                    }
+
+                    @Override
+                    public void limitChanged(String name) {
+                        limits.refreshSoon();
+                    }
+
+                    @Override
+                    public void missed() {
+                        workersById.values().forEach(TopicWorker::wake);
+                        reconcileSoon.request();
+                        limits.refreshSoon();
+                    }
+                });
+            }
+            housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
+                reconcileTopics();
+                limits.refresh();
+                reviveSweep();
+            });
+            housekeeper.start();
+            reviveForVersion();
+            started = true;
             reconcileTopics();
         } catch (Exception | Error e) {
-            stop(Duration.ZERO);
+            if (started) {
+                stop(Duration.ZERO);
+            } else {
+                // Not started, so stop() would do nothing: end what this start got going.
+                if (notifier != null) {
+                    notifier.close();
+                }
+                if (housekeeper != null) {
+                    housekeeper.stop();
+                }
+            }
             throw e;
         }
         return this;
@@ -747,6 +768,7 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         started = false;
+        stopped = true;
         long deadline = System.nanoTime() + timeout.toNanos();
         try {
             // Nothing new starts: no wake-ups, no reloads.
