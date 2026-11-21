@@ -37,7 +37,8 @@ import org.jspecify.annotations.Nullable;
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
  * POST   /actuator/tasks/topics/{topic}/pause | resume | create
- * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {} for all
+ * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
+ *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}
  * GET    /actuator/tasks/limits/{limit}
@@ -130,7 +131,9 @@ public class TaskEndpoint {
     /** Topic actions: pause, resume, create, revive, discard, purge. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
-                                           @Nullable String ids, @Nullable String outcome, @Nullable String before) throws Exception {
+                                           @Nullable String ids, @Nullable String outcome, @Nullable String before,
+                                           @Nullable String error, @Nullable String failedFrom, @Nullable String failedUntil,
+                                           @Nullable String all) throws Exception {
         if (!kind.equals("topics")) {
             return notFound();
         }
@@ -151,8 +154,16 @@ public class TaskEndpoint {
             case "pause" -> engine.pause(name);
             case "resume" -> engine.resume(name);
             case "create" -> engine.createTopic(name);
-            case "revive" -> body.put("revived", engine.revive(name, taskIds));
-            case "discard" -> body.put("discarded", engine.discard(name, taskIds));
+            case "revive", "discard" -> {
+                TaskStore.DeadLetterQuery query;
+                try {
+                    query = deadLetterQuery(taskIds, error, failedFrom, failedUntil, all);
+                } catch (IllegalArgumentException | java.time.format.DateTimeParseException e) {
+                    return badRequest(e.getMessage());
+                }
+                body.put(action.equals("revive") ? "revived" : "discarded",
+                    action.equals("revive") ? engine.revive(name, query) : engine.discard(name, query));
+            }
             case "purge" -> {
                 if (outcome == null || before == null) {
                     return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant or recreated) and a time to purge before");
@@ -206,6 +217,22 @@ public class TaskEndpoint {
         } catch (VersionConflictException e) {
             return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
         }
+    }
+
+    /**
+     * Ids, or a filter, or all of them, but only when asked for in so many words: one stray call
+     * with an empty body would otherwise finish every dead letter of a topic.
+     */
+    private static TaskStore.DeadLetterQuery deadLetterQuery(List<Long> taskIds, String error, String failedFrom, String failedUntil, String all) {
+        boolean filtered = error != null || failedFrom != null || failedUntil != null;
+        if (taskIds != null) {
+            return TaskStore.DeadLetterQuery.ids(taskIds);
+        }
+        if (!filtered && !"true".equalsIgnoreCase(all)) {
+            throw new IllegalArgumentException("Name the dead letters: \"ids\", or \"error\", \"failedFrom\" and \"failedUntil\", or \"all\": \"true\" for every one");
+        }
+        return TaskStore.DeadLetterQuery.ALL.withError(error)
+            .failedBetween(failedFrom == null ? null : Instant.parse(failedFrom), failedUntil == null ? null : Instant.parse(failedUntil));
     }
 
     private Map<String, Object> node() throws Exception {

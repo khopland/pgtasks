@@ -280,14 +280,22 @@ public final class PostgresTaskStore implements TaskStore {
             JOIN tasks.task t ON t.id = q.task_id
             JOIN tasks.topic tp ON tp.id = q.topic_id
             WHERE q.topic_id = :topic::integer AND q.state = 'failed' AND q.task_id > :after::bigint
+              AND (:all::boolean OR q.task_id = ANY (:ids::bigint[]))
+              AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
+              AND (:from::timestamptz IS NULL OR q.first_failed_at >= :from::timestamptz)
+              AND (:until::timestamptz IS NULL OR q.first_failed_at < :until::timestamptz)
             ORDER BY q.task_id
             LIMIT :limit::integer
             """);
         String pickDeadLetters = """
             WITH picked AS MATERIALIZED (
                 SELECT o.ctid AS row FROM tasks.queue o
-                WHERE o.topic_id = :topic::integer AND o.state = 'failed'
+                JOIN tasks.task t ON t.id = o.task_id
+                WHERE o.topic_id = :topic::integer AND o.state = 'failed' AND o.task_id > :after::bigint
                   AND (:all::boolean OR o.task_id = ANY (:ids::bigint[]))
+                  AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
+                  AND (:from::timestamptz IS NULL OR o.first_failed_at >= :from::timestamptz)
+                  AND (:until::timestamptz IS NULL OR o.first_failed_at < :until::timestamptz)
                 ORDER BY o.task_id
                 LIMIT :limit::integer
                 FOR UPDATE OF o SKIP LOCKED
@@ -1271,10 +1279,9 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) throws SQLException {
+    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
         List<TaskView> result = new ArrayList<>();
-        try (PreparedStatement statement = deadLetters.prepare(transaction.connection(),
-                 NamedSql.parameters().set("topic", topicId).set("after", afterId).set("limit", limit));
+        try (PreparedStatement statement = deadLetters.prepare(transaction.connection(), query(query, topicId, limit));
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 result.add(taskView(resultSet));
@@ -1284,13 +1291,13 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
-        return deadLetterIds(revive, transaction, topicId, taskIds, limit);
+    public List<Long> revive(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
+        return deadLetterIds(revive, transaction, topicId, query, limit);
     }
 
     @Override
-    public List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
-        List<Long> discarded = deadLetterIds(discard, transaction, topicId, taskIds, limit);
+    public List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
+        List<Long> discarded = deadLetterIds(discard, transaction, topicId, query, limit);
         if (!discarded.isEmpty()) {
             try (PreparedStatement statement = notifyReady.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId))) {
                 statement.execute();
@@ -1299,12 +1306,20 @@ public final class PostgresTaskStore implements TaskStore {
         return discarded;
     }
 
-    private static List<Long> deadLetterIds(NamedSql sql, StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
-        NamedSql.Parameters parameters = NamedSql.parameters()
+    private static NamedSql.Parameters query(DeadLetterQuery query, int topicId, int limit) {
+        return NamedSql.parameters()
             .set("topic", topicId)
-            .set("all", taskIds == null)
-            .array("ids", "bigint", taskIds == null ? new Object[0] : taskIds.toArray())
-            .set("limit", taskIds == null ? limit : Math.min(limit, taskIds.size()));
+            .set("after", query.afterId())
+            .set("all", query.taskIds() == null)
+            .array("ids", "bigint", query.taskIds() == null ? new Object[0] : query.taskIds().toArray())
+            .set("error", query.error())
+            .set("from", query.failedFrom() == null ? null : OffsetDateTime.ofInstant(query.failedFrom(), java.time.ZoneOffset.UTC))
+            .set("until", query.failedUntil() == null ? null : OffsetDateTime.ofInstant(query.failedUntil(), java.time.ZoneOffset.UTC))
+            .set("limit", query.taskIds() == null ? limit : Math.min(limit, query.taskIds().size()));
+    }
+
+    private static List<Long> deadLetterIds(NamedSql sql, StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
+        NamedSql.Parameters parameters = query(query, topicId, limit);
         List<Long> ids = new ArrayList<>();
         try (PreparedStatement statement = sql.prepare(transaction.connection(), parameters);
              ResultSet resultSet = statement.executeQuery()) {

@@ -95,6 +95,34 @@ public abstract class DeadLetterTck extends StoreTck {
     }
 
     @Test
+    void dead_letters_are_found_by_error_by_when_they_first_failed_and_after_an_id() throws SQLException {
+        StoreFixture fixture = setUp();
+        long gaveUp = deadLetter(fixture, topic, "a");
+        long refusedId = fixture.push(topic, "b");
+        ClaimedTask claimed = fixture.claim(topic, node).stream().filter(task -> task.id() == refusedId).findFirst().orElseThrow();
+        fixture.complete(topic, node, claimed, new org.example.task2.spi.TaskStore.Resolution.Waiting(
+            org.example.task2.spi.TaskStore.WaitState.DEAD_LETTER, null, true, "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}"));
+        long later = deadLetter(fixture, topic, "c");
+        org.example.task2.spi.TaskStore.DeadLetterQuery all = org.example.task2.spi.TaskStore.DeadLetterQuery.ALL;
+        java.time.Instant now = fixture.store().clock().instant();
+
+        assertThat(find(fixture, all.withError("java.net.ConnectException"))).containsExactly(refusedId);
+        assertThat(find(fixture, all.withError("gave up"))).containsExactly(gaveUp, later);
+        assertThat(find(fixture, all.failedBetween(now.plusSeconds(3600), null))).isEmpty();
+        assertThat(find(fixture, all.failedBetween(now.minusSeconds(3600), now.plusSeconds(3600)))).hasSize(3);
+
+        List<Long> revived = fixture.inTransaction(transaction -> fixture.store().revive(transaction, topic, all.withError("gave up").after(gaveUp), 10));
+        assertThat(revived).containsExactly(later);
+        assertThat(fixture.state(gaveUp)).isEqualTo("failed");
+        List<Long> discarded = fixture.inTransaction(transaction -> fixture.store().discard(transaction, topic, all.withError("java.net.ConnectException"), 10));
+        assertThat(discarded).containsExactly(refusedId);
+    }
+
+    private List<Long> find(StoreFixture fixture, org.example.task2.spi.TaskStore.DeadLetterQuery query) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().deadLetters(transaction, topic, query, 10)).stream().map(TaskView::id).toList();
+    }
+
+    @Test
     void reviving_all_takes_the_oldest_up_to_the_limit() throws SQLException {
         StoreFixture fixture = setUp();
         long first = deadLetter(fixture, topic, "a");

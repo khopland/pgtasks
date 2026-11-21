@@ -142,7 +142,10 @@ class TaskEndpointTest {
         assertThat(failing.body().path("failing").get(0).path("tasks").asLong()).isEqualTo(1);
         assertThat(failing.body().path("failing").get(0).path("example").asLong()).isEqualTo(id);
 
-        Response revived = send("POST", "/tasks/topics/work/revive", "{\"ids\": \"" + id + "\"}");
+        assertThat(send("POST", "/tasks/topics/work/discard", "{}").status()).as("all of them only when asked for").isEqualTo(400);
+        assertThat(send("POST", "/tasks/topics/work/revive", "{}").status()).isEqualTo(400);
+        assertThat(send("POST", "/tasks/topics/work/revive", "{\"error\": \"something else\"}").body().path("revived").asInt()).isZero();
+        Response revived = send("POST", "/tasks/topics/work/revive", "{\"error\": \"not yet\"}");
         assertThat(revived.status()).isEqualTo(200);
         assertThat(revived.body().path("revived").asInt()).isEqualTo(1);
         EngineFixture.await("the revived task succeeded", Duration.ofSeconds(5),

@@ -216,30 +216,70 @@ public interface TaskStore {
     /** The unfinished tasks of a topic, by queue state. */
     QueueCounts count(StoreTransaction transaction, int topicId) throws SQLException;
 
-    /**
-     * A topic's dead letters, lowest id first, starting after {@code afterId} (0 for the first
-     * page), each with its last error.
-     */
-    List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) throws SQLException;
+    /** A topic's dead letters that match the query, lowest id first, each with its last error. */
+    List<TaskView> deadLetters(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException;
+
+    /** All of a topic's dead letters after an id: see {@link #deadLetters(StoreTransaction, int, DeadLetterQuery, int)}. */
+    default List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) throws SQLException {
+        return deadLetters(transaction, topicId, DeadLetterQuery.ALL.after(afterId), limit);
+    }
 
     /**
-     * Gives dead letters another round of attempts: they become ready, with their attempt count
-     * back at zero, so the topic's whole retry policy applies again. Their attempt log stays.
+     * Gives the matching dead letters, the lowest ids first, another round of attempts: they become
+     * ready, their attempts and failures back at zero, so the topic's whole retry policy applies
+     * again. Their attempt log stays.
      *
-     * @param taskIds the dead letters to revive, or null for the topic's oldest {@code limit};
-     *                ids that aren't dead letters of the topic are skipped
      * @return the revived ids
      */
-    List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException;
+    List<Long> revive(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException;
+
+    /** Revives these dead letters, or the topic's oldest {@code limit} if null; others are skipped. */
+    default List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+        return revive(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
+    }
 
     /**
-     * Gives up on dead letters: they leave the queue and finish as failed, kept as long as the
-     * topic's retention for failed tasks says. Tasks they held back under an ordering run next.
+     * Gives up on the matching dead letters: they leave the queue and finish as failed, kept as
+     * long as the topic's retention for failed tasks says. Tasks they held back under an ordering
+     * run next.
      *
-     * @param taskIds as for {@link #revive}
      * @return the discarded ids
      */
-    List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException;
+    List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException;
+
+    default List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+        return discard(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
+    }
+
+    /**
+     * Which dead letters: some by id or all, after an id (for paging, and so that reviving in
+     * batches never meets a task twice), with an error (its type, or its message if it has none,
+     * as {@link #failing} groups them), first failed in a time range. Null means any.
+     */
+    record DeadLetterQuery(Collection<Long> taskIds, long afterId, String error, Instant failedFrom, Instant failedUntil) {
+
+        public static final DeadLetterQuery ALL = new DeadLetterQuery(null, 0, null, null, null);
+
+        public DeadLetterQuery {
+            taskIds = taskIds == null ? null : List.copyOf(taskIds);
+        }
+
+        public static DeadLetterQuery ids(Collection<Long> taskIds) {
+            return new DeadLetterQuery(Objects.requireNonNull(taskIds, "taskIds"), 0, null, null, null);
+        }
+
+        public DeadLetterQuery after(long id) {
+            return new DeadLetterQuery(taskIds, id, error, failedFrom, failedUntil);
+        }
+
+        public DeadLetterQuery withError(String error) {
+            return new DeadLetterQuery(taskIds, afterId, error, failedFrom, failedUntil);
+        }
+
+        public DeadLetterQuery failedBetween(Instant from, Instant until) {
+            return new DeadLetterQuery(taskIds, afterId, error, from, until);
+        }
+    }
 
     /**
      * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest

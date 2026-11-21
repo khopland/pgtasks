@@ -76,12 +76,12 @@ class AdminTest {
         tester.awaitIdle();
         assertThat(engine.find(revived).orElseThrow().state()).isEqualTo("succeeded");
 
-        assertThat(engine.discard("work", null)).isEqualTo(1);
+        assertThat(engine.discard("work", org.example.task2.spi.TaskStore.DeadLetterQuery.ALL)).isEqualTo(1);
         TaskView gone = engine.find(discarded).orElseThrow();
         assertThat(gone.finished()).isTrue();
         assertThat(gone.state()).isEqualTo("failed");
         assertThat(engine.deadLetters("work", 0, 10)).isEmpty();
-        assertThatThrownBy(() -> engine.revive("missing", null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("missing");
+        assertThatThrownBy(() -> engine.revive("missing", org.example.task2.spi.TaskStore.DeadLetterQuery.ALL)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("missing");
     }
 
     @Test

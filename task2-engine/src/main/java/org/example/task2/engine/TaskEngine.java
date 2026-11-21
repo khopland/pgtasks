@@ -431,8 +431,13 @@ public final class TaskEngine implements AutoCloseable {
      * @return how many were revived
      */
     public int revive(String topic, java.util.Collection<Long> taskIds) throws Exception {
+        return revive(topic, taskIds == null ? TaskStore.DeadLetterQuery.ALL : TaskStore.DeadLetterQuery.ids(taskIds));
+    }
+
+    /** Revives the dead letters that match, such as those with one error type, first failed in a time range. */
+    public int revive(String topic, TaskStore.DeadLetterQuery query) throws Exception {
         int id = topicId(topic);
-        int revived = inBatches(taskIds, (transaction, ids, limit) -> store.revive(transaction, id, ids, limit));
+        int revived = inBatches(query, (transaction, batch, limit) -> store.revive(transaction, id, batch, limit));
         if (revived > 0) {
             wake(topic);
         }
@@ -447,8 +452,13 @@ public final class TaskEngine implements AutoCloseable {
      * @return how many were discarded
      */
     public int discard(String topic, java.util.Collection<Long> taskIds) throws Exception {
+        return discard(topic, taskIds == null ? TaskStore.DeadLetterQuery.ALL : TaskStore.DeadLetterQuery.ids(taskIds));
+    }
+
+    /** Discards the dead letters that match. */
+    public int discard(String topic, TaskStore.DeadLetterQuery query) throws Exception {
         int id = topicId(topic);
-        int discarded = inBatches(taskIds, (transaction, ids, limit) -> store.discard(transaction, id, ids, limit));
+        int discarded = inBatches(query, (transaction, batch, limit) -> store.discard(transaction, id, batch, limit));
         if (discarded > 0) {
             wake(topic);
         }
@@ -472,23 +482,35 @@ public final class TaskEngine implements AutoCloseable {
 
     @FunctionalInterface
     private interface DeadLetterWork {
-        List<Long> apply(org.example.task2.spi.StoreTransaction transaction, java.util.Collection<Long> ids, int limit) throws Exception;
+        List<Long> apply(org.example.task2.spi.StoreTransaction transaction, TaskStore.DeadLetterQuery query, int limit) throws Exception;
     }
 
-    /** Given ids in one transaction; all of them a batch per transaction, so a large topic doesn't hold locks for long. */
-    private int inBatches(java.util.Collection<Long> taskIds, DeadLetterWork work) throws Exception {
-        if (taskIds != null) {
-            List<Long> ids = List.copyOf(taskIds);
-            return ids.isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, ids, ids.size())).size();
+    /**
+     * Given ids in one transaction; otherwise a batch per transaction, so a large topic doesn't
+     * hold locks for long. Each batch starts after the last one's highest id: a revived task that
+     * fails straight back into the dead letters isn't revived again by the same call.
+     */
+    private int inBatches(TaskStore.DeadLetterQuery query, DeadLetterWork work) throws Exception {
+        if (query.taskIds() != null) {
+            return query.taskIds().isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, query.taskIds().size())).size();
         }
         int total = 0;
+        TaskStore.DeadLetterQuery next = query;
         while (true) {
-            int done = EngineCore.transact(store, transaction -> work.apply(transaction, null, BATCH)).size();
-            total += done;
-            if (done < BATCH) {
+            TaskStore.DeadLetterQuery batch = next;
+            List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
+            total += done.size();
+            if (done.size() < BATCH) {
                 return total;
             }
+            next = batch.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
         }
+    }
+
+    /** A page of the dead letters that match. */
+    public List<TaskStore.TaskView> deadLetters(String topic, TaskStore.DeadLetterQuery query, int limit) throws Exception {
+        int id = topicId(topic);
+        return EngineCore.transact(store, transaction -> store.deadLetters(transaction, id, query, limit));
     }
 
     private int topicId(String topic) throws Exception {

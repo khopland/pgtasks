@@ -619,24 +619,24 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, long afterId, int limit) {
-        return failed(memory(transaction), topicId, null, limit, afterId).stream()
+    public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
+        return failed(memory(transaction), topicId, query, limit).stream()
             .map(row -> find(transaction, row.taskId()).orElseThrow())
             .toList();
     }
 
     @Override
-    public List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) {
+    public List<Long> revive(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
         MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> revived = failed(memory, topicId, taskIds, limit, 0);
+        List<Rows.Queued> revived = failed(memory, topicId, query, limit);
         revived.forEach(row -> putQueued(memory, row.with(State.READY, null, 0, null, null).withoutFailures()));
         return revived.stream().map(Rows.Queued::taskId).toList();
     }
 
     @Override
-    public List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) {
+    public List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
         MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> discarded = failed(memory, topicId, taskIds, limit, 0);
+        List<Rows.Queued> discarded = failed(memory, topicId, query, limit);
         Instant now = now();
         for (Rows.Queued row : discarded) {
             memory.remove(queue, row.taskId());
@@ -703,11 +703,14 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     /** The topic's dead letters, lowest id first: the given ones, or all, after an id. */
-    private List<Rows.Queued> failed(MemoryTransaction memory, int topicId, Collection<Long> taskIds, int limit, long afterId) {
-        Set<Long> wanted = taskIds == null ? null : Set.copyOf(taskIds);
+    private List<Rows.Queued> failed(MemoryTransaction memory, int topicId, DeadLetterQuery query, int limit) {
+        Set<Long> wanted = query.taskIds() == null ? null : Set.copyOf(query.taskIds());
         return queue.values().stream()
-            .filter(row -> row.topicId() == topicId && row.state() == State.FAILED && row.taskId() > afterId)
+            .filter(row -> row.topicId() == topicId && row.state() == State.FAILED && row.taskId() > query.afterId())
             .filter(row -> wanted == null || wanted.contains(row.taskId()))
+            .filter(row -> query.error() == null || query.error().equals(errorKey(tasks.get(row.taskId()).error())))
+            .filter(row -> query.failedFrom() == null || row.firstFailedAt() != null && !row.firstFailedAt().isBefore(query.failedFrom()))
+            .filter(row -> query.failedUntil() == null || row.firstFailedAt() != null && row.firstFailedAt().isBefore(query.failedUntil()))
             .sorted(Comparator.comparingLong(Rows.Queued::taskId))
             .limit(limit)
             .toList();
