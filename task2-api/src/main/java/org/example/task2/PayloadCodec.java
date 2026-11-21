@@ -3,6 +3,8 @@ package org.example.task2;
 import java.util.Objects;
 import java.util.function.Function;
 
+import org.jspecify.annotations.Nullable;
+
 /** Turns payloads into the text stored in {@code tasks.task.payload} and back. */
 public interface PayloadCodec<T> {
 
@@ -11,7 +13,7 @@ public interface PayloadCodec<T> {
     T decode(String data);
 
     /** Stored in {@code payload_type}, for versioning. {@code null} by default. */
-    default String type() {
+    default @Nullable String type() {
         return null;
     }
 

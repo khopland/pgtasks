@@ -179,7 +179,7 @@ public final class TaskEngineBuilder {
         return this;
     }
 
-    /** Wake-ups; by default the store provider's, such as LISTEN/NOTIFY. */
+    /** Wake-ups; by default the store's own, such as LISTEN/NOTIFY on Postgres. */
     public TaskEngineBuilder notifier(Notifier notifier) {
         this.notifier = notifier;
         return this;
@@ -616,12 +616,10 @@ public final class TaskEngineBuilder {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("No task store supports " + dataSource + "; add task2-postgres to the classpath"));
             chosen = provider.create(dataSource, storeOptions);
-            if (wakeUps == null && notifications) {
-                wakeUps = provider.notifier(dataSource);
-            }
             fitToPool(global, provider.poolSize(dataSource));
-        } else if (wakeUps == null && notifications) {
-            wakeUps = notifierOf(chosen);
+        }
+        if (wakeUps == null && notifications) {
+            wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
         TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes)
@@ -670,15 +668,6 @@ public final class TaskEngineBuilder {
             LOGGER.log(System.Logger.Level.WARNING, "maxInFlightBatches is " + global.settings.maxInFlightBatches() + ", and housekeeping needs up to "
                 + HOUSEKEEPING_CONNECTIONS + " more connections, but the pool has " + pool + ": heartbeats may wait for a connection, "
                 + "and the application's own work too. Lower maxInFlightBatches or grow the pool");
-        }
-    }
-
-    /** The in-memory store offers its own in-process wake-ups. */
-    private static Notifier notifierOf(TaskStore store) {
-        try {
-            return (Notifier) store.getClass().getMethod("notifier").invoke(store);
-        } catch (ReflectiveOperationException e) {
-            return null;
         }
     }
 

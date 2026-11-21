@@ -1524,6 +1524,12 @@ public final class PostgresTaskStore implements TaskStore {
         return value == null ? null : value.toInstant();
     }
 
+    /** LISTEN/NOTIFY on a connection outside the pool when the pool says how; see {@link NotifierConnections}. */
+    @Override
+    public org.example.task2.spi.Notifier notifier() {
+        return new PostgresNotifier(NotifierConnections.of(dataSource));
+    }
+
     @Override
     public String toString() {
         return "PostgresTaskStore[" + dataSource + ", " + mode + "]";

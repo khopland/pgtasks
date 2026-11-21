@@ -1,5 +1,7 @@
 package org.example.task2.admin;
 
+import org.jspecify.annotations.Nullable;
+
 /** @param result failed or expired */
-public record AttemptView(long taskId, int attempt, Integer nodeId, String result, String error) {
+public record AttemptView(long taskId, int attempt, @Nullable Integer nodeId, String result, @Nullable String error) {
 }

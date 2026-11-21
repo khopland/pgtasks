@@ -24,11 +24,17 @@
     <embedded-postgres-binaries.version>17.12.0</embedded-postgres-binaries.version>
     <slf4j.version>2.0.20</slf4j.version>
     <micrometer.version>1.17.3</micrometer.version>
+    <jspecify.version>1.0.0</jspecify.version>
     <micrometer-tracing.version>1.7.3</micrometer-tracing.version>
   </properties>
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>org.jspecify</groupId>
+        <artifactId>jspecify</artifactId>
+        <version>${jspecify.version}</version>
+      </dependency>
       <dependency>
         <groupId>org.junit</groupId>
         <artifactId>junit-bom</artifactId>

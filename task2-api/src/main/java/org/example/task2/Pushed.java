@@ -2,6 +2,8 @@ package org.example.task2;
 
 import java.util.OptionalLong;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The result of pushing one creation.
  *
@@ -9,7 +11,7 @@ import java.util.OptionalLong;
  * @param status     what happened to it
  * @param id         the new task's id; absent for a {@link Status#DUPLICATE} or {@link Status#PENDING}
  */
-public record Pushed(String identifier, Status status, Long id) {
+public record Pushed(String identifier, Status status, @Nullable Long id) {
 
     public enum Status {
         /** Stored and queued. */

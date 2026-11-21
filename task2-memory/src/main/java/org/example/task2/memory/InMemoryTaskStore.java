@@ -89,7 +89,8 @@ public final class InMemoryTaskStore implements TaskStore {
         return clock;
     }
 
-    /** In-process wake-ups for one engine; give every engine sharing this store its own. */
+    /** In-process wake-ups for one engine; every engine sharing this store gets its own. */
+    @Override
     public Notifier notifier() {
         return new Notifier() {
             private Listener listener;

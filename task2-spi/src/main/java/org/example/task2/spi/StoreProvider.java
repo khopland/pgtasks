@@ -21,11 +21,6 @@ public interface StoreProvider {
     /** @param options store options, such as {@code schema-mode=validate} */
     TaskStore create(DataSource dataSource, Map<String, String> options);
 
-    /** Wake-ups for this store, or {@code null} to rely on polling. */
-    default Notifier notifier(DataSource dataSource) {
-        return null;
-    }
-
     /**
      * The most connections the DataSource's pool hands out, if it says. The engine keeps the
      * store work it does at once well below it, so heartbeats and the application still get one.

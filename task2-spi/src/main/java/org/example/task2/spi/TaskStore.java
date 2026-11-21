@@ -46,6 +46,14 @@ public interface TaskStore {
         return InstantSource.system();
     }
 
+    /**
+     * Wake-ups for one engine on this store, such as LISTEN/NOTIFY, or null to rely on polling.
+     * Each engine asks for its own.
+     */
+    default Notifier notifier() {
+        return null;
+    }
+
     /** Starts a transaction for the engine's own work. */
     StoreTransaction begin() throws SQLException;
 

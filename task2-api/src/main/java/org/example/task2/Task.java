@@ -5,6 +5,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A claimed task, as a handler sees it.
  *
@@ -26,14 +28,14 @@ public record Task<T>(
     TopicRef<T> topic,
     long id,
     String identifier,
-    T payload,
+    @Nullable T payload,
     int attempt,
-    String reference,
-    Long parentId,
-    Long rootId,
+    @Nullable String reference,
+    @Nullable Long parentId,
+    @Nullable Long rootId,
     Instant createdAt,
     Instant claimedAt,
-    String traceContext
+    @Nullable String traceContext
 ) {
 
     public Task {

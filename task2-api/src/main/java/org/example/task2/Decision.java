@@ -3,6 +3,8 @@ package org.example.task2;
 import java.time.Duration;
 import java.util.Objects;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * What happened to a task. Only {@link #success()} continues: its downstream work is enqueued.
  *
@@ -19,7 +21,7 @@ public sealed interface Decision {
     }
 
     /** Irrelevant, so processing stops here. Not a failure, and nothing downstream runs. */
-    static Decision filtered(String reason) {
+    static Decision filtered(@Nullable String reason) {
         return new Filtered(reason);
     }
 
@@ -92,7 +94,7 @@ public sealed interface Decision {
         }
     }
 
-    record Filtered(String reason) implements Decision {
+    record Filtered(@Nullable String reason) implements Decision {
         @Override
         public int severity() {
             return 1;
@@ -136,14 +138,14 @@ public sealed interface Decision {
         }
     }
 
-    record Unavailable(String message, Throwable cause) implements Decision {
+    record Unavailable(@Nullable String message, @Nullable Throwable cause) implements Decision {
         @Override
         public int severity() {
             return 5;
         }
     }
 
-    record Failed(String message, Throwable cause) implements Decision {
+    record Failed(@Nullable String message, @Nullable Throwable cause) implements Decision {
         @Override
         public int severity() {
             return 6;

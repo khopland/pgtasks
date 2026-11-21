@@ -2,6 +2,8 @@ package org.example.task2;
 
 import java.util.Set;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * One task inside {@link Batch#decide}: read it, and stage downstream work and junctions that are
  * committed together with the batch's completion, but only if this task's final decision
@@ -19,7 +21,7 @@ public interface Work<T> {
         return task().identifier();
     }
 
-    default T payload() {
+    default @Nullable T payload() {
         return task().payload();
     }
 

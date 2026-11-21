@@ -2,6 +2,8 @@ package org.example.task2.admin;
 
 import java.time.Instant;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Unfinished tasks of one topic. {@code due} counts delayed and retrying tasks whose time has
  * come; {@code nextRunAt} is the earliest time one of them is due, if any. {@code oldestReadyAt}
@@ -10,13 +12,8 @@ import java.time.Instant;
  * unfinished tasks whose last run failed, dead letters included, and {@code oldestFailingAt}
  * is when the longest-failing of them first failed: the number to alert on.
  */
-public record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
-                   Instant oldestReadyAt, long failing, Instant oldestFailingAt) {
-
-    public QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due, Instant nextRunAt,
-                       Instant oldestReadyAt) {
-        this(scheduled, retrying, ready, active, suspended, failed, due, nextRunAt, oldestReadyAt, 0, null);
-    }
+public record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due,
+                          @Nullable Instant nextRunAt, @Nullable Instant oldestReadyAt, long failing, @Nullable Instant oldestFailingAt) {
 
     public long total() {
         return scheduled + retrying + ready + active + suspended + failed;

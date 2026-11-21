@@ -2,6 +2,8 @@ package org.example.task2.admin;
 
 import java.time.Instant;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * One topic as an operator sees it: registered in the store, paused or not, processed on this
  * node or not, which module registered it here, and its last snapshotted counts.
@@ -12,6 +14,7 @@ import java.time.Instant;
  * @param countedAt   when that snapshot was taken, or null
  * @param breakerOpen whether this node's breaker for the topic is open
  */
-public record TopicStatus(String name, boolean paused, boolean processing, String module, QueueCounts counts, Instant countedAt,
+public record TopicStatus(String name, boolean paused, boolean processing, @Nullable String module, @Nullable QueueCounts counts,
+                          @Nullable Instant countedAt,
                           boolean breakerOpen) {
 }

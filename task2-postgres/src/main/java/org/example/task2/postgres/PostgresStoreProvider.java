@@ -7,7 +7,6 @@ import java.util.Map;
 
 import javax.sql.DataSource;
 
-import org.example.task2.spi.Notifier;
 import org.example.task2.spi.StoreProvider;
 import org.example.task2.spi.TaskStore;
 
@@ -27,12 +26,6 @@ public final class PostgresStoreProvider implements StoreProvider {
     public TaskStore create(DataSource dataSource, Map<String, String> options) {
         String mode = options.getOrDefault("schema-mode", "migrate");
         return new PostgresTaskStore(dataSource, SchemaMode.valueOf(mode.toUpperCase(Locale.ROOT).replace('-', '_')));
-    }
-
-    /** Listens on a connection opened outside the pool when the pool says how; see {@link NotifierConnections}. */
-    @Override
-    public Notifier notifier(DataSource dataSource) {
-        return new PostgresNotifier(NotifierConnections.of(dataSource));
     }
 
     @Override

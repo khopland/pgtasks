@@ -63,7 +63,7 @@ public abstract class PushTck extends StoreTck {
         assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
             .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
         QueueCounts counts = fixture.counts(topic);
-        assertThat(counts).isEqualTo(new QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt()));
+        assertThat(counts).isEqualTo(new QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt(), 0, null));
         assertThat(counts.nextRunAt()).isEqualTo(fixture.view(pushed.getFirst().id()).orElseThrow().runAt());
         assertThat(counts.oldestReadyAt()).isEqualTo(fixture.view(pushed.get(2).id()).orElseThrow().createdAt());
     }

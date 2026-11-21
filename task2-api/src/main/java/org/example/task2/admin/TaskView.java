@@ -2,6 +2,8 @@ package org.example.task2.admin;
 
 import java.time.Instant;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A task, unfinished or not.
  *
@@ -20,20 +22,20 @@ public record TaskView(
     String state,
     boolean finished,
     int attempt,
-    Instant runAt,
+    @Nullable Instant runAt,
     int priority,
-    Integer nodeId,
-    String reference,
-    Long parentId,
-    Long rootId,
-    String payload,
-    String payloadType,
-    String output,
-    String error,
-    String previousOutcome,
+    @Nullable Integer nodeId,
+    @Nullable String reference,
+    @Nullable Long parentId,
+    @Nullable Long rootId,
+    @Nullable String payload,
+    @Nullable String payloadType,
+    @Nullable String output,
+    @Nullable String error,
+    @Nullable String previousOutcome,
     Instant createdAt,
-    Instant completedAt,
+    @Nullable Instant completedAt,
     int failures,
-    Instant firstFailedAt
+    @Nullable Instant firstFailedAt
 ) {
 }

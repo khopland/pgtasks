@@ -9,9 +9,14 @@
   </parent>
 
   <artifactId>task2-api</artifactId>
-  <description>Task 2.0 public API: topics, tasks, decisions, handlers, enqueue, and the operator views. No dependencies.</description>
+  <description>Task 2.0 public API: topics, tasks, decisions, handlers, enqueue, and the operator views. Depends only on JSpecify's annotations.</description>
 
   <dependencies>
+    <!-- Nullness annotations: which values can be null, for IDEs, Kotlin and NullAway. -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>

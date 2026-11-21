@@ -2,6 +2,8 @@ package org.example.task2;
 
 import java.util.List;
 
+import org.jspecify.annotations.Nullable;
+
 /** A claimed batch of tasks from one topic. */
 public interface Batch<T> {
 
@@ -9,7 +11,7 @@ public interface Batch<T> {
 
     List<Task<T>> tasks();
 
-    default List<T> payloads() {
+    default List<@Nullable T> payloads() {
         return tasks().stream().map(Task::payload).toList();
     }
 

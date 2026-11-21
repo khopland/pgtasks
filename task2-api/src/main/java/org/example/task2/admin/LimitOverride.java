@@ -3,11 +3,14 @@ package org.example.task2.admin;
 import java.time.Instant;
 import java.util.Objects;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * An operator's override of a configured rate limit. A null rate or burst keeps the configured
  * value.
  */
-public record LimitOverride(String name, Double perSecond, Integer burst, Instant until, long version, Instant updatedAt, String updatedBy) {
+public record LimitOverride(String name, @Nullable Double perSecond, @Nullable Integer burst, @Nullable Instant until, long version, Instant updatedAt,
+                            @Nullable String updatedBy) {
 
     public LimitOverride {
         Objects.requireNonNull(name, "name");

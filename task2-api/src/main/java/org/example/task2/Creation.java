@@ -3,6 +3,8 @@ package org.example.task2;
 import java.time.Duration;
 import java.util.Objects;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A task to push.
  *
@@ -17,12 +19,12 @@ import java.util.Objects;
  */
 public record Creation<T>(
     String identifier,
-    T payload,
-    String reference,
-    Duration delay,
+    @Nullable T payload,
+    @Nullable String reference,
+    @Nullable Duration delay,
     boolean suspended,
     int priority,
-    String dedupKey
+    @Nullable String dedupKey
 ) {
 
     public Creation {
