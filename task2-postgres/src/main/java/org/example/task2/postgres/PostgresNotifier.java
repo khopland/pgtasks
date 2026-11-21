@@ -105,9 +105,15 @@ public final class PostgresNotifier implements Notifier {
         running.set(false);
         Thread current = thread;
         if (current != null) {
-            current.interrupt();
             try {
-                current.join(Duration.ofSeconds(5));
+                // The listener checks running at least every 500 ms. Interrupting a virtual thread
+                // blocked in a socket read closes the socket, which a pool then reports as a broken
+                // connection, so an interrupt is the last resort.
+                current.join(Duration.ofSeconds(2));
+                if (current.isAlive()) {
+                    current.interrupt();
+                    current.join(Duration.ofSeconds(3));
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
