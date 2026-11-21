@@ -49,6 +49,7 @@ import org.jspecify.annotations.Nullable;
  * GET    /actuator/tasks/limits/{limit}
  * POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
  * DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
+ * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
  * </pre>
  *
  * Limit changes are optimistic: a limit's {@code version} works as its ETag, and a change that
@@ -234,10 +235,23 @@ public class TaskEndpoint {
         }
     }
 
-    /** Resets a rate limit to its configured values on every node. */
+    /**
+     * Resets a rate limit to its configured values on every node; or deletes a topic no longer
+     * used, with its history (409 while it has unfinished tasks).
+     */
     @DeleteOperation
-    public WebEndpointResponse<Object> reset(@Selector String kind, @Selector String name, @Nullable Long version, SecurityContext security)
+    public WebEndpointResponse<Object> delete(@Selector String kind, @Selector String name, @Nullable Long version, SecurityContext security)
         throws Exception {
+        if (kind.equals("topics")) {
+            if (status(name).isEmpty()) {
+                return notFound();
+            }
+            try {
+                return new WebEndpointResponse<>(Map.of("topic", name, "deletedTasks", engine.admin().deleteTopic(name)));
+            } catch (IllegalStateException e) {
+                return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
+            }
+        }
         if (!kind.equals("limits") || engine.limits().find(name).isEmpty()) {
             return notFound();
         }

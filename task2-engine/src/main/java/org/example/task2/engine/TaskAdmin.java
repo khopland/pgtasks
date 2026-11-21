@@ -54,6 +54,41 @@ public final class TaskAdmin {
         });
     }
 
+    /**
+     * Deletes a topic that is no longer used, with its history, recurring tasks and counts, and
+     * stops it on every node. It must have no unfinished tasks: let them finish, or discard its
+     * dead letters, first. A node that registers the topic by name creates it again when it
+     * starts, so remove it from the configuration before deleting it.
+     *
+     * @return how many finished tasks were deleted with it
+     * @throws IllegalStateException if it has unfinished tasks
+     */
+    public long deleteTopic(String name) {
+        return Unchecked.call("Deleting topic " + name, () -> {
+            int id = topicId(name);
+            long unfinished = EngineCore.transact(store, transaction -> store.count(transaction, id)).total();
+            if (unfinished > 0) {
+                throw new IllegalStateException("Topic " + name + " has " + unfinished + " unfinished task(s): let them finish, "
+                    + "or discard its dead letters, before deleting it");
+            }
+            long deleted = 0;
+            int batch;
+            do {
+                batch = EngineCore.transact(store, transaction -> store.purgeAll(transaction, id, BATCH));
+                deleted += batch;
+            } while (batch == BATCH);
+            if (!EngineCore.transact(store, transaction -> store.deleteTopic(transaction, id))) {
+                throw new IllegalStateException("Topic " + name + " got new tasks while it was being deleted; it stays");
+            }
+            if (engine.registersByName(name)) {
+                System.getLogger(TaskAdmin.class.getName()).log(System.Logger.Level.WARNING, "Deleted topic " + name
+                    + ", which this node's configuration registers: it is created again when this node starts");
+            }
+            engine.reconcileTopics();
+            return deleted;
+        });
+    }
+
     /** Pauses a topic on every node: pushes are still taken, nothing is claimed. Running batches finish. */
     public void pause(String topic) {
         setPaused(topic, true);

@@ -172,4 +172,40 @@ class AdminTest {
         });
         release.countDown();
     }
+
+    /** Review 2026-11-21: a topic no longer used could never be removed. */
+    @Test
+    void a_topic_no_longer_used_is_deleted_with_its_history_on_every_node() throws Exception {
+        org.example.task2.memory.InMemoryTaskStore store = new org.example.task2.memory.InMemoryTaskStore();
+        TopicRef<String> retired = TopicRef.of("retired-2025", String.class);
+        try (TaskEngine one = TaskEngine.builder().store(store).configure("work", tasks -> tasks
+                .topicsMatching("retired-*", String.class, org.example.task2.BatchHandler.each(task -> { })))
+                .build().start();
+             TaskEngine other = TaskEngine.builder().store(store).configure("work", tasks -> tasks
+                .topicsMatching("retired-*", String.class, org.example.task2.BatchHandler.each(task -> { })))
+                .build().start()) {
+            one.admin().createTopic("retired-2025");
+            one.tasks().independently().push(retired, "a", "done");
+            TaskTester.of(one, other).awaitIdle();
+            assertThat(other.processing()).contains("retired-2025");
+
+            assertThat(one.admin().deleteTopic("retired-2025")).isEqualTo(1);
+
+            assertThat(one.admin().topic("retired-2025")).isEmpty();
+            EngineFixture.await("the other node stops it", Duration.ofSeconds(5), () -> !other.processing().contains("retired-2025"));
+            assertThatThrownBy(() -> other.tasks().independently().push(retired, "b", "too late")).hasMessageContaining("Unknown topic 'retired-2025'");
+        }
+    }
+
+    @Test
+    void a_topic_with_unfinished_tasks_is_not_deleted() throws Exception {
+        try (TaskEngine engine = TaskEngine.builder().store(new org.example.task2.memory.InMemoryTaskStore())
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().start()) {
+            engine.admin().pause("work");
+            engine.tasks().independently().push(WORK, "a", "waiting");
+
+            assertThatThrownBy(() -> engine.admin().deleteTopic("work")).hasMessageContaining("has 1 unfinished task(s)");
+            assertThat(engine.admin().topic("work")).isPresent();
+        }
+    }
 }

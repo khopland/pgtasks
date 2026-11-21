@@ -186,6 +186,19 @@ public interface TaskStore {
     int purge(StoreTransaction transaction, int topicId, org.example.task2.Outcome outcome, Instant completedBefore, int limit) throws SQLException;
 
     /**
+     * Deletes up to {@code limit} of a topic's finished tasks, whatever their outcome, with their
+     * attempts: the history of a topic about to be deleted. Returns how many.
+     */
+    int purgeAll(StoreTransaction transaction, int topicId, int limit) throws SQLException;
+
+    /**
+     * Deletes a topic that has no tasks left, finished or not, with its recurring tasks and
+     * counts, and tells every node, as for a new topic. Locks the topic first, so a push can't
+     * add a task meanwhile. False, and nothing deleted, if it still has tasks.
+     */
+    boolean deleteTopic(StoreTransaction transaction, int topicId) throws SQLException;
+
+    /**
      * Records how long a topic's finished tasks are kept per outcome, so that whichever node leads
      * housekeeping applies it, also to topics that node doesn't run. Every node sets it when it
      * starts with the topic, so the last one to start wins; a topic nobody set it for keeps its

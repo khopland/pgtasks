@@ -530,6 +530,32 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
+    public int purgeAll(StoreTransaction transaction, int topicId, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Task> purged = tasks.values().stream()
+            .filter(task -> task.topicId() == topicId && task.outcome() != null && !queue.containsKey(task.id()))
+            .limit(limit)
+            .toList();
+        purged.forEach(task -> deleteTask(memory, task.id()));
+        return purged.size();
+    }
+
+    @Override
+    public boolean deleteTopic(StoreTransaction transaction, int topicId) {
+        MemoryTransaction memory = memory(transaction);
+        Rows.Topic topic = topics.get(topicId);
+        if (topic == null || tasks.values().stream().anyMatch(task -> task.topicId() == topicId)) {
+            return false;
+        }
+        schedules.values().stream().filter(schedule -> schedule.topicId() == topicId).map(Rows.Schedule::id).toList()
+            .forEach(id -> memory.remove(schedules, id));
+        memory.remove(snapshots, topicId);
+        memory.remove(topics, topicId);
+        memory.topicChanged(topic.name());
+        return true;
+    }
+
+    @Override
     public void setRetention(StoreTransaction transaction, int topicId, Map<org.example.task2.Outcome, Period> retention) throws SQLException {
         MemoryTransaction memory = memory(transaction);
         Rows.Topic topic = topics.get(topicId);

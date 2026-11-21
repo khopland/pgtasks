@@ -154,6 +154,16 @@ class TaskEndpointTest {
     }
 
     @Test
+    void a_topic_no_longer_used_is_deleted() throws Exception {
+        assertThat(send("POST", "/tasks/topics/old-work/create", "{}").status()).isEqualTo(200);
+        Response deleted = send("DELETE", "/tasks/topics/old-work", null);
+        assertThat(deleted.status()).isEqualTo(200);
+        assertThat(deleted.body().path("deletedTasks").asLong()).isZero();
+        assertThat(get("/tasks/topics/old-work").status()).isEqualTo(404);
+        assertThat(send("DELETE", "/tasks/topics/old-work", null).status()).isEqualTo(404);
+    }
+
+    @Test
     void a_topic_is_paused_and_resumed() throws Exception {
         assertThat(send("POST", "/tasks/topics/work/pause", "{}").status()).isEqualTo(200);
         assertThat(get("/tasks/topics/work").body().path("paused").asBoolean()).isTrue();

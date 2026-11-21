@@ -53,7 +53,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
-    private final NamedSql deadLetters, revive, discard, notifyReady;
+    private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
@@ -424,6 +424,33 @@ public final class PostgresTaskStore implements TaskStore {
             DELETE FROM tasks.task t
             USING doomed
             WHERE t.topic_id = :topic::integer AND t.id = doomed.id
+            """);
+        // One range of task_completed_idx too: every finished task of the topic. An unfinished one
+        // stays, held by its queue row.
+        purgeAll = sql("""
+            WITH doomed AS MATERIALIZED (
+                SELECT d.id FROM tasks.task d
+                WHERE d.topic_id = :topic::integer AND d.outcome IS NOT NULL
+                LIMIT :limit::integer
+                FOR UPDATE SKIP LOCKED
+            ),
+            attempts AS (
+                DELETE FROM tasks.attempt a
+                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
+            )
+            DELETE FROM tasks.task t
+            USING doomed
+            WHERE t.topic_id = :topic::integer AND t.id = doomed.id
+            """);
+        // A push's foreign key check takes a share lock on the topic row, so this waits for
+        // pushes in flight and makes later ones wait, then fail, once the row is gone.
+        lockTopic = sql("SELECT name FROM tasks.topic WHERE id = :topic::integer FOR UPDATE");
+        topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM tasks.task WHERE topic_id = :topic::integer)");
+        // The delete trigger on tasks.topic tells every node (R__notify_topic.sql).
+        deleteTopic = sql("""
+            WITH schedules AS (DELETE FROM tasks.schedule WHERE topic_id = :topic::integer),
+                 counts AS (DELETE FROM tasks.topic_count WHERE topic_id = :topic::integer)
+            DELETE FROM tasks.topic WHERE id = :topic::integer
             """);
         // Written at every start, so it skips the write when nothing changed.
         setRetention = sql("""
@@ -1116,6 +1143,33 @@ public final class PostgresTaskStore implements TaskStore {
             .set("limit", limit);
         try (PreparedStatement statement = purge.prepare(transaction.connection(), parameters)) {
             return statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public int purgeAll(StoreTransaction transaction, int topicId, int limit) throws SQLException {
+        try (PreparedStatement statement = purgeAll.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("limit", limit))) {
+            return statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public boolean deleteTopic(StoreTransaction transaction, int topicId) throws SQLException {
+        Connection connection = transaction.connection();
+        NamedSql.Parameters topic = NamedSql.parameters().set("topic", topicId);
+        try (PreparedStatement lock = lockTopic.prepare(connection, topic); ResultSet locked = lock.executeQuery()) {
+            if (!locked.next()) {
+                return false;
+            }
+        }
+        try (PreparedStatement check = topicHasTasks.prepare(connection, topic); ResultSet tasks = check.executeQuery()) {
+            tasks.next();
+            if (tasks.getBoolean(1)) {
+                return false;
+            }
+        }
+        try (PreparedStatement delete = deleteTopic.prepare(connection, topic)) {
+            return delete.executeUpdate() == 1;
         }
     }
 

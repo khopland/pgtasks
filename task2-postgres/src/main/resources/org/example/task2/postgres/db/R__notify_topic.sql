@@ -1,4 +1,4 @@
--- Broadcasts new topics, and topics paused or resumed, so every node starts or
+-- Broadcasts new topics, topics paused or resumed, and deleted topics, so every node starts or
 -- stops processing them without waiting for its next heartbeat. The payload is the topic's name;
 -- nodes compare all topics with what they run on any notification. Also covers topics registered
 -- or paused by hand in SQL. Other changes, such as retention, aren't broadcast. Repeatable.
@@ -25,6 +25,22 @@ BEGIN
     RETURN NULL;
 END
 $$;
+
+CREATE OR REPLACE FUNCTION tasks.notify_topic_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM pg_notify('tasks_topic', removed.name)
+    FROM (SELECT name FROM old_rows) AS removed;
+    RETURN NULL;
+END
+$$;
+
+CREATE OR REPLACE TRIGGER topic_delete_notify
+    AFTER DELETE ON tasks.topic
+    REFERENCING OLD TABLE AS old_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION tasks.notify_topic_delete();
 
 CREATE OR REPLACE TRIGGER topic_insert_notify
     AFTER INSERT ON tasks.topic

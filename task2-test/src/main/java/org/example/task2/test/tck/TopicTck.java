@@ -71,4 +71,44 @@ public abstract class TopicTck extends StoreTck {
         }
         assertThat(topics(fixture, "topic").getFirst().paused()).isFalse();
     }
+
+    @Test
+    void a_topic_without_tasks_is_deleted_with_its_recurring_tasks() throws SQLException {
+        StoreFixture fixture = fixture();
+        int topic = fixture.topic("retired");
+        int node = fixture.node("node");
+        long id = fixture.push(topic, "a");
+        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
+        fixture.inTransaction(transaction -> {
+            fixture.store().syncSchedules(transaction, topic, List.of(new TaskStore.ScheduleSpec("nightly", "n", "0 2 * * *", "UTC",
+                org.example.task2.Insertion.SUPERSEDE, null, null, java.time.Instant.now().plusSeconds(3600))));
+            return null;
+        });
+
+        boolean withHistory = fixture.inTransaction(transaction -> fixture.store().deleteTopic(transaction, topic));
+        assertThat(withHistory).as("history left").isFalse();
+        int purged = fixture.inTransaction(transaction -> fixture.store().purgeAll(transaction, topic, 10));
+        assertThat(purged).isEqualTo(1);
+        assertThat(fixture.view(id)).isEmpty();
+        boolean deleted = fixture.inTransaction(transaction -> fixture.store().deleteTopic(transaction, topic));
+        assertThat(deleted).isTrue();
+
+        assertThat(topics(fixture, "retired")).isEmpty();
+        List<org.example.task2.admin.Schedule> schedules = fixture.inTransaction(transaction -> fixture.store().schedules(transaction));
+        assertThat(schedules).noneMatch(schedule -> schedule.topic().equals("retired"));
+    }
+
+    @Test
+    void a_topic_with_an_unfinished_task_is_not_deleted() throws SQLException {
+        StoreFixture fixture = fixture();
+        int topic = fixture.topic("busy");
+        long id = fixture.push(topic, "a");
+
+        int purged = fixture.inTransaction(transaction -> fixture.store().purgeAll(transaction, topic, 10));
+        assertThat(purged).as("unfinished stays").isZero();
+        boolean deleted = fixture.inTransaction(transaction -> fixture.store().deleteTopic(transaction, topic));
+        assertThat(deleted).isFalse();
+        assertThat(topics(fixture, "busy")).hasSize(1);
+        assertThat(fixture.state(id)).isEqualTo("ready");
+    }
 }

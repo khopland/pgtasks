@@ -29,6 +29,11 @@ final class TopicDirectory {
         return createOnPush || ids.containsKey(name);
     }
 
+    /** Forgets the topics the store no longer has. */
+    void retain(java.util.Set<String> names) {
+        ids.keySet().retainAll(names);
+    }
+
     void register(String name, int id) {
         ids.put(name, id);
     }

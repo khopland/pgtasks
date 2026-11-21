@@ -209,6 +209,11 @@ public final class TaskEngine implements AutoCloseable {
         return admin;
     }
 
+    /** Whether this node's configuration registers the topic by name. */
+    boolean registersByName(String topic) {
+        return topicsByName.containsKey(topic);
+    }
+
     /** The topics whose breaker is open on this node. */
     List<String> openBreakers() {
         return workersByName.values().stream().filter(TopicWorker::breakerOpen).map(worker -> worker.topic().ref().name()).sorted().toList();
@@ -371,6 +376,8 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         List<TaskStore.TopicInfo> registered = EngineCore.transact(store, store::topics);
+        // A topic deleted anywhere is unknown here too: a push to it fails as unknown.
+        directory.retain(registered.stream().map(TaskStore.TopicInfo::name).collect(java.util.stream.Collectors.toSet()));
         synchronized (topicsLock) {
             if (!started) {
                 return;
