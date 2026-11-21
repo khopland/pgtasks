@@ -6,6 +6,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
@@ -25,6 +27,7 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 public final class TestPostgres {
 
     private static final AtomicInteger COUNTER = new AtomicInteger();
+    private static final Map<String, String> TEMPLATES = new ConcurrentHashMap<>();
 
     private static volatile Server server;
 
@@ -41,6 +44,50 @@ public final class TestPostgres {
             throw new IllegalStateException("Could not create test database " + name, e);
         }
         return new PostgresDatabase(server, name);
+    }
+
+    /**
+     * A database copied from a template that is prepared once per JVM, for a setup too slow to
+     * repeat for every test. The copy has everything the template had, statistics included.
+     *
+     * @param template    names the template; the first call with a name prepares it
+     * @param preparation fills the template; its connections are closed before it is copied
+     */
+    public static PostgresDatabase createDatabase(String template, PostgresExtension.Preparation preparation) {
+        String source = TEMPLATES.computeIfAbsent(template, ignored -> {
+            PostgresDatabase prepared = createDatabase();
+            try {
+                preparation.prepare(prepared);
+            } catch (Exception e) {
+                prepared.close();
+                throw new IllegalStateException("Could not prepare template database " + template, e);
+            }
+            prepared.closePools();
+            Runtime.getRuntime().addShutdownHook(new Thread(prepared::close, "task2-test-template-cleanup"));
+            return prepared.name();
+        });
+        Server server = server();
+        String name = "t" + ProcessHandle.current().pid() + "_" + COUNTER.incrementAndGet();
+        try (Connection connection = server.admin(); Statement statement = connection.createStatement()) {
+            // A template can't be copied while anyone is connected to it, and closed connections linger briefly.
+            for (int attempt = 1; ; attempt++) {
+                statement.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" + source + "' AND pid <> pg_backend_pid()");
+                try {
+                    statement.execute("CREATE DATABASE " + name + " TEMPLATE " + source);
+                    return new PostgresDatabase(server, name);
+                } catch (SQLException e) {
+                    if (!"55006".equals(e.getSQLState()) || attempt == 50) {
+                        throw e;
+                    }
+                    Thread.sleep(20);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not create test database " + name + " from " + source, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while creating test database " + name, e);
+        }
     }
 
     static Server server() {

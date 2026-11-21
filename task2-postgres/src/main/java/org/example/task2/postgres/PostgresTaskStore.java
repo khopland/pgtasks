@@ -180,11 +180,14 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         // A LIMIT ... FOR UPDATE SKIP LOCKED selection must be materialized: as the inner side of a
         // semi-join it can be rescanned, and each rescan skips the rows this statement already
-        // changed and returns the next ones, so the limit stops holding.
+        // changed and returns the next ones, so the limit stops holding. The time is read once in
+        // a subquery: compared with clock_timestamp() directly, which is volatile, run_at can't
+        // bound the index scan, and every promotion walked past every task not due yet (found by
+        // the drained-queue pass of the TCK).
         promote = sql("""
             WITH due AS MATERIALIZED (
                 SELECT o.ctid AS row FROM tasks.queue o
-                WHERE o.state IN ('scheduled', 'retrying') AND o.run_at <= clock_timestamp()
+                WHERE o.state IN ('scheduled', 'retrying') AND o.run_at <= (SELECT clock_timestamp())
                 ORDER BY o.run_at
                 LIMIT :limit::integer
                 FOR UPDATE OF o SKIP LOCKED
@@ -371,13 +374,22 @@ public final class PostgresTaskStore implements TaskStore {
         // conflict also skips the task row, then older rows are handled for the identifiers
         // that were actually queued. Every CTE sees the snapshot from before the statement, so
         // none of them can touch the rows this statement inserts.
+        //
+        // Older queue rows are deleted by task_id, and also by topic and identifier, which never
+        // change: by task_id alone, a planner that believes the queue is empty may look them up in
+        // queue_identifier_idx, where task_id is the last column, and walk the whole index on every
+        // push (found by the drained-queue pass of the TCK). History is deleted by one array of
+        // ids: with an OR of two IN lists, the only index condition left was the topic, so every
+        // DELETE push read the topic's whole history.
         String cleanup = switch (insertion) {
             case APPEND -> "";
             case SUPERSEDE -> """
                 ,
                 superseded AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id = ANY (ARRAY(
+                    WHERE q.topic_id = :topic::integer
+                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
+                      AND q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
@@ -394,7 +406,9 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 replaced AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id = ANY (ARRAY(
+                    WHERE q.topic_id = :topic::integer
+                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
+                      AND q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
@@ -421,7 +435,9 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 deleted AS (
                     DELETE FROM tasks.queue q
-                    WHERE q.task_id = ANY (ARRAY(
+                    WHERE q.topic_id = :topic::integer
+                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
+                      AND q.task_id = ANY (ARRAY(
                         SELECT o.task_id FROM tasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
@@ -432,13 +448,12 @@ public final class PostgresTaskStore implements TaskStore {
                 deleted_tasks AS (
                     DELETE FROM tasks.task t
                     WHERE t.topic_id = :topic::integer
-                      AND (t.id IN (SELECT task_id FROM deleted)
-                           OR t.id IN (
-                               SELECT d.id FROM tasks.task d
-                               WHERE d.topic_id = :topic::integer
-                                 AND d.identifier IN (SELECT identifier FROM queued)
-                                 AND d.outcome IS NOT NULL
-                               FOR UPDATE OF d SKIP LOCKED))
+                      AND t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
+                          SELECT d.id FROM tasks.task d
+                          WHERE d.topic_id = :topic::integer
+                            AND d.identifier IN (SELECT identifier FROM queued)
+                            AND d.outcome IS NOT NULL
+                          FOR UPDATE OF d SKIP LOCKED))
                 )
                 """;
         };

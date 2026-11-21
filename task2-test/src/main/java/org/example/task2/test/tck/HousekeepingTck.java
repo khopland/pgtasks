@@ -164,7 +164,10 @@ public abstract class HousekeepingTck extends StoreTck {
             fixture.store().snapshotCounts(transaction);
             return null;
         });
-        List<TaskStore.TopicSnapshot> snapshots = fixture.inTransaction(transaction -> fixture.store().snapshots(transaction));
+        // Only this test's topics: a store's test may keep others in the background.
+        List<TaskStore.TopicSnapshot> snapshots = fixture.inTransaction(transaction -> fixture.store().snapshots(transaction)).stream()
+            .filter(snapshot -> List.of("busy", "idle").contains(snapshot.topic()))
+            .toList();
 
         assertThat(snapshots).extracting(TaskStore.TopicSnapshot::topic).containsExactly("busy", "idle");
         assertThat(snapshots.getFirst().counts().ready()).isEqualTo(2);

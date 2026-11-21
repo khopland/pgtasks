@@ -8,18 +8,52 @@ import org.example.task2.test.PostgresExtension;
 import org.example.task2.test.tck.StoreFixture;
 
 /** The TCK fixture for Postgres. Time moves by backdating the timestamps the store compares against now(). */
-final class PostgresStoreFixture extends StoreFixture {
+class PostgresStoreFixture extends StoreFixture {
 
     static PostgresExtension extension() {
         return PostgresExtension.migrated(database -> TaskSchema.migrate(database.dataSource()));
+    }
+
+    /**
+     * The queue's statistics when a TCK test starts. Every Postgres TCK class runs once with each,
+     * so every statement is also tested while the planner believes the queue is empty.
+     */
+    enum QueueStatistics {
+        /** A new database: nothing analyzed yet. */
+        FRESH,
+        /** Analyzed right after a burst drained, with ballast it doesn't know about; see {@link DrainedQueue}. */
+        DRAINED
+    }
+
+    static PostgresStoreFixture create(PostgresDatabase database, QueueStatistics statistics) {
+        return switch (statistics) {
+            case FRESH -> new PostgresStoreFixture(database);
+            case DRAINED -> {
+                DrainedQueue drained = DrainedQueue.create();
+                yield new PostgresStoreFixture(drained.database(), drained.dataSource()) {
+                    @Override
+                    public void close() {
+                        try {
+                            drained.check();
+                        } finally {
+                            drained.close();
+                        }
+                    }
+                };
+            }
+        };
     }
 
     final PostgresDatabase database;
     private final PostgresTaskStore store;
 
     PostgresStoreFixture(PostgresDatabase database) {
+        this(database, database.dataSource());
+    }
+
+    private PostgresStoreFixture(PostgresDatabase database, javax.sql.DataSource dataSource) {
         this.database = database;
-        this.store = new PostgresTaskStore(database.dataSource());
+        this.store = new PostgresTaskStore(dataSource);
     }
 
     @Override

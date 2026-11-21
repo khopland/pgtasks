@@ -120,6 +120,13 @@ public final class PostgresDatabase implements AutoCloseable {
         return ((Number) rows.getFirst().getFirst()).longValue();
     }
 
+    /** Closes every pool this database handed out, but keeps the database. */
+    void closePools() {
+        pools.forEach(HikariDataSource::close);
+        pools.clear();
+        dataSource = null;
+    }
+
     @Override
     public void close() {
         pools.forEach(HikariDataSource::close);
