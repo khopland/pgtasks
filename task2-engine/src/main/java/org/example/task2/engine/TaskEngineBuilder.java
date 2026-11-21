@@ -457,8 +457,11 @@ public final class TaskEngineBuilder {
             });
             topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
                 try {
-                    values.put(key, parseOverride(key, value, (Retry) values.get("retry")));
-                    sources.put(key, Source.OVERRIDE);
+                    Object parsed = parseOverride(key, value, (Retry) values.get("retry"));
+                    // retry.max-attempts changes one part of the retry policy, which is one setting.
+                    String setting = key.equals("retry.max-attempts") ? "retry" : key;
+                    values.put(setting, parsed);
+                    sources.put(setting, Source.OVERRIDE);
                 } catch (IllegalArgumentException | DateTimeParseException e) {
                     problems.add("topics." + topic.name + "." + key + ": " + e.getMessage());
                 }

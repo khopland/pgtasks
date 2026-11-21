@@ -85,6 +85,7 @@ class BuilderTest {
             .configure("notify-module", notifyTasks())
             .overrides(Map.of(
                 "topics.assessment.concurrency", "16",
+                "topics.assessment.retry.max-attempts", "2",
                 "topics.appeal.poll-interval", "5s",
                 "topics.appeal.retain.filtered", "forever",
                 "limits.folkeregister.rate", "400/s"))
@@ -93,6 +94,10 @@ class BuilderTest {
         EffectiveSettings assessment = settings(engine, "assessment");
         assertThat(assessment.module()).isEqualTo("assessment-module");
         assertThat(assessment.get("concurrency")).isEqualTo(new EffectiveSettings.Setting("16", Source.OVERRIDE));
+        assertThat(assessment.get("retry").value()).startsWith("2 attempts");
+        assertThat(assessment.get("retry").source()).isEqualTo(Source.OVERRIDE);
+        assertThat(engine.topics()).filteredOn(topic -> topic.ref().name().equals("assessment"))
+            .singleElement().satisfies(topic -> assertThat(topic.settings().retry().maxAttempts()).isEqualTo(2));
         assertThat(assessment.get("ordering")).isEqualTo(new EffectiveSettings.Setting("SINGULAR_BY_IDENTIFIER", Source.TOPIC));
         assertThat(assessment.get("limit")).isEqualTo(new EffectiveSettings.Setting("folkeregister", Source.MODULE_DEFAULTS));
         assertThat(assessment.get("retain.succeeded")).isEqualTo(new EffectiveSettings.Setting("P90D", Source.GLOBAL_DEFAULTS));
