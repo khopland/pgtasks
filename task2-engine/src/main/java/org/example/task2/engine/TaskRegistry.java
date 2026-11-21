@@ -60,4 +60,19 @@ public interface TaskRegistry {
      * @param route the push for an event, or null to push nothing for it
      */
     <E> TaskRegistry onEvent(Class<E> event, java.util.function.Function<? super E, org.example.task2.Push<?>> route);
+
+    /**
+     * Pushes a task to one of this module's topics on a schedule, the same identifier and payload
+     * each time. Every node that registers the topic records its schedules when it starts, and the
+     * housekeeping leader pushes them when due, once each across the cluster. A run missed while
+     * no node was up is made up once, not once per missed time. Each push supersedes the last one
+     * if that is still waiting; see {@link Recurring#insertion()}.
+     *
+     * @param name unique within the topic
+     */
+    default <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload) {
+        return recurring(topic, name, cron, identifier, payload, org.example.task2.Insertion.SUPERSEDE);
+    }
+
+    <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload, org.example.task2.Insertion insertion);
 }

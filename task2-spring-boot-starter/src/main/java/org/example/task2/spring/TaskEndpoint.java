@@ -32,7 +32,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <pre>
  * GET    /actuator/tasks                                   topics by module, limits, this node
- * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
+ * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * POST   /actuator/tasks/topics/{topic}/pause | resume | create
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {} for all
@@ -85,6 +85,7 @@ public class TaskEndpoint {
                 Map<String, Object> body = topic(status);
                 engine.effectiveSettings().stream().filter(settings -> settings.topic().equals(name)).findFirst()
                     .ifPresent(settings -> body.put("settings", settings(settings)));
+                body.put("recurring", schedules(name));
                 return body;
             }));
             case "limits" -> found(engine.limits().find(name).map(TaskEndpoint::limit));
@@ -201,6 +202,24 @@ public class TaskEndpoint {
         node.put("leader", health.leader());
         node.put("processing", engine.processing().stream().sorted().toList());
         return node;
+    }
+
+    private List<Map<String, Object>> schedules(String topic) {
+        try {
+            return engine.schedules().stream().filter(schedule -> schedule.topic().equals(topic)).map(schedule -> {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("name", schedule.name());
+                body.put("cron", schedule.cron());
+                body.put("zone", schedule.zone());
+                body.put("identifier", schedule.identifier());
+                body.put("insertion", schedule.insertion().name().toLowerCase(Locale.ROOT));
+                body.put("nextRunAt", text(schedule.nextRunAt()));
+                body.put("lastRunAt", text(schedule.lastRunAt()));
+                return body;
+            }).toList();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private Optional<TaskEngine.TopicStatus> status(String name) throws Exception {

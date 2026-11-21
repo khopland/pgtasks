@@ -80,6 +80,11 @@ final class Housekeeper {
                 promote();
             }
         });
+        schedule("recurring tasks", settings.promoteInterval(), () -> {
+            if (leading()) {
+                fireSchedules();
+            }
+        });
         schedule("retention", settings.purgeInterval(), () -> {
             if (leading()) {
                 purge();
@@ -174,6 +179,7 @@ final class Housekeeper {
         if (leading()) {
             expire();
             promote();
+            fireSchedules();
             purge();
             snapshot();
         }
@@ -192,6 +198,39 @@ final class Housekeeper {
     }
 
     /** Deletes finished tasks past their retention, counted from completion, a batch at a time. */
+    /**
+     * Pushes the recurring tasks that are due, each in the same transaction as moving its next run
+     * on, so a schedule fires once even if this node dies halfway. A run missed while no node was
+     * up is made up once: the next run counts from now.
+     */
+    private void fireSchedules() throws Exception {
+        List<Integer> fired;
+        do {
+            fired = EngineCore.transact(store, transaction -> {
+                Instant now = store.clock().instant();
+                List<Integer> topics = new java.util.ArrayList<>();
+                for (TaskStore.Schedule schedule : store.dueSchedules(transaction, BATCH)) {
+                    Instant next;
+                    try {
+                        next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).next(now);
+                    } catch (RuntimeException e) {
+                        // Written by a node with another idea of cron; try again in an hour rather than every second.
+                        LOGGER.log(System.Logger.Level.WARNING, "Recurring task " + schedule.name() + " of " + schedule.topic()
+                            + " has a schedule this node can't read, '" + schedule.cron() + "' in " + schedule.zone() + "; skipped for an hour", e);
+                        store.scheduleFired(transaction, schedule.id(), now, now.plus(Duration.ofHours(1)));
+                        continue;
+                    }
+                    store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
+                        schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, null)));
+                    store.scheduleFired(transaction, schedule.id(), now, next);
+                    topics.add(schedule.topicId());
+                }
+                return topics;
+            });
+            fired.forEach(wake::accept);
+        } while (fired.size() == BATCH && leading());
+    }
+
     private void purge() throws Exception {
         Instant now = store.clock().instant();
         Map<Integer, Map<Outcome, Period>> retention = EngineCore.transact(store, store::retention);

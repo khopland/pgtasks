@@ -156,17 +156,23 @@ CREATE TABLE tasks.rate_limit (
     updated_by  text
 );
 
--- Recurring task definitions (Phase 5).
+-- Recurring tasks. The nodes that register a topic write its rows when they start, from their
+-- configuration; the housekeeping leader pushes the due ones and moves next_run_at on.
 CREATE TABLE tasks.schedule (
-    id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    topic_id     integer NOT NULL REFERENCES tasks.topic (id),
-    name         text NOT NULL,
-    identifier   text NOT NULL,
-    cron         text NOT NULL,
-    payload      text,
-    next_run_at  timestamptz NOT NULL,
+    id            integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    topic_id      integer NOT NULL REFERENCES tasks.topic (id),
+    name          text NOT NULL,
+    identifier    text NOT NULL,
+    cron          text NOT NULL,
+    zone          text NOT NULL,
+    insertion     text NOT NULL,
+    payload       text,
+    payload_type  text,
+    next_run_at   timestamptz NOT NULL,
+    last_run_at   timestamptz,
     UNIQUE (topic_id, name)
 );
+CREATE INDEX schedule_due_idx ON tasks.schedule (next_run_at);
 
 -- Queue counts per topic, snapshotted by the housekeeping leader, so dashboards and health
 -- checks don't count live.

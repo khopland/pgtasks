@@ -209,8 +209,48 @@ public interface TaskStore {
      */
     List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException;
 
+    /**
+     * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest
+     * removed. A schedule whose cron or zone is unchanged keeps its next run; one whose cron or
+     * zone changed starts over from {@code nextRunAt}.
+     */
+    void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> schedules) throws SQLException;
+
+    /** Every topic's recurring tasks, by topic and name. */
+    List<Schedule> schedules(StoreTransaction transaction) throws SQLException;
+
+    /**
+     * Recurring tasks due by the store's clock, earliest first, locked until the transaction ends,
+     * so that two nodes never fire one twice.
+     */
+    List<Schedule> dueSchedules(StoreTransaction transaction, int limit) throws SQLException;
+
+    /** Records that a recurring task fired, and when it fires next. */
+    void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException;
+
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
+
+    /**
+     * A recurring task as configured: what to push, when, and how. The payload is encoded; the
+     * cron is read in {@code zone}.
+     */
+    record ScheduleSpec(String name, String identifier, String cron, String zone, Insertion insertion, String payload, String payloadType,
+                        Instant nextRunAt) {
+        public ScheduleSpec {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(identifier, "identifier");
+            Objects.requireNonNull(cron, "cron");
+            Objects.requireNonNull(zone, "zone");
+            Objects.requireNonNull(insertion, "insertion");
+            Objects.requireNonNull(nextRunAt, "nextRunAt");
+        }
+    }
+
+    /** A stored recurring task. */
+    record Schedule(int id, int topicId, String topic, String name, String identifier, String cron, String zone, Insertion insertion,
+                    String payload, String payloadType, Instant nextRunAt, Instant lastRunAt) {
+    }
 
     /**
      * A task to store. Payload and type are already encoded. {@code traceContext} is the pushing

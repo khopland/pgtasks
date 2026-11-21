@@ -58,6 +58,7 @@ public final class TaskEngine implements AutoCloseable {
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
     private List<EventRoute<?>> eventRoutes = List.of();
+    private List<Recurring<?>> recurring = List.of();
     private volatile boolean started;
 
     public TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
@@ -94,6 +95,39 @@ public final class TaskEngine implements AutoCloseable {
     TaskEngine withEventRoutes(List<EventRoute<?>> routes) {
         this.eventRoutes = List.copyOf(routes);
         return this;
+    }
+
+    TaskEngine withRecurring(List<Recurring<?>> recurring) {
+        this.recurring = List.copyOf(recurring);
+        return this;
+    }
+
+    /** The recurring tasks this node's configurers define; see {@link TaskRegistry#recurring}. */
+    public List<Recurring<?>> recurring() {
+        return recurring;
+    }
+
+    /** Every topic's recurring tasks as stored, with their next and last runs. */
+    public List<TaskStore.Schedule> schedules() throws Exception {
+        return EngineCore.transact(store, store::schedules);
+    }
+
+    /** What a topic's stored recurring tasks should be, by this node's configuration, with their payloads encoded. */
+    @SuppressWarnings("unchecked")
+    private <T> List<TaskStore.ScheduleSpec> scheduleSpecs(Topic<T> topic) {
+        java.time.Instant now = store.clock().instant();
+        List<TaskStore.ScheduleSpec> specs = new java.util.ArrayList<>();
+        for (Recurring<?> each : recurring) {
+            if (!each.topic().name().equals(topic.ref().name())) {
+                continue;
+            }
+            Recurring<T> schedule = (Recurring<T>) each;
+            specs.add(new TaskStore.ScheduleSpec(schedule.name(), schedule.identifier(), schedule.cron().expression(),
+                schedule.cron().zone().getId(), schedule.insertion(),
+                schedule.payload() == null ? null : topic.codec().encode(schedule.payload()), topic.codec().type(),
+                schedule.cron().next(now)));
+        }
+        return specs;
     }
 
     TaskEngine withTopicsCreatedOnPush() {
@@ -160,6 +194,8 @@ public final class TaskEngine implements AutoCloseable {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
                 store.setRetention(transaction, created, topic.settings().retention());
+                // The nodes that register a topic own its schedules: theirs replace whatever was there.
+                store.syncSchedules(transaction, created, scheduleSpecs(topic));
                 return created;
             });
             directory.register(topic.ref().name(), id);
