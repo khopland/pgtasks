@@ -17,7 +17,6 @@ import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
 import org.example.task2.Junction;
-import org.example.task2.Juncture;
 import org.example.task2.Push;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
@@ -339,10 +338,10 @@ final class BatchRun<T> {
 
     /**
      * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
-     * task pushed in the same completion can complete a group. One call per target and juncture.
+     * task pushed in the same completion can complete a group. One call per target and counts.
      */
     private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws java.sql.SQLException {
-        record Target(String topic, Juncture juncture) {
+        record Target(String topic, Junction.Counts counts) {
         }
         Map<Target, List<Set<String>>> groups = new LinkedHashMap<>();
         for (Decisions.Verdict verdict : decisions.verdicts()) {
@@ -352,13 +351,13 @@ final class BatchRun<T> {
             for (Junction junction : verdict.junctions()) {
                 Set<String> group = new LinkedHashSet<>(junction.identifiers());
                 group.add(verdict.task().identifier());
-                groups.computeIfAbsent(new Target(junction.topic().name(), junction.juncture()), ignored -> new ArrayList<>()).add(group);
+                groups.computeIfAbsent(new Target(junction.topic().name(), junction.counts()), ignored -> new ArrayList<>()).add(group);
             }
         }
         Set<String> released = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Set<String>>> entry : groups.entrySet()) {
             int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
-            if (!core.store().junction(transaction, topicId, entry.getKey().juncture(), entry.getValue()).isEmpty()) {
+            if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
                 released.add(entry.getKey().topic());
             }
         }

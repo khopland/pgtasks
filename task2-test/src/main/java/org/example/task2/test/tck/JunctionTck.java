@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Set;
 
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.junit.jupiter.api.Test;
 
 /** TCK: fan-in. A complete group releases its suspended tasks; nothing else changes. */
@@ -30,8 +30,8 @@ public abstract class JunctionTck extends StoreTck {
         return fixture.push(topic, Insertion.APPEND, suspended(identifier)).getFirst().id();
     }
 
-    private Set<String> junction(StoreFixture fixture, Juncture juncture, Collection<Set<String>> groups) throws SQLException {
-        return fixture.inTransaction(transaction -> fixture.store().junction(transaction, topic, juncture, groups));
+    private Set<String> junction(StoreFixture fixture, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().junction(transaction, topic, counts, groups));
     }
 
     @Test
@@ -40,10 +40,10 @@ public abstract class JunctionTck extends StoreTck {
         long a = parked(fixture, topic, "a");
         long b = parked(fixture, topic, "b");
 
-        assertThat(junction(fixture, Juncture.SINGULAR, List.of(Set.of("a", "b", "c")))).as("c is missing").isEmpty();
+        assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b", "c")))).as("c is missing").isEmpty();
         assertThat(List.of(a, b)).extracting(fixture::state).containsOnly("suspended");
 
-        assertThat(junction(fixture, Juncture.SINGULAR, List.of(Set.of("a", "b")))).containsExactlyInAnyOrder("a", "b");
+        assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b")))).containsExactlyInAnyOrder("a", "b");
         assertThat(List.of(a, b)).extracting(fixture::state).containsOnly("ready");
     }
 
@@ -53,7 +53,7 @@ public abstract class JunctionTck extends StoreTck {
         long a = parked(fixture, topic, "a");
         fixture.push(topic, "b");
 
-        assertThat(junction(fixture, Juncture.SINGULAR, List.of(Set.of("a", "b")))).isEmpty();
+        assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
     }
 
@@ -65,7 +65,7 @@ public abstract class JunctionTck extends StoreTck {
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         fixture.push(topic, "c");
 
-        assertThat(junction(fixture, Juncture.ETERNAL, List.of(Set.of("a", "b", "c")))).containsExactly("a");
+        assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "b", "c")))).containsExactly("a");
         assertThat(fixture.state(a)).isEqualTo("ready");
     }
 
@@ -79,7 +79,7 @@ public abstract class JunctionTck extends StoreTck {
             .extracting(org.example.task2.Pushed::status)
             .containsExactly(org.example.task2.Pushed.Status.REDUNDANT, org.example.task2.Pushed.Status.DUPLICATE);
 
-        assertThat(junction(fixture, Juncture.ETERNAL, List.of(Set.of("a", "r")))).isEmpty();
+        assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "r")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
     }
 
@@ -90,7 +90,7 @@ public abstract class JunctionTck extends StoreTck {
         long b = parked(fixture, topic, "b");
         long c = parked(fixture, topic, "c");
 
-        assertThat(junction(fixture, Juncture.SINGULAR, List.of(Set.of("a", "b"), Set.of("c", "missing")))).containsExactlyInAnyOrder("a", "b");
+        assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b"), Set.of("c", "missing")))).containsExactlyInAnyOrder("a", "b");
         assertThat(List.of(a, b, c)).extracting(fixture::state).containsExactly("ready", "ready", "suspended");
     }
 
@@ -103,7 +103,7 @@ public abstract class JunctionTck extends StoreTck {
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.deadLetter());
         long parkedDead = parked(fixture, topic, "dead");
 
-        assertThat(junction(fixture, Juncture.ETERNAL, List.of(Set.of("a", "dead")))).containsExactlyInAnyOrder("a", "dead");
+        assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "dead")))).containsExactlyInAnyOrder("a", "dead");
         assertThat(fixture.state(parkedA)).isEqualTo("ready");
         assertThat(fixture.state(parkedDead)).isEqualTo("ready");
         assertThat(fixture.state(dead)).isEqualTo("failed");
@@ -116,7 +116,7 @@ public abstract class JunctionTck extends StoreTck {
         long a = parked(fixture, topic, "a");
         parked(fixture, other, "b");
 
-        assertThat(junction(fixture, Juncture.SINGULAR, List.of(Set.of("a", "b")))).isEmpty();
+        assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
     }
 }

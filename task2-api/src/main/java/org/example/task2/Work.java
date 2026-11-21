@@ -1,5 +1,7 @@
 package org.example.task2;
 
+import java.util.Set;
+
 /**
  * One task inside {@link Batch#decide}: read it, and stage downstream work and junctions that are
  * committed together with the batch's completion, but only if this task's final decision
@@ -43,5 +45,5 @@ public interface Work<T> {
      * Stages a junction: if this task continues, its identifier and the given ones form a group in
      * the target topic, whose suspended tasks become ready once every identifier has a task there.
      */
-    void junction(TopicRef<?> topic, Juncture juncture, java.util.Set<String> identifiers);
+    void junction(TopicRef<?> topic, Junction.Counts counts, Set<String> identifiers);
 }

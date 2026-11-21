@@ -33,7 +33,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class TaskContextRegressionTest {
 
     private final RecordingSink sink = new RecordingSink();
-    private final TaskJuncture<Object, RuntimeException> juncture = (transaction, topic, junction, groups) -> Set.of();
+    private final TaskJuncture<Object, RuntimeException> counts = (transaction, topic, junction, groups) -> Set.of();
 
     @ParameterizedTest(name = "consumer context first: {0}")
     @ValueSource(booleans = {true, false})
@@ -41,7 +41,7 @@ class TaskContextRegressionTest {
     void finding_8_children_follow_the_merged_decision(boolean consumerFirst) throws Exception {
         Task parent = new Task(1, "person-1");
         TaskConsumerContext<Object, RuntimeException, TaskSupplement> consumer =
-            new TaskConsumerContext<>(Set.of(parent), sink, juncture, topic -> Optional.empty());
+            new TaskConsumerContext<>(Set.of(parent), sink, counts, topic -> Optional.empty());
         consumer.pushByTask(parent, "child", TaskSink.Insertion.APPEND);
         TaskContext<Object, RuntimeException, TaskSupplement> veto = (decisions, executor, supplement) ->
             CompletableFuture.completedStage(transaction -> Map.of(parent, TaskDecision.FAILURE));
@@ -65,7 +65,7 @@ class TaskContextRegressionTest {
         Task kept = new Task(1, "person-1");
         Task dropped = new Task(2, "person-2");
         TaskConsumerContext<Object, RuntimeException, TaskSupplement> consumer =
-            new TaskConsumerContext<>(Set.of(kept, dropped), sink, juncture, topic -> Optional.empty());
+            new TaskConsumerContext<>(Set.of(kept, dropped), sink, counts, topic -> Optional.empty());
         consumer.pushByTask(kept, "first-target", TaskSink.Insertion.APPEND);
         consumer.pushByTask(dropped, "second-target", TaskSink.Insertion.APPEND);
 

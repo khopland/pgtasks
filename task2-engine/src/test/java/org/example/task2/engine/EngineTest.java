@@ -24,7 +24,7 @@ import org.example.task2.Creation;
 import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 import org.example.task2.Task;
@@ -188,7 +188,7 @@ class EngineTest {
             Topic.of(parts, batch -> batch.decide(task -> {
                 // Each part waits in "merge" for its sibling; the group is both parts' identifiers.
                 task.push(merge, Insertion.APPEND, Creation.of(task.identifier(), task.payload()).asSuspended());
-                task.junction(merge, Juncture.SINGULAR, Set.of(task.payload()));
+                task.junction(merge, Junction.Counts.SUSPENDED, Set.of(task.payload()));
                 return Decision.success();
             })),
             Topic.of(merge, batch -> batch.decide(task -> {

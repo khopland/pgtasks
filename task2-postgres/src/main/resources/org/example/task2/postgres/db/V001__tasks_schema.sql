@@ -76,7 +76,7 @@ CREATE TABLE tasks.task (
     -- indexes bloat meanwhile, as the sustained-load benchmark showed. 1 % vacuums every 250,000.
     autovacuum_vacuum_scale_factor = 0.01
 );
--- History per identifier: REPLACE, DELETE, ETERNAL junctures and recreate.
+-- History per identifier: REPLACE, DELETE, junctions that count any task, and recreate.
 CREATE INDEX task_identifier_idx ON tasks.task (topic_id, identifier, id);
 CREATE INDEX task_reference_idx ON tasks.task (reference) WHERE reference IS NOT NULL;
 CREATE INDEX task_root_idx ON tasks.task (root_id) WHERE root_id IS NOT NULL;

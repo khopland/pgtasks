@@ -23,7 +23,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 
@@ -84,9 +84,9 @@ public interface TaskStore {
 
     /**
      * For each group of identifiers: if every identifier has a task in the topic that counts for
-     * the juncture, the group's suspended tasks become ready. Returns the released identifiers.
+     * the counts, the group's suspended tasks become ready. Returns the released identifiers.
      */
-    Set<String> junction(StoreTransaction transaction, int topicId, Juncture juncture, Collection<Set<String>> groups) throws SQLException;
+    Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException;
 
     /**
      * Claims up to {@code request.limit()} ready tasks, honouring the ordering and, if set, the

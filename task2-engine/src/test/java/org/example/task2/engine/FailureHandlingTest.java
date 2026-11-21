@@ -11,7 +11,7 @@ import org.example.task2.Creation;
 import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.example.task2.TopicRef;
 import org.example.task2.memory.InMemoryTaskStore;
 import org.junit.jupiter.api.AfterEach;
@@ -190,7 +190,7 @@ class FailureHandlingTest {
                 .topic(PARTS, batch -> {
                     Decisions all = batch.decide(task -> {
                         if (task.identifier().equals("a")) {
-                            task.junction(MERGE, Juncture.SINGULAR, Set.of("b"));
+                            task.junction(MERGE, Junction.Counts.SUSPENDED, Set.of("b"));
                         }
                         return Decision.success();
                     });

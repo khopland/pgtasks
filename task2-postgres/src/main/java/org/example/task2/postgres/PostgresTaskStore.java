@@ -34,7 +34,7 @@ import java.util.Set;
 import javax.sql.DataSource;
 
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 import org.example.task2.spi.StaleClaimException;
@@ -57,7 +57,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql deadLetters, revive, discard, notifyReady;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
-    private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
+    private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
 
@@ -264,8 +264,8 @@ public final class PostgresTaskStore implements TaskStore {
             )
             SELECT topic_id FROM requeued
             """);
-        for (Juncture juncture : Juncture.values()) {
-            junctions.put(juncture, sql(junctionSql(juncture)));
+        for (Junction.Counts counts : Junction.Counts.values()) {
+            junctions.put(counts, sql(junctionSql(counts)));
         }
         findTask = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
@@ -672,15 +672,15 @@ public final class PostgresTaskStore implements TaskStore {
             """;
     }
 
-    private static String junctionSql(Juncture juncture) {
+    private static String junctionSql(Junction.Counts counts) {
         // A group is complete when every identifier has a task that counts; then the group's
         // suspended tasks become ready.
-        String counts = switch (juncture) {
-            case SINGULAR -> """
+        String present = switch (counts) {
+            case SUSPENDED -> """
                 SELECT 1 FROM tasks.queue s
                 WHERE s.topic_id = :topic::integer AND s.identifier = g.identifier AND s.state = 'suspended'
                 """;
-            case ETERNAL -> """
+            case ANY -> """
                 SELECT 1 FROM tasks.task t
                 WHERE t.topic_id = :topic::integer AND t.identifier = g.identifier
                   AND (t.outcome IS NULL OR t.outcome <> 'redundant')
@@ -706,7 +706,7 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING q.identifier
             )
             SELECT DISTINCT identifier FROM released
-            """.formatted(counts);
+            """.formatted(present);
     }
 
     private static String pollSql(Ordering ordering) {
@@ -1218,7 +1218,7 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Juncture juncture, Collection<Set<String>> groups) throws SQLException {
+    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {
         List<Object> numbers = new ArrayList<>(), identifiers = new ArrayList<>();
         int group = 0;
         for (Set<String> members : groups) {
@@ -1236,7 +1236,7 @@ public final class PostgresTaskStore implements TaskStore {
             .array("groups", "integer", numbers.toArray())
             .array("identifiers", "text", identifiers.toArray());
         Set<String> released = new LinkedHashSet<>();
-        try (PreparedStatement statement = junctions.get(juncture).prepare(transaction.connection(), parameters);
+        try (PreparedStatement statement = junctions.get(counts).prepare(transaction.connection(), parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 released.add(resultSet.getString(1));

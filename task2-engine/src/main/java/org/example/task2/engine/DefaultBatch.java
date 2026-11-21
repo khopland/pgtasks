@@ -14,7 +14,6 @@ import org.example.task2.Decision;
 import org.example.task2.Decisions;
 import org.example.task2.Insertion;
 import org.example.task2.Junction;
-import org.example.task2.Juncture;
 import org.example.task2.Push;
 import org.example.task2.Task;
 import org.example.task2.TopicRef;
@@ -162,8 +161,8 @@ final class DefaultBatch<T> implements Batch<T> {
         }
 
         @Override
-        public void junction(TopicRef<?> topic, Juncture juncture, Set<String> identifiers) {
-            Junction junction = new Junction(topic, juncture, identifiers);
+        public void junction(TopicRef<?> topic, Junction.Counts counts, Set<String> identifiers) {
+            Junction junction = new Junction(topic, counts, identifiers);
             targets.accept(topic, false);
             junctions.add(junction);
         }

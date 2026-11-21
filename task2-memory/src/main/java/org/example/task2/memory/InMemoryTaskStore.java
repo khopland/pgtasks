@@ -32,7 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.example.task2.Insertion;
-import org.example.task2.Juncture;
+import org.example.task2.Junction;
 import org.example.task2.Ordering;
 import org.example.task2.Pushed;
 import org.example.task2.memory.Rows.State;
@@ -272,11 +272,11 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Juncture juncture, Collection<Set<String>> groups) {
+    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) {
         MemoryTransaction memory = memory(transaction);
         Set<String> complete = new HashSet<>();
         for (Set<String> group : groups) {
-            if (group.stream().allMatch(identifier -> counts(topicId, juncture, identifier))) {
+            if (group.stream().allMatch(identifier -> counts(topicId, counts, identifier))) {
                 complete.addAll(group);
             }
         }
@@ -290,11 +290,11 @@ public final class InMemoryTaskStore implements TaskStore {
         return released;
     }
 
-    private boolean counts(int topicId, Juncture juncture, String identifier) {
-        return switch (juncture) {
-            case SINGULAR -> queue.values().stream().anyMatch(row ->
+    private boolean counts(int topicId, Junction.Counts counts, String identifier) {
+        return switch (counts) {
+            case SUSPENDED -> queue.values().stream().anyMatch(row ->
                 row.topicId() == topicId && row.identifier().equals(identifier) && row.state() == State.SUSPENDED);
-            case ETERNAL -> tasks.values().stream().anyMatch(row ->
+            case ANY -> tasks.values().stream().anyMatch(row ->
                 row.topicId() == topicId && row.identifier().equals(identifier) && !"redundant".equals(row.outcome()));
         };
     }
