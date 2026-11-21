@@ -22,11 +22,18 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-/** Phase 4's exit test: the vertical slice runs unchanged as a Spring Boot application. */
+/**
+ * Phase 4's exit test: the vertical slice runs unchanged as a Spring Boot application. The context
+ * is closed when the class is done, while the database still runs: left cached, it would be closed
+ * by Spring's shutdown hook at the same time as the database by its own, and the engine's stop
+ * would wait out the pool's connection timeout.
+ */
 @SpringBootTest(classes = SliceApplication.class)
+@DirtiesContext
 class SliceApplicationTest {
 
     /** One database for the context; each test starts from empty tables. */
