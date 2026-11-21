@@ -52,7 +52,15 @@ final class Housekeeper {
     private final Object leadership = new Object();
     private Instant leaseEnds;
     private volatile Instant lastHeartbeat;
-    private ScheduledExecutorService executor;
+    /**
+     * Three threads, so a slow job can't hold up the others: the heartbeat and lease alone on
+     * one (a node that misses them loses the lease, and its health turns DOWN), the regular jobs
+     * on another, and retention, which can run long after downtime, on a third.
+     */
+    private final List<ScheduledExecutorService> executors = new java.util.ArrayList<>();
+    private ScheduledExecutorService beats, jobs, slow;
+    /** How long one retention run may delete before it leaves the rest to the next run. */
+    static final Duration PURGE_BUDGET = Duration.ofSeconds(30);
 
     /**
      * @param wake         wakes this node's worker for a topic id
@@ -72,38 +80,46 @@ final class Housekeeper {
     void start() {
         // Registering the node set its first heartbeat.
         lastHeartbeat = store.clock().instant();
-        executor = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name("task2-housekeeping-", 0).factory());
-        schedule("heartbeat", settings.heartbeat(), this::heartbeat);
-        schedule("orphan sweep", settings.heartbeat(), sweepOrphans);
-        schedule("reconcile", settings.heartbeat(), reconcile);
-        schedule("expiry", settings.heartbeat(), () -> {
+        beats = executor("task2-heartbeat-");
+        jobs = executor("task2-housekeeping-");
+        slow = executor("task2-retention-");
+        schedule(beats, "heartbeat", settings.heartbeat(), this::heartbeat);
+        schedule(jobs, "orphan sweep", settings.heartbeat(), sweepOrphans);
+        schedule(jobs, "reconcile", settings.heartbeat(), reconcile);
+        schedule(jobs, "expiry", settings.heartbeat(), () -> {
             if (leading()) {
                 expire();
             }
         });
-        schedule("promotion", settings.promoteInterval(), () -> {
+        schedule(jobs, "promotion", settings.promoteInterval(), () -> {
             if (leading()) {
                 promote();
             }
         });
-        schedule("recurring tasks", settings.promoteInterval(), () -> {
+        schedule(jobs, "recurring tasks", settings.promoteInterval(), () -> {
             if (leading()) {
                 fireSchedules();
             }
         });
-        schedule("retention", settings.purgeInterval(), () -> {
+        schedule(slow, "retention", settings.purgeInterval(), () -> {
             if (leading()) {
                 purge();
             }
         });
-        schedule("count snapshot", settings.snapshotInterval(), () -> {
+        schedule(jobs, "count snapshot", settings.snapshotInterval(), () -> {
             if (leading()) {
                 snapshot();
             }
         });
     }
 
-    private void schedule(String name, Duration interval, Job job) {
+    private ScheduledExecutorService executor(String name) {
+        ScheduledExecutorService executor = Executors.newScheduledThreadPool(1, Thread.ofVirtual().name(name, 0).factory());
+        executors.add(executor);
+        return executor;
+    }
+
+    private void schedule(ScheduledExecutorService executor, String name, Duration interval, Job job) {
         executor.scheduleWithFixedDelay(() -> {
             try {
                 job.run();
@@ -115,20 +131,21 @@ final class Housekeeper {
 
     /** Stops the jobs and gives the lease up, so another node can take over at once. */
     void stop() {
-        if (executor != null) {
-            // Lets a job in progress finish: interrupting it would close its connection mid-statement.
-            executor.shutdown();
-            try {
+        // Lets a job in progress finish: interrupting it would close its connection mid-statement.
+        executors.forEach(ScheduledExecutorService::shutdown);
+        try {
+            for (ScheduledExecutorService executor : executors) {
                 if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
                     executor.shutdownNow();
                     if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
                         LOGGER.log(System.Logger.Level.WARNING, "A housekeeping job ignored the stop and is still running");
                     }
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
+        executors.clear();
         boolean held;
         synchronized (leadership) {
             held = leaseEnds != null;
@@ -204,7 +221,6 @@ final class Housekeeper {
         } while (promoted.tasks() == BATCH && leading());
     }
 
-    /** Deletes finished tasks past their retention, counted from completion, a batch at a time. */
     /**
      * Pushes the recurring tasks that are due, each in the same transaction as moving its next run
      * on, so a schedule fires once even if this node dies halfway. A run missed while no node was
@@ -238,8 +254,14 @@ final class Housekeeper {
         } while (fired.size() == BATCH && leading());
     }
 
+    /**
+     * Deletes finished tasks past their retention, counted from completion, a batch at a time,
+     * for at most {@link #PURGE_BUDGET}: after downtime, or after retention was shortened, the rest
+     * waits for the next run rather than holding the job.
+     */
     private void purge() throws Exception {
         Instant now = store.clock().instant();
+        long deadline = System.nanoTime() + PURGE_BUDGET.toNanos();
         Map<Integer, Map<Outcome, Period>> retention = EngineCore.transact(store, store::retention);
         for (Map.Entry<Integer, Map<Outcome, Period>> topic : retention.entrySet()) {
             for (Map.Entry<Outcome, Period> kept : topic.getValue().entrySet()) {
@@ -247,6 +269,10 @@ final class Housekeeper {
                 int deleted;
                 do {
                     deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic.getKey(), kept.getKey(), cutoff, BATCH));
+                    if (System.nanoTime() > deadline) {
+                        LOGGER.log(System.Logger.Level.INFO, "Retention used its " + PURGE_BUDGET + " for this run; it goes on in " + settings.purgeInterval());
+                        return;
+                    }
                 } while (deleted == BATCH && leading());
             }
         }

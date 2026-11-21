@@ -70,6 +70,60 @@ class FailureHandlingTest {
         assertThat(view.error()).contains("ExceptionInInitializerError");
     }
 
+    /** Review F5: past its deadline a batch was retried while its handler, ignoring the interrupt, still ran. */
+    @Test
+    @DisplayName("A batch past its deadline keeps its tasks claimed until its handler has really ended")
+    void a_handler_ignoring_the_deadline_never_runs_next_to_its_retry() throws Exception {
+        org.example.task2.spi.ManualClock clock = org.example.task2.spi.ManualClock.startingNow();
+        java.util.concurrent.atomic.AtomicInteger runs = new java.util.concurrent.atomic.AtomicInteger(), running = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger mostAtOnce = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicBoolean finish = new java.util.concurrent.atomic.AtomicBoolean();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore(clock))
+            .globals(globals -> globals.heartbeat(java.time.Duration.ofMillis(50), java.time.Duration.ofHours(1))
+                .housekeeping(housekeeping -> housekeeping.promoteEvery(java.time.Duration.ofMillis(20))))
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                runs.incrementAndGet();
+                mostAtOnce.accumulateAndGet(running.incrementAndGet(), Math::max);
+                try {
+                    while (!finish.get()) {
+                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000); // returns on interrupt, and carries on
+                    }
+                } finally {
+                    running.decrementAndGet();
+                }
+                return Decision.success();
+            }), topic -> topic.batchDeadline(java.time.Duration.ofMillis(200))))
+            .build()
+            .start();
+        long id = engine.tasks().independently().push(WORK, "a", "payload").id();
+        EngineFixture.await("the handler to start", java.time.Duration.ofSeconds(5), () -> runs.get() == 1);
+
+        Thread.sleep(1_500); // past the deadline and the second the scope waits
+        clock.advance(java.time.Duration.ofHours(1)); // far past any retry backoff
+        Thread.sleep(300);
+
+        assertThat(engine.find(id).orElseThrow().state()).as("still claimed").isEqualTo("active");
+        assertThat(engine.health().stuck()).extracting(EngineHealth.StuckClaim::taskId).containsExactly(id);
+        assertThat(runs).hasValue(1);
+
+        finish.set(true);
+        EngineFixture.await("the late batch to fail", java.time.Duration.ofSeconds(5),
+            () -> !"active".equals(unchecked(() -> engine.find(id).orElseThrow().state())));
+        TaskView view = engine.find(id).orElseThrow();
+        assertThat(view.state()).isEqualTo("retrying");
+        assertThat(view.error()).contains("deadline");
+        assertThat(mostAtOnce).hasValue(1);
+    }
+
+    private static <V> V unchecked(java.util.concurrent.Callable<V> call) {
+        try {
+            return call.call();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Review F3: covering() rebuilt the decisions without the junctions. */
     @Test
     @DisplayName("Junctions staged by decided tasks survive when the handler leaves other tasks out")

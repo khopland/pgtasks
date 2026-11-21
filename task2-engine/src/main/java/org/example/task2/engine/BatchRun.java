@@ -54,6 +54,7 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
+    private BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private VirtualMachineError fatal;
 
@@ -96,7 +97,10 @@ final class BatchRun<T> {
             runBatch(topic, claims, runnable, early.build(), opened, observation);
         } finally {
             opened.values().forEach(BatchRun::closeQuietly);
-            claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
+            if (scope == null || !scope.abandoned()) {
+                // Abandoned claims stay held, or the stop's orphan release would hand them back.
+                claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
+            }
             observation.close();
         }
         if (fatal != null) {
@@ -107,6 +111,11 @@ final class BatchRun<T> {
     private void runBatch(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, Decisions early, Map<BatchResource<?>, Object> opened,
                           TaskObserver.BatchObservation observation) {
         Decisions decisions = runnable.isEmpty() ? Decisions.builder().build() : process(topic, runnable, opened, observation);
+        if (scope != null && scope.abandoned()) {
+            // The handler still runs: handing its tasks back would let them run twice at once.
+            observation.released();
+            return;
+        }
         if (decisions == null) {
             release(claims, claimed.stream().map(ClaimedTask::id).toList());
             observation.released();
@@ -135,7 +144,7 @@ final class BatchRun<T> {
     /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop. */
     private Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened, TaskObserver.BatchObservation observation) {
         List<Task<?>> tasks = List.copyOf(runnable);
-        try (BatchScope scope = new BatchScope("task2-" + topic.ref().name() + "-batch")) {
+        try (BatchScope scope = scope(topic)) {
             for (BatchResource<?> resource : topic.resources()) {
                 opened.put(resource, resource.open(topic.ref(), tasks));
             }
@@ -172,6 +181,11 @@ final class BatchRun<T> {
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         }
+    }
+
+    private BatchScope scope(Topic<T> topic) {
+        scope = new BatchScope("task2-" + topic.ref().name() + "-batch", worker::stopping);
+        return scope;
     }
 
     /** Fails the tasks the handler left out, and rejects decisions for tasks it wasn't given. */

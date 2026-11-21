@@ -20,10 +20,19 @@ final class BatchScope implements AutoCloseable {
 
     private final String name;
     private final ExecutorService executor;
+    private final java.util.function.BooleanSupplier stopping;
+    private volatile boolean abandoned;
 
-    BatchScope(String name) {
+    /** @param stopping whether the engine is stopping, when the scope stops waiting for work that ignores cancellation */
+    BatchScope(String name, java.util.function.BooleanSupplier stopping) {
         this.name = name;
+        this.stopping = stopping;
         this.executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(name + "-", 0).factory());
+    }
+
+    /** Whether work in the scope ignored cancellation and still runs: its claims must not be handed back. */
+    boolean abandoned() {
+        return abandoned;
     }
 
     /** Runs the work in the scope and waits at most until the deadline, cancelling it after that. */
@@ -46,15 +55,34 @@ final class BatchScope implements AutoCloseable {
         }
     }
 
+    /**
+     * Cancels what is left and waits until it has ended, however long that takes: work that
+     * ignores cancellation keeps its tasks claimed, so a retry can't run next to it. Only an
+     * engine that is stopping gives up waiting; the claims then stay until the node expires.
+     */
     @Override
     public void close() {
         executor.shutdownNow();
         try {
-            if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-                LOGGER.log(System.Logger.Level.WARNING, "Work in " + name + " ignored cancellation and is still running");
+            if (executor.awaitTermination(1, TimeUnit.SECONDS)) {
+                return;
+            }
+            LOGGER.log(System.Logger.Level.WARNING, "Work in " + name + " ignored cancellation and is still running; its tasks stay claimed until it ends");
+            long waited = 1;
+            while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+                waited++;
+                if (stopping.getAsBoolean()) {
+                    abandoned = true;
+                    LOGGER.log(System.Logger.Level.WARNING, "Gave up waiting for " + name + " as the engine stops; its tasks stay claimed until this node expires");
+                    return;
+                }
+                if (waited % 60 == 0) {
+                    LOGGER.log(System.Logger.Level.WARNING, "Work in " + name + " still runs " + waited + " s after it was cancelled");
+                }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            abandoned = !executor.isTerminated();
         }
     }
 }
