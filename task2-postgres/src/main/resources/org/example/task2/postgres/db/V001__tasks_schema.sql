@@ -69,6 +69,12 @@ CREATE TABLE tasks.task (
     attempts          integer NOT NULL DEFAULT 0,
     completed_at      timestamptz,
     CHECK ((outcome IS NULL) = (completed_at IS NULL))
+) WITH (
+    -- Every finished task leaves dead rows here: the completion update (never HOT, since outcome
+    -- and completed_at are indexed) and, later, the retention delete. With the default 20 %,
+    -- 25 million rows of history wait for 5 million dead ones between vacuums, and the heap and
+    -- indexes bloat meanwhile, as the sustained-load benchmark showed. 1 % vacuums every 250,000.
+    autovacuum_vacuum_scale_factor = 0.01
 );
 -- History per identifier: REPLACE, DELETE, ETERNAL junctures and recreate.
 CREATE INDEX task_identifier_idx ON tasks.task (topic_id, identifier, id);

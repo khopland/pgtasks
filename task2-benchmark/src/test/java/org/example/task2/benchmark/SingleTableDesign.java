@@ -61,7 +61,7 @@ final class SingleTableDesign implements Design {
                 created_at    timestamptz NOT NULL DEFAULT now(),
                 completed_at  timestamptz,
                 PRIMARY KEY (id)
-            );
+            ) WITH (autovacuum_vacuum_scale_factor = 0.01);  -- as tasks.task, so sustained load compares like with like
             CREATE INDEX single_ready_idx ON single.task (topic_id, priority DESC, id) WHERE state = 'ready';
             CREATE INDEX single_unfinished_idx ON single.task (topic_id, identifier, id) WHERE state IN %s;
             CREATE INDEX single_identifier_idx ON single.task (topic_id, identifier, id);
