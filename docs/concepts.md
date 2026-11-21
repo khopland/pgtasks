@@ -189,7 +189,7 @@ Each layer overrides the one before it:
 2. `TaskGlobals.defaults(...)`, for every topic.
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.
-5. Overrides: `task.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
+5. Overrides: `pgtasks.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
    are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`, `breaker`
    (on or off), `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
    `retry.max-backoff` and `retain.<outcome>`. Limits take `limits.<limit>.rate` and `.burst`.

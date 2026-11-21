@@ -1,6 +1,6 @@
 # Migrating from 1.x
 
-Task 2.0 keeps what 1.x does well: transactional enqueue, the insertion policies, ordering per
+pgtasks keeps what 1.x does well: transactional enqueue, the insertion policies, ordering per
 identifier, and fan-in. Most of what applications wrote around 1.x is now in the library:
 housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres only, in its own
 `tasks` schema, and needs Java 25.
@@ -38,7 +38,7 @@ Behaviour that changes:
 
 ## Moving queued tasks
 
-`LegacyImport` (in `task2-postgres`) copies a 1.x `TASK` table in the same database into the
+`LegacyImport` (in `pgtasks-postgres`) copies a 1.x `TASK` table in the same database into the
 `tasks` schema.
 
 1. Stop every 1.x node, so nothing claims or completes while you copy.
@@ -69,6 +69,6 @@ What it does:
 
 ## Coordinates
 
-Task 2.0 has its own group (`io.github.khopland.task2`), packages and artifact names (`task2-*`), so
+pgtasks has its own group (`io.github.khopland.pgtasks`), packages and artifact names (`pgtasks-*`), so
 it can run beside 1.x in one application while you move topic by topic: each library works in
 its own tables.

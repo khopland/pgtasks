@@ -2,25 +2,25 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- Builds every module. The modules inherit from task2-parent, not from this aggregator. -->
-  <groupId>io.github.khopland.task2</groupId>
-  <artifactId>task2-build</artifactId>
+  <!-- Builds every module. The modules inherit from pgtasks-parent, not from this aggregator. -->
+  <groupId>io.github.khopland.pgtasks</groupId>
+  <artifactId>pgtasks-build</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <modules>
-    <module>task2-bom</module>
-    <module>task2-parent</module>
-    <module>task2-api</module>
-    <module>task2-spi</module>
-    <module>task2-test</module>
-    <module>task2-postgres</module>
-    <module>task2-memory</module>
-    <module>task2-engine</module>
-    <module>task2-micrometer</module>
-    <module>task2-jackson</module>
-    <module>task2-junit</module>
-    <module>task2-spring-boot-starter</module>
+    <module>pgtasks-bom</module>
+    <module>pgtasks-parent</module>
+    <module>pgtasks-api</module>
+    <module>pgtasks-spi</module>
+    <module>pgtasks-test</module>
+    <module>pgtasks-postgres</module>
+    <module>pgtasks-memory</module>
+    <module>pgtasks-engine</module>
+    <module>pgtasks-micrometer</module>
+    <module>pgtasks-jackson</module>
+    <module>pgtasks-junit</module>
+    <module>pgtasks-spring-boot-starter</module>
   </modules>
 
   <profiles>
@@ -28,7 +28,7 @@
     <profile>
       <id>benchmark</id>
       <modules>
-        <module>task2-benchmark</module>
+        <module>pgtasks-benchmark</module>
       </modules>
     </profile>
   </profiles>

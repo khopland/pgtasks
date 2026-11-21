@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Import it to use one version of every pgtasks module. No parent: a BOM manages versions and nothing else. -->
+  <groupId>io.github.khopland.pgtasks</groupId>
+  <artifactId>pgtasks-bom</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <description>pgtasks bill of materials: import it, then add the modules without versions.</description>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-spi</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-engine</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-postgres</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-memory</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-micrometer</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-jackson</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-junit</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-spring-boot-starter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

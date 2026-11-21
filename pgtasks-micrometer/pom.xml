@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.github.khopland.pgtasks</groupId>
+    <artifactId>pgtasks-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pgtasks-parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>pgtasks-micrometer</artifactId>
+
+  <properties>
+    <module.name>io.github.khopland.pgtasks.micrometer</module.name>
+  </properties>
+  <description>
+    pgtasks with Micrometer: an Observation for every push and batch, so traces continue from the
+    pushing code through every topic (the traceparent is stored with the task), counters for
+    committed pushes and results, queue gauges from the leader's snapshots, and the batch's
+    topic and task in the logging MDC.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.khopland.pgtasks</groupId>
+      <artifactId>pgtasks-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-observation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.khopland.pgtasks</groupId>
+      <artifactId>pgtasks-memory</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-observation-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- slf4j-simple's MDC does nothing; the tests read it back. -->
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.5.38</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

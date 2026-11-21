@@ -8,7 +8,7 @@ prove: that a push commits and rolls back with your own tables.
 
 ## JUnit 5, without Spring
 
-`task2-junit` gives each test a fresh engine on the in-memory store with a manual clock:
+`pgtasks-junit` gives each test a fresh engine on the in-memory store with a manual clock:
 
 ```java
 class NotifyTasksTest {
@@ -44,7 +44,7 @@ globals or codecs.
 
 ## Spring
 
-`task.store=memory` runs the application without a database. `task.testing=true` adds a
+`pgtasks.store=memory` runs the application without a database. `pgtasks.testing=true` adds a
 `TaskTester` bean. In a Spring Modulith module test (`@ApplicationModuleTest`) the tester is
 there anyway, only the module's own topics run, and a push to another module's topic is stored
 for assertions instead of failing:

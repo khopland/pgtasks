@@ -1,0 +1,51 @@
+package io.github.khopland.pgtasks.engine;
+
+import java.time.Duration;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+/** A wake-up that is remembered until someone waits for it, so none is lost between polls. */
+final class Signal {
+
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition condition = lock.newCondition();
+    private boolean pending;
+    private long count;
+
+    void signal() {
+        lock.lock();
+        try {
+            pending = true;
+            count++;
+            condition.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** How many signals there have been: one that arrives after a reading changes it. */
+    long count() {
+        lock.lock();
+        try {
+            return count;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Waits until signalled or the timeout passes. Returns whether a signal arrived. */
+    boolean await(Duration timeout) throws InterruptedException {
+        long nanos = timeout.toNanos();
+        lock.lock();
+        try {
+            while (!pending && nanos > 0) {
+                nanos = condition.awaitNanos(nanos);
+            }
+            boolean signalled = pending;
+            pending = false;
+            return signalled;
+        } finally {
+            lock.unlock();
+        }
+    }
+}

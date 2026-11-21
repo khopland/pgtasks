@@ -81,7 +81,7 @@ deployed first, and so its codecs are checked at startup:
 TaskConfigurer orderEvents = tasks -> tasks.pushesTo(BillingTopics.INVOICES, ShippingTopics.SHIPMENTS);
 ```
 
-With Spring, `task.enabled=false` makes a node only push. It applies the schema and registers its
+With Spring, `pgtasks.enabled=false` makes a node only push. It applies the schema and registers its
 topics, but claims nothing, runs no housekeeping and doesn't listen for notifications.
 
 ## Topics per year, region or customer
@@ -95,6 +95,6 @@ tasks.topicsMatching("assessment-*", AssessmentRequest.class, assessments, optio
 engine.admin().createTopic("assessment-2027");   // every node with the pattern starts it within a second
 ```
 
-Overrides address the pattern: `task.topics.assessment-*.concurrency: 4`. A topic that is no
+Overrides address the pattern: `pgtasks.topics.assessment-*.concurrency: 4`. A topic that is no
 longer needed, with no unfinished tasks, can be deleted with its history:
 `engine.admin().deleteTopic("assessment-2019")`.

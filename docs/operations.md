@@ -3,12 +3,12 @@
 ## The schema
 
 Everything lives in the `tasks` schema, as plain SQL files under
-`io/github/khopland/task2/postgres/db`. How it gets applied is up to you (`task.schema-mode`):
+`io/github/khopland/pgtasks/postgres/db`. How it gets applied is up to you (`pgtasks.schema-mode`):
 
 - `migrate` (default): the built-in runner applies the files at startup, under an advisory lock,
   so nodes starting together don't race. The application's user owns the schema.
 - `validate`: Flyway, Liquibase or a DBA pipeline applies the same files, and the engine only
-  checks the version. For Liquibase, include `io/github/khopland/task2/postgres/db/changelog.xml`. For
+  checks the version. For Liquibase, include `io/github/khopland/pgtasks/postgres/db/changelog.xml`. For
   Flyway, use a Flyway instance of its own with that location, schema `tasks` and a history
   table such as `flyway_task_history`. The runtime user then needs USAGE on the schema, SELECT,
   INSERT, UPDATE and DELETE on its tables, USAGE on `task_id_seq` and EXECUTE on
@@ -54,26 +54,26 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 
 | Metric | What |
 |---|---|
-| `task.push`, `task.batch` | Observations (timers, and spans with tracing) of pushes and batches |
-| `task.pushed{topic,status}` | Committed pushes |
-| `task.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, throttled, unavailable, retrying, dead-lettered |
-| `task.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
-| `task.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
-| `task.queue.failing{topic}`, `task.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
-| `task.queue.snapshot.age{topic}` | Seconds since the counts were taken |
-| `task.breaker.open{topic}` | 1 while this node's breaker for the topic is open |
-| `task.limit.rate{limit,kind}`, `task.limit.burst{limit,kind}` | A limit's configured and effective values |
-| `task.limit.wait{topic,limit}` | Time topics waited for their rate limit |
+| `pgtasks.push`, `pgtasks.batch` | Observations (timers, and spans with tracing) of pushes and batches |
+| `pgtasks.pushed{topic,status}` | Committed pushes |
+| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, throttled, unavailable, retrying, dead-lettered |
+| `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
+| `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
+| `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
+| `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
+| `pgtasks.breaker.open{topic}` | 1 while this node's breaker for the topic is open |
+| `pgtasks.limit.rate{limit,kind}`, `pgtasks.limit.burst{limit,kind}` | A limit's configured and effective values |
+| `pgtasks.limit.wait{topic,limit}` | Time topics waited for their rate limit |
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
 
-- `task.queue.oldest.ready`: work is waiting longer than it should. It also catches a topic no
+- `pgtasks.queue.oldest.ready`: work is waiting longer than it should. It also catches a topic no
   node processes any more.
-- `task.queue.oldest.failing`: something has been failing for a while. Dead letters can take
+- `pgtasks.queue.oldest.failing`: something has been failing for a while. Dead letters can take
   days to appear.
-- `task.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
-- `task.breaker.open`, and the health indicator going DOWN.
+- `pgtasks.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
+- `pgtasks.breaker.open`, and the health indicator going DOWN.
 
 Traces follow a task from the code that pushed it through every topic downstream: the pushing
 code's W3C `traceparent` is stored with the task. MDC carries `task.topic`, and `task.id` and
@@ -84,7 +84,7 @@ code's W3C `traceparent` is stored with the task. MDC carries `task.topic`, and 
 1. Look at what fails: `GET .../topics/{topic}/failing` groups the failing tasks by error.
 2. Fix the cause, or let the deploy that fixes it revive them
    (`DeadLetterPolicy.KEEP.withReviveOnNewVersion()`, with the application version from Spring
-   Boot's `BuildProperties`, `task.version`, or `builder.version(...)`).
+   Boot's `BuildProperties`, `pgtasks.version`, or `builder.version(...)`).
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
 
@@ -93,7 +93,7 @@ code's W3C `traceparent` is stored with the task. MDC carries `task.topic`, and 
 Finished tasks are deleted by the housekeeping leader, per topic and outcome, counted from
 completion: succeeded after 30 days, filtered, redundant and recreated after 7, failed (discarded
 dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
-for every topic in `TaskGlobals`, or per environment with `task.topics.<t>.retain.succeeded: 90d`.
+for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
 Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
 backlog after downtime can't hold up housekeeping.
 
@@ -114,13 +114,13 @@ requeue this node's tasks while it still runs them. The engine warns at startup 
 
 LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications a direct
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
-`task.notifications=false`; polling still finds the work, within the poll interval. Use
+`pgtasks.notifications=false`; polling still finds the work, within the poll interval. Use
 `validate` there too, since the built-in runner's advisory lock is per session.
 
 ## Deploys and shutdown
 
 - On shutdown the engine stops claiming, lets running batches finish for
-  `task.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
+  `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
 - Topic changes (created, paused, resumed, deleted) and rate limit overrides reach every node
@@ -133,4 +133,4 @@ connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
 The library logs through `System.Logger`. In Spring Boot that reaches Logback through
 jul-to-slf4j without any setup. Elsewhere, add `org.slf4j:slf4j-jdk-platform-logging` to send
 it to SLF4J, or configure `java.util.logging`. Loggers are named after the classes, under
-`io.github.khopland.task2`.
+`io.github.khopland.pgtasks`.
