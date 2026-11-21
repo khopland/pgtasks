@@ -1,6 +1,11 @@
 Generic task processing
 =======================
 
+> **Task 2.0** lives in the `task2-*` modules of this repository: a Postgres-only rewrite with
+> retries, dead letters, rate limits, recurring tasks, housekeeping, metrics, tracing and a
+> Spring Boot starter. Its documentation starts at [docs/task2](docs/task2/README.md), including
+> [migrating from 1.x](docs/task2/migrating-from-1.x.md). The rest of this file describes 1.x.
+
 This library implements a minimal framework for handling an ordered queue of tasks that is both suitable for stream and batch processing. Tasks queues are identified by a *topic* name where a task is represented by any `String` value to identify a specific (and possibly repeated) unit of work in addition to an optional `String` payload. New tasks are represented as instances of `TaskCreation`.
 
 `Task`s are created by pushing `TaskCreation`s to a topic by using a `TaskSink`. When pushing a task, it can be specified if pending tasks with the same identifier should be rendered as redundant and no longer be processed (`TaskSink.Insertion.REPLACE`), should only set non-processed tasks as redundant (`TaskSink.Insertion.SUPERSEDE`), or if the new task should be added to the end of the queue in addition to any preexisting tasks (`TaskSink.Insertion.APPEND`). Alternatively, all previous, non-active tasks can be deleted (`TaskSink.Insertion.DELETE`).
