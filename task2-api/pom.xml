@@ -9,7 +9,7 @@
   </parent>
 
   <artifactId>task2-api</artifactId>
-  <description>Task 2.0 public API (topics, tasks, decisions, handlers, enqueue) and the storage SPI. No dependencies.</description>
+  <description>Task 2.0 public API: topics, tasks, decisions, handlers, enqueue, and the operator views. No dependencies.</description>
 
   <dependencies>
     <dependency>
