@@ -91,4 +91,35 @@ class ConcurrentDecideTest {
             assertThat(engine.find(8).orElseThrow().state()).as("only the bad one failed").isEqualTo("failed");
         }
     }
+
+    /** Review 2026-11-21: past the deadline the task was retried while the cancelled decider still ran, five runs at once. */
+    @Test
+    void a_decider_that_ignores_cancellation_keeps_its_task_until_it_returns() throws Exception {
+        AtomicInteger running = new AtomicInteger(), mostAtOnce = new AtomicInteger(), started = new AtomicInteger();
+        try (TaskEngine engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.promoteEvery(java.time.Duration.ofMillis(20))))
+            .configure("work", tasks -> tasks
+                .topic(WORK, batch -> batch.decideConcurrently(2, task -> {
+                    started.incrementAndGet();
+                    mostAtOnce.accumulateAndGet(running.incrementAndGet(), Math::max);
+                    try {
+                        long end = System.nanoTime() + 400_000_000L;
+                        while (System.nanoTime() < end) {
+                            Thread.onSpinWait(); // ignores interruption, like a call that can't be interrupted
+                        }
+                        return Decision.success();
+                    } finally {
+                        running.decrementAndGet();
+                    }
+                }), topic -> topic.batchSize(1).batchDeadline(java.time.Duration.ofMillis(50))
+                    .retry(Retry.exponential(java.time.Duration.ofMillis(10), java.time.Duration.ofMillis(10)).attempts(10))))
+            .build()
+            .start()) {
+            engine.tasks().independently().push(WORK, "one", "x");
+            EngineFixture.await("a second run", java.time.Duration.ofSeconds(5), () -> started.get() >= 2);
+
+            assertThat(mostAtOnce).as("never two runs of the task at once").hasValue(1);
+        }
+    }
 }

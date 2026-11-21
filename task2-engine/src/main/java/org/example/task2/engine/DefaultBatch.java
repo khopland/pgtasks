@@ -92,7 +92,11 @@ final class DefaultBatch<T> implements Batch<T> {
                 try {
                     decision = futures.get(index).get();
                 } catch (java.util.concurrent.ExecutionException e) {
-                    // Only a cancellation gets here; decideOne turns everything else into a decision.
+                    // decideOne turns everything else into a decision: only a cancellation or a
+                    // VirtualMachineError gets here, and the batch records the latter, then rethrows it.
+                    if (e.getCause() instanceof VirtualMachineError fatal) {
+                        throw fatal;
+                    }
                     throw new CancellationException("Batch cancelled");
                 }
                 decisions.decide(work.task, decision, work.pushes, work.junctions);
@@ -102,8 +106,11 @@ final class DefaultBatch<T> implements Batch<T> {
             Thread.currentThread().interrupt();
             throw new CancellationException("Batch cancelled");
         } finally {
-            // Cancels what still runs when the batch is cancelled; the batch scope waits for the rest.
+            // Cancels what still runs when the batch is cancelled, and waits until it has ended:
+            // a decider that ignores cancellation keeps the batch, and so its claims, until it
+            // returns. Without the wait the task was retried while the old decider still ran.
             executor.shutdownNow();
+            executor.close();
         }
     }
 
