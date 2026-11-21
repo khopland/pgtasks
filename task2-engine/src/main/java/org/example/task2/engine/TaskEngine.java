@@ -48,6 +48,8 @@ public final class TaskEngine implements AutoCloseable {
     private final Map<Long, Integer> held = new ConcurrentHashMap<>();
     /** Guards starting and stopping workers. */
     private final Object topicsLock = new Object();
+    /** Serializes reconciles, each from reading the topics to its last change. */
+    private final Object reconcileLock = new Object();
     /** Workers of topics paused or gone, finishing their running batches, and the threads waiting for them. */
     private final Map<TopicWorker<?>, Thread> draining = new ConcurrentHashMap<>();
     private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
@@ -257,6 +259,14 @@ public final class TaskEngine implements AutoCloseable {
      * batches finish. On start, on every heartbeat, and when a topic changes anywhere.
      */
     void reconcileTopics() throws Exception {
+        // One reconcile at a time, from its read to its last change: otherwise one that read the
+        // topics before a resume committed could retire the worker that resume just started.
+        synchronized (reconcileLock) {
+            reconcileTopicsNow();
+        }
+    }
+
+    private void reconcileTopicsNow() throws Exception {
         if (!started) {
             return;
         }

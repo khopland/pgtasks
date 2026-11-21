@@ -89,6 +89,22 @@ class TopicDiscoveryTest {
         assertThat(processed).isEmpty();
     }
 
+    /**
+     * A pause's notification reconciles on another thread. It used to read the topics, then act
+     * on what it read after the resume had started a new worker, and retire that one.
+     */
+    @Test
+    void a_quick_pause_and_resume_leaves_the_topic_running() throws Exception {
+        Topic<String> topic = Topic.of(TopicRef.of("topic", String.class), batch -> batch.decide(task -> Decision.success()));
+        TaskEngine node = memoryNode("node-a", List.of(topic), List.of());
+        for (int round = 0; round < 30; round++) {
+            node.pause("topic");
+            node.resume("topic");
+            Thread.sleep(20);
+            assertThat(node.processing()).as("after round %d", round).containsExactly("topic");
+        }
+    }
+
     @Test
     void a_paused_topic_takes_pushes_but_runs_nothing_until_resumed_on_every_node() throws Exception {
         Topic<String> topic = Topic.of(TopicRef.of("topic", String.class), batch -> batch.decide(task -> {

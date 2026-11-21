@@ -43,6 +43,8 @@ final class TopicWorker<T> {
     private final AtomicLong claimedTasks = new AtomicLong();
     private final AtomicInteger runningBatches = new AtomicInteger();
     private volatile long lastEmptyClaim = -1;
+    /** The wake-ups there had been when the last empty claim began. */
+    private volatile long signalsAtEmptyClaim;
 
     TopicWorker(Topic<T> topic, int topicId, EngineCore core) {
         this.topic = topic;
@@ -109,6 +111,7 @@ final class TopicWorker<T> {
                 return;
             }
             boolean dispatched = false;
+            long signalsBefore = signal.count();
             long claim = claims.incrementAndGet();
             try {
                 TaskStore.ClaimRequest request = request();
@@ -159,6 +162,7 @@ final class TopicWorker<T> {
                     // New work doesn't shorten a wait for the rate limit; a changed limit does.
                     limitSignal.await(claimed.admissionWait());
                 } else {
+                    signalsAtEmptyClaim = signalsBefore;
                     lastEmptyClaim = claim;
                     signal.await(topic.settings().pollInterval());
                 }
@@ -196,9 +200,14 @@ final class TopicWorker<T> {
         return claimedTasks.get();
     }
 
-    /** No batch is running, and a claim started after {@code mark} found nothing to do. */
+    /**
+     * No batch is running, a claim started after {@code mark} found nothing to do, and nothing has
+     * happened since: no claim started and no wake-up arrived. Without the last part, work that
+     * another topic's completion released just after this claim (a fan-in, say) went unnoticed.
+     */
     boolean quietSince(long mark) {
-        return runningBatches.get() == 0 && lastEmptyClaim > mark;
+        long empty = lastEmptyClaim;
+        return runningBatches.get() == 0 && empty > mark && empty == claims.get() && signal.count() == signalsAtEmptyClaim;
     }
 
     private Duration backoff(int failures) {

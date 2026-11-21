@@ -10,12 +10,24 @@ final class Signal {
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition condition = lock.newCondition();
     private boolean pending;
+    private long count;
 
     void signal() {
         lock.lock();
         try {
             pending = true;
+            count++;
             condition.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** How many signals there have been: one that arrives after a reading changes it. */
+    long count() {
+        lock.lock();
+        try {
+            return count;
         } finally {
             lock.unlock();
         }
