@@ -15,6 +15,8 @@ import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import org.junit.jupiter.api.Test;
 
+import org.jspecify.annotations.Nullable;
+
 /** TCK: the strict rate limit, a token bucket shared by every node, and operators' overrides of it. */
 public abstract class AdmissionTck extends StoreTck {
 
@@ -96,7 +98,7 @@ public abstract class AdmissionTck extends StoreTck {
         return fixture.inTransaction(transaction -> fixture.store().limitOverrides(transaction));
     }
 
-    private Optional<LimitOverride> override(StoreFixture fixture, Double rate, Integer burst, Long expected) throws SQLException {
+    private Optional<LimitOverride> override(StoreFixture fixture, @Nullable Double rate, @Nullable Integer burst, @Nullable Long expected) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().overrideLimit(transaction, limit.name(), rate, burst, null, "ops", expected));
     }
 

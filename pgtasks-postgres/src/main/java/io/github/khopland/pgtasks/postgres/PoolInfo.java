@@ -8,6 +8,8 @@ import java.util.Properties;
 
 import javax.sql.DataSource;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * What a connection pool says about itself, read without depending on it. Knows HikariCP, the
  * pool Spring Boot uses by default: its size, and how to connect without it.
@@ -67,7 +69,7 @@ final class PoolInfo {
         }
     }
 
-    private static Object call(Object target, String method) {
+    private static @Nullable Object call(Object target, String method) {
         try {
             Method getter = target.getClass().getMethod(method);
             return getter.invoke(target);

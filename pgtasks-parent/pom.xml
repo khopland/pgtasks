@@ -35,6 +35,9 @@
     <jspecify.version>1.0.0</jspecify.version>
     <jackson.version>3.1.8</jackson.version>
     <micrometer-tracing.version>1.7.3</micrometer-tracing.version>
+    <!-- Compile-time checks on main code; javac needs the exports in .mvn/jvm.config. -->
+    <errorprone.version>2.53.0</errorprone.version>
+    <nullaway.version>0.14.4</nullaway.version>
   </properties>
 
   <dependencyManagement>
@@ -184,15 +187,35 @@
               <arg>-Xlint:all,-serial,-processing,-try</arg>
               <arg>-parameters</arg>
             </compilerArgs>
+            <!-- A module adding its own processors appends with combine.children="append". -->
+            <annotationProcessorPaths>
+              <path>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_core</artifactId>
+                <version>${errorprone.version}</version>
+              </path>
+              <path>
+                <groupId>com.uber.nullaway</groupId>
+                <artifactId>nullaway</artifactId>
+                <version>${nullaway.version}</version>
+              </path>
+            </annotationProcessorPaths>
           </configuration>
           <executions>
-            <!-- Javadoc is checked on every build: broken links, bad HTML and misused tags fail it. -->
+            <!--
+              Main code only: Javadoc is checked (broken links, bad HTML and misused tags fail it), and
+              Error Prone runs with NullAway, which checks every @NullMarked package against its
+              @Nullable annotations. Warnings fail the build.
+            -->
             <execution>
               <id>default-compile</id>
               <configuration>
                 <compilerArgs combine.children="append">
                   <arg>-Xdoclint:all,-missing</arg>
                   <arg>-Werror</arg>
+                  <arg>-XDcompilePolicy=simple</arg>
+                  <arg>--should-stop=ifError=FLOW</arg>
+                  <arg>-Xplugin:ErrorProne -Xep:MissingSummary:OFF -Xep:NullAway:ERROR -XepOpt:NullAway:OnlyNullMarked=true -XepOpt:NullAway:JSpecifyMode=true</arg>
                 </compilerArgs>
               </configuration>
             </execution>

@@ -27,7 +27,7 @@ public abstract class JunctionTck extends StoreTck {
     }
 
     private long parked(StoreFixture fixture, int topic, String identifier) throws SQLException {
-        return fixture.push(topic, Insertion.APPEND, suspended(identifier)).getFirst().id();
+        return StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended(identifier)).getFirst());
     }
 
     private Set<String> junction(StoreFixture fixture, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {

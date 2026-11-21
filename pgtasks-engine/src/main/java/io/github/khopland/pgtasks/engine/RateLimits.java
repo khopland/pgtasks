@@ -15,6 +15,8 @@ import java.util.function.Consumer;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The rate limits of this node's topics, and operators' overrides of them (plan section 08).
  * Overrides live in the store, which notifies every node of a change, so each applies it within
@@ -36,7 +38,8 @@ public final class RateLimits {
      * @param override   the last override, active, lapsed or reset; null if never overridden
      * @param version    pass this with the next change; 0 if never overridden
      */
-    public record Limit(String name, RateLimit configured, RateLimit effective, LimitOverride override, long version) {
+    public record Limit(String name, @Nullable RateLimit configured, @Nullable RateLimit effective, @Nullable LimitOverride override,
+                        long version) {
     }
 
     private final TaskStore store;
@@ -78,7 +81,8 @@ public final class RateLimits {
      * @throws VersionConflictException if the limit's version isn't {@code ifVersion}
      * @throws IllegalArgumentException if no node has configured the limit
      */
-    public Limit override(String name, Rate rate, Integer burst, Duration lasting, String by, Long ifVersion) {
+    public Limit override(String name, @Nullable Rate rate, @Nullable Integer burst, @Nullable Duration lasting, @Nullable String by,
+                          @Nullable Long ifVersion) {
         Objects.requireNonNull(name, "name");
         if (rate == null && burst == null) {
             throw new IllegalArgumentException("An override sets a rate, a burst or both; use reset(...) to go back to the configured values");
@@ -95,12 +99,13 @@ public final class RateLimits {
      *
      * @throws VersionConflictException if the limit's version isn't {@code ifVersion}
      */
-    public Limit reset(String name, String by, Long ifVersion) {
+    public Limit reset(String name, @Nullable String by, @Nullable Long ifVersion) {
         Objects.requireNonNull(name, "name");
         return Unchecked.call("Resetting rate limit " + name, () -> change(name, null, null, null, by, ifVersion));
     }
 
-    private Limit change(String name, Double perSecond, Integer burst, Instant until, String by, Long ifVersion) throws Exception {
+    private Limit change(String name, @Nullable Double perSecond, @Nullable Integer burst, @Nullable Instant until, @Nullable String by,
+                         @Nullable Long ifVersion) throws Exception {
         Optional<LimitOverride> changedOverride = EngineCore.transact(store, transaction ->
             store.overrideLimit(transaction, name, perSecond, burst, until, by, ifVersion));
         if (changedOverride.isEmpty()) {
@@ -116,20 +121,21 @@ public final class RateLimits {
         return apply(limit, overrides.get(limit.name()), store.clock().instant());
     }
 
-    private Limit limit(String name, LimitOverride override) {
+    private Limit limit(String name, @Nullable LimitOverride override) {
         RateLimit limit = configured.get(name);
         RateLimit effective = limit == null ? null : apply(limit, override, store.clock().instant());
         return new Limit(name, limit, effective, override, override == null ? 0 : override.version());
     }
 
     /** The configured limit at this time, its window applied, then an active override on top. */
-    private static RateLimit apply(RateLimit configured, LimitOverride override, Instant now) {
+    private static RateLimit apply(RateLimit configured, @Nullable LimitOverride override, Instant now) {
         RateLimit limit = configured.at(now);
         if (override == null || !override.activeAt(now)) {
             return limit;
         }
-        return limit.withRate(override.perSecond() != null ? override.perSecond() : limit.perSecond(),
-            override.burst() != null ? override.burst() : limit.burst());
+        Double perSecond = override.perSecond();
+        Integer burst = override.burst();
+        return limit.withRate(perSecond != null ? perSecond : limit.perSecond(), burst != null ? burst : limit.burst());
     }
 
     /**
@@ -151,7 +157,7 @@ public final class RateLimits {
                 LimitOverride override = loaded.get(name);
                 String why = override != null && override.activeAt(now)
                     ? ", overridden by " + override.updatedBy() + (override.until() == null ? "" : " until " + override.until())
-                    : configured.get(name).windows().isEmpty() ? ", as configured" : ", by its time window";
+                    : Objects.requireNonNull(configured.get(name)).windows().isEmpty() ? ", as configured" : ", by its time window";
                 LOGGER.log(System.Logger.Level.INFO, "Rate limit " + name + " is now " + Rate.perSecond(limit.perSecond()) + ", burst " + limit.burst() + why);
                 changed.accept(name);
             }

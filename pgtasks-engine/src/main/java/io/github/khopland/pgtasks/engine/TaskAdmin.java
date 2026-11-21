@@ -252,8 +252,9 @@ public final class TaskAdmin {
      * fails straight back into the dead letters isn't revived again by the same call.
      */
     private int inBatches(DeadLetterQuery query, DeadLetterWork work) throws Exception {
-        if (query.taskIds() != null) {
-            return query.taskIds().isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, query.taskIds().size())).size();
+        Collection<Long> ids = query.taskIds();
+        if (ids != null) {
+            return ids.isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, ids.size())).size();
         }
         int total = 0;
         DeadLetterQuery next = query;

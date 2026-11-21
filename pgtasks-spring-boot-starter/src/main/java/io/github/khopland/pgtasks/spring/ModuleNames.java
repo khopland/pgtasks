@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.spring;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -70,7 +71,7 @@ final class ModuleNames {
             try {
                 if (inModuleTest(beans)) {
                     // spring-modulith-test is a test dependency, so no compile-time reference.
-                    Object execution = beans.getSingleton(MODULE_TEST_EXECUTION);
+                    Object execution = Objects.requireNonNull(beans.getSingleton(MODULE_TEST_EXECUTION), MODULE_TEST_EXECUTION);
                     return Optional.of(new Modulith((org.springframework.modulith.core.ApplicationModules)
                         execution.getClass().getMethod("getModules").invoke(execution)));
                 }

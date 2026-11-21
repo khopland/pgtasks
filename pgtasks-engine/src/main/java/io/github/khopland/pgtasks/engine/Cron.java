@@ -15,6 +15,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A cron schedule in the usual five fields, read in a time zone: minute (0-59), hour (0-23),
  * day of month (1-31), month (1-12 or JAN-DEC) and day of week (0-7 or SUN-SAT; 0 and 7 are
@@ -54,7 +56,7 @@ public final class Cron {
     private Cron(String expression, ZoneId zone) {
         this.expression = expression;
         this.zone = zone;
-        String[] fields = SHORTHANDS.getOrDefault(expression.toLowerCase(Locale.ROOT), expression).trim().split("\\s+");
+        String[] fields = SHORTHANDS.getOrDefault(expression.toLowerCase(Locale.ROOT), expression).trim().split("\\s+", -1);
         if (fields.length != 5) {
             throw new IllegalArgumentException("A cron expression has five fields (minute hour day-of-month month day-of-week), not "
                 + fields.length + ": '" + expression + "'");
@@ -94,7 +96,7 @@ public final class Cron {
     }
 
     /** The first time after {@code after} that the schedule fires, or null if it never does. */
-    public Instant next(Instant after) {
+    public @Nullable Instant next(Instant after) {
         LocalDateTime start = LocalDateTime.ofInstant(after, zone).truncatedTo(ChronoUnit.MINUTES).plusMinutes(1);
         LocalDate day = start.toLocalDate();
         LocalDate last = day.plusYears(YEARS_AHEAD);
@@ -125,8 +127,17 @@ public final class Cron {
         return null;
     }
 
+    /** Like {@link #next}, for a schedule that fires: {@link #parse} rejects one that never does. */
+    Instant following(Instant after) {
+        Instant next = next(after);
+        if (next == null) {
+            throw new IllegalStateException("The cron expression '" + expression + "' doesn't fire again after " + after);
+        }
+        return next;
+    }
+
     /** The last time at or before {@code atOrBefore} that the schedule fired, or null if it didn't within years. */
-    public Instant previous(Instant atOrBefore) {
+    public @Nullable Instant previous(Instant atOrBefore) {
         LocalDateTime start = LocalDateTime.ofInstant(atOrBefore, zone).truncatedTo(ChronoUnit.MINUTES);
         LocalDate day = start.toLocalDate();
         LocalDate first = day.minusYears(YEARS_AHEAD);

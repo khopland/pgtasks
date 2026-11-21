@@ -12,6 +12,8 @@ import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * What every worker on this node shares. {@code held} maps the tasks this node is processing to
  * their attempt, so claims it lost track of can be found and released.
@@ -33,11 +35,11 @@ record EngineCore(
     private static final Duration MAX_BACKOFF = Duration.ofSeconds(5);
 
     @FunctionalInterface
-    interface Work<T> {
+    interface Work<T extends @Nullable Object> {
         T run(StoreTransaction transaction) throws Exception;
     }
 
-    <T> T transact(Work<T> work) throws Exception {
+    <T extends @Nullable Object> T transact(Work<T> work) throws Exception {
         return transact(store, work);
     }
 
@@ -50,7 +52,7 @@ record EngineCore(
      * with backoff until the work succeeds, fails for another reason, or the engine stops. A
      * stale claim is never retried.
      */
-    <T> T transactRetrying(String what, Work<T> work) throws Exception {
+    <T extends @Nullable Object> T transactRetrying(String what, Work<T> work) throws Exception {
         Duration backoff = Duration.ofMillis(100);
         while (true) {
             try {
@@ -74,7 +76,7 @@ record EngineCore(
     }
 
     /** Runs the work in a new store transaction: committed if it returns, rolled back if it throws. */
-    static <T> T transact(TaskStore store, Work<T> work) throws Exception {
+    static <T extends @Nullable Object> T transact(TaskStore store, Work<T> work) throws Exception {
         try (StoreTransaction transaction = store.begin()) {
             T result = work.run(transaction);
             transaction.commit();

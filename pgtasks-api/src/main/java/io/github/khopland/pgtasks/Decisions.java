@@ -91,7 +91,7 @@ public final class Decisions {
         Map<Long, Verdict> merged = new LinkedHashMap<>();
         verdicts.forEach((id, verdict) -> merged.put(id, new Verdict(
             verdict.task(),
-            Decision.merge(verdict.decision(), other.verdicts.get(id).decision()),
+            Decision.merge(verdict.decision(), Objects.requireNonNull(other.verdicts.get(id)).decision()),
             verdict.downstream(),
             verdict.junctions()
         )));

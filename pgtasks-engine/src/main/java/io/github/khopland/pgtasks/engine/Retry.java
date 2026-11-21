@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.random.RandomGenerator;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * How failed attempts are retried: exponential backoff with jitter, until the task has used up
  * its attempts or its time budget, or forever. A task that gives up is dead-lettered: it stays
@@ -41,7 +43,7 @@ import java.util.random.RandomGenerator;
  * @param deadLetterAt failures caused by these types go straight to the dead letters, such as
  *                    bad input that no retry will fix. Checked before {@code notCounting}
  */
-public record Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, Duration budget,
+public record Retry(int maxAttempts, Duration initial, double multiplier, Duration max, double jitter, @Nullable Duration budget,
                     List<Class<? extends Throwable>> notCounting, List<Class<? extends Throwable>> deadLetterAt) {
 
     public static final int FOREVER = Integer.MAX_VALUE;
@@ -151,7 +153,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      * What a failure with this cause means, by the types anywhere in its cause chain. A payload
      * the codec can't decode is always dead-lettered at once: retrying won't change it.
      */
-    public Kind classify(Throwable cause) {
+    public Kind classify(@Nullable Throwable cause) {
         if (cause instanceof UndecodablePayload || matches(cause, deadLetterAt)) {
             return Kind.DEAD_LETTER;
         }
@@ -166,7 +168,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         return initial.isZero() ? standard().backoff(failures, random) : backoff(failures, random);
     }
 
-    private static boolean matches(Throwable cause, List<Class<? extends Throwable>> types) {
+    private static boolean matches(@Nullable Throwable cause, List<Class<? extends Throwable>> types) {
         java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         for (Throwable current = cause; current != null && seen.add(current); current = current.getCause()) {
             for (Class<? extends Throwable> type : types) {
@@ -197,7 +199,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      *
      * @param firstFailedAt when the task first failed, or null if this is its first failure
      */
-    public boolean allowsAnotherAfter(int attempt, java.time.Instant firstFailedAt, java.time.Instant now, Duration backoff) {
+    public boolean allowsAnotherAfter(int attempt, java.time.@Nullable Instant firstFailedAt, java.time.Instant now, Duration backoff) {
         if (attempt >= maxAttempts) {
             return false;
         }
@@ -242,8 +244,8 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
     }
 
     private static double nominal(int attempt, Duration initial, double multiplier, Duration max) {
-        double nanos = initial.toNanos() * Math.pow(multiplier, Math.max(0, attempt - 1));
-        return Math.min(nanos, max.toNanos());
+        double nanos = (double) initial.toNanos() * Math.pow(multiplier, Math.max(0, attempt - 1));
+        return Math.min(nanos, (double) max.toNanos());
     }
 
     /** The attempts whose nominal backoffs, added up, fit in the budget: the first plus each retry. */

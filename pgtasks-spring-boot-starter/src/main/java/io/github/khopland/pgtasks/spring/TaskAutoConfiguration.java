@@ -69,7 +69,7 @@ public class TaskAutoConfiguration {
         }
         Map<String, TaskConfigurer> configurers = beansOfType(beans, TaskConfigurer.class);
         Map<String, String> modules = ModuleNames.of(beans, java.util.List.copyOf(configurers.keySet()));
-        configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
+        configurers.forEach((name, configurer) -> builder.configure(modules.getOrDefault(name, name), configurer));
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
         // Every observer bean, such as pgtasks-micrometer's and the application's own.
         java.util.List<TaskObserver> observers = observer.orderedStream().toList();
@@ -147,7 +147,7 @@ public class TaskAutoConfiguration {
         @Override
         public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
             return context.getEnvironment().getProperty("pgtasks.testing", Boolean.class, false)
-                || context.getBeanFactory() != null && ModuleNames.inModuleTest(context.getBeanFactory());
+                || (context.getBeanFactory() != null && ModuleNames.inModuleTest(context.getBeanFactory()));
         }
     }
 

@@ -43,7 +43,7 @@ public abstract class PushTck extends StoreTck {
         assertThat(pushed).extracting(Pushed::status).containsOnly(Pushed.Status.QUEUED);
         assertThat(pushed).extracting(Pushed::id).isSorted().doesNotHaveDuplicates();
         for (Pushed each : pushed) {
-            TaskView view = fixture.view(each.id()).orElseThrow();
+            TaskView view = fixture.view(StoreFixture.id(each)).orElseThrow();
             assertThat(view.topic()).isEqualTo("topic");
             assertThat(view.identifier()).isEqualTo(each.identifier());
             assertThat(view.state()).isEqualTo("ready");
@@ -60,12 +60,12 @@ public abstract class PushTck extends StoreTck {
         List<Pushed> pushed = fixture.push(topic, Insertion.APPEND, delayed("a", Duration.ofMinutes(5)), suspended("b"), delayed("c", Duration.ZERO));
 
         assertThat(pushed).extracting(Pushed::id).extracting(fixture::state).containsExactly("scheduled", "suspended", "ready");
-        assertThat(fixture.view(pushed.getFirst().id()).orElseThrow().runAt())
+        assertThat(fixture.view(StoreFixture.id(pushed.getFirst())).orElseThrow().runAt())
             .isBetween(before.plus(Duration.ofMinutes(4)), before.plus(Duration.ofMinutes(6)));
         QueueCounts counts = fixture.counts(topic);
         assertThat(counts).isEqualTo(new QueueCounts(1, 0, 1, 0, 1, 0, 0, counts.nextRunAt(), counts.oldestReadyAt(), 0, null));
-        assertThat(counts.nextRunAt()).isEqualTo(fixture.view(pushed.getFirst().id()).orElseThrow().runAt());
-        assertThat(counts.oldestReadyAt()).isEqualTo(fixture.view(pushed.get(2).id()).orElseThrow().createdAt());
+        assertThat(counts.nextRunAt()).isEqualTo(fixture.view(StoreFixture.id(pushed.getFirst())).orElseThrow().runAt());
+        assertThat(counts.oldestReadyAt()).isEqualTo(fixture.view(StoreFixture.id(pushed.get(2))).orElseThrow().createdAt());
     }
 
     @Test
@@ -80,8 +80,8 @@ public abstract class PushTck extends StoreTck {
         long running = fixture.push(topic, "a");
         fixture.claim(topic, node);
         long ready = fixture.push(topic, "a");
-        long delayedTask = fixture.push(topic, Insertion.APPEND, delayed("a", Duration.ofHours(1))).getFirst().id();
-        long parked = fixture.push(topic, Insertion.APPEND, suspended("a")).getFirst().id();
+        long delayedTask = StoreFixture.id(fixture.push(topic, Insertion.APPEND, delayed("a", Duration.ofHours(1))).getFirst());
+        long parked = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("a")).getFirst());
         long otherIdentifier = fixture.push(topic, "b");
         long otherTopic = fixture.push(other, "a");
 
@@ -94,8 +94,8 @@ public abstract class PushTck extends StoreTck {
         assertThat(fixture.state(parked)).isEqualTo("suspended");
         assertThat(fixture.state(otherIdentifier)).isEqualTo("ready");
         assertThat(fixture.state(otherTopic)).isEqualTo("ready");
-        assertThat(fixture.state(pushed.get(0).id())).isEqualTo("redundant");
-        assertThat(fixture.state(pushed.get(1).id())).isEqualTo("ready");
+        assertThat(fixture.state(StoreFixture.id(pushed.get(0)))).isEqualTo("redundant");
+        assertThat(fixture.state(StoreFixture.id(pushed.get(1)))).isEqualTo("ready");
         assertThat(fixture.view(ready).orElseThrow().finished()).isTrue();
     }
 
@@ -118,7 +118,7 @@ public abstract class PushTck extends StoreTck {
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         long dead = fixture.push(topic, "a");
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.deadLetter());
-        long parked = fixture.push(topic, Insertion.APPEND, suspended("a")).getFirst().id();
+        long parked = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("a")).getFirst());
         long running = fixture.push(topic, "a");
         fixture.claim(topic, node);
 
@@ -149,7 +149,7 @@ public abstract class PushTck extends StoreTck {
         assertThat(fixture.state(waiting)).isNull();
         assertThat(fixture.state(running)).isEqualTo("active");
         assertThat(fixture.state(keepOther)).isEqualTo("ready");
-        assertThat(fixture.state(pushed.get(2).id())).isEqualTo("ready");
+        assertThat(fixture.state(StoreFixture.id(pushed.get(2)))).isEqualTo("ready");
     }
 
     @Test
@@ -195,7 +195,7 @@ public abstract class PushTck extends StoreTck {
         StoreFixture fixture = setUp();
         long id;
         try (StoreTransaction transaction = fixture.store().begin()) {
-            id = fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("a"))).getFirst().id();
+            id = StoreFixture.id(fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("a"))).getFirst());
             transaction.rollback();
         }
         assertThat(fixture.state(id)).isNull();
@@ -206,7 +206,7 @@ public abstract class PushTck extends StoreTck {
     void lineage_and_reference_are_stored() throws SQLException {
         StoreFixture fixture = setUp();
         var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L, null);
-        long id = fixture.push(topic, Insertion.APPEND, child).getFirst().id();
+        long id = StoreFixture.id(fixture.push(topic, Insertion.APPEND, child).getFirst());
 
         TaskView view = fixture.view(id).orElseThrow();
         assertThat(view.reference()).isEqualTo("ref-1");

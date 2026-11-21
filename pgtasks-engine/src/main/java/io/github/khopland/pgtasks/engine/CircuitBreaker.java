@@ -5,6 +5,8 @@ import java.time.InstantSource;
 import java.util.ArrayDeque;
 import java.util.Map;
 
+import org.jspecify.annotations.Nullable;
+
 /** One topic's breaker on one node: see {@link Breaker}. */
 final class CircuitBreaker {
 
@@ -27,7 +29,7 @@ final class CircuitBreaker {
     private final ArrayDeque<Result> recent = new ArrayDeque<>();
     private boolean open;
     private boolean probing;
-    private Instant nextProbe;
+    private @Nullable Instant nextProbe;
 
     CircuitBreaker(Breaker settings, InstantSource clock) {
         this.settings = settings;
@@ -38,7 +40,7 @@ final class CircuitBreaker {
         if (!open) {
             return Permit.CLAIM;
         }
-        if (probing || clock.instant().isBefore(nextProbe)) {
+        if (probing || (nextProbe != null && clock.instant().isBefore(nextProbe))) {
             return Permit.WAIT;
         }
         probing = true;
@@ -50,7 +52,7 @@ final class CircuitBreaker {
     }
 
     /** When the next probe may go, if the breaker is open and no probe is out; else null. */
-    synchronized Instant nextProbe() {
+    synchronized @Nullable Instant nextProbe() {
         return open && !probing ? nextProbe : null;
     }
 

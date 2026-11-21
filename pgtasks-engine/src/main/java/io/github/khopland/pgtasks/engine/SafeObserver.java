@@ -8,6 +8,8 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /** Wraps an observer so its failures are logged and never reach the engine's work. */
 final class SafeObserver implements TaskObserver {
 
@@ -19,6 +21,7 @@ final class SafeObserver implements TaskObserver {
         this.observer = observer;
     }
 
+    @SuppressWarnings("ReferenceEquality") // NONE is the one no-op instance
     static TaskObserver of(TaskObserver observer) {
         return observer == TaskObserver.NONE || observer instanceof SafeObserver ? observer : new SafeObserver(observer);
     }
@@ -28,7 +31,7 @@ final class SafeObserver implements TaskObserver {
         PushObservation observation = call(() -> observer.pushing(topic, tasks), PushObservation.NONE);
         return new PushObservation() {
             @Override
-            public String traceContext() {
+            public @Nullable String traceContext() {
                 return call(observation::traceContext, null);
             }
 
@@ -86,7 +89,7 @@ final class SafeObserver implements TaskObserver {
         };
     }
 
-    private static <V> V call(Supplier<V> call, V fallback) {
+    private static <V extends @Nullable Object> V call(Supplier<V> call, V fallback) {
         try {
             V value = call.get();
             return value == null ? fallback : value;

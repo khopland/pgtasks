@@ -6,6 +6,7 @@ import java.time.Period;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -14,6 +15,8 @@ import java.util.function.IntConsumer;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Housekeeping on one node. Every node heartbeats, renews or takes the housekeeping lease, and
@@ -51,20 +54,19 @@ final class Housekeeper {
     private final Job sweepOrphans;
     private final Job reconcile;
     private final Object leadership = new Object();
-    private Instant leaseEnds;
-    private volatile Instant lastHeartbeat;
+    private @Nullable Instant leaseEnds;
+    private volatile @Nullable Instant lastHeartbeat;
     /**
      * Three threads, so a slow job can't hold up the others: the heartbeat and lease alone on
      * one (a node that misses them loses the lease, and its health turns DOWN), the regular jobs
      * on another, and retention, which can run long after downtime, on a third.
      */
     private final List<ScheduledExecutorService> executors = new java.util.ArrayList<>();
-    private ScheduledExecutorService beats, jobs, slow;
     /** How long one retention run may delete before it leaves the rest to the next run. */
     static final Duration PURGE_BUDGET = Duration.ofSeconds(30);
     private final Duration purgeBudget;
     /** The topic a retention run ran out of time in; the next run starts with the one after it. */
-    private Integer purgeStoppedAt;
+    private @Nullable Integer purgeStoppedAt;
 
     /**
      * @param wake         wakes this node's worker for a topic id
@@ -89,9 +91,9 @@ final class Housekeeper {
     void start() {
         // Registering the node set its first heartbeat.
         lastHeartbeat = store.clock().instant();
-        beats = executor("pgtasks-heartbeat-");
-        jobs = executor("pgtasks-housekeeping-");
-        slow = executor("pgtasks-retention-");
+        ScheduledExecutorService beats = executor("pgtasks-heartbeat-");
+        ScheduledExecutorService jobs = executor("pgtasks-housekeeping-");
+        ScheduledExecutorService slow = executor("pgtasks-retention-");
         schedule(beats, "heartbeat", settings.heartbeat(), this::heartbeat);
         schedule(jobs, "orphan sweep", settings.heartbeat(), sweepOrphans);
         schedule(jobs, "reconcile", settings.heartbeat(), reconcile);
@@ -128,6 +130,7 @@ final class Housekeeper {
         return executor;
     }
 
+    @SuppressWarnings("FutureReturnValueIgnored") // the job logs its own failures; stop() shuts the executor down
     private void schedule(ScheduledExecutorService executor, String name, Duration interval, Job job) {
         executor.scheduleWithFixedDelay(() -> {
             try {
@@ -173,7 +176,7 @@ final class Housekeeper {
     }
 
     /** When this node last recorded its heartbeat in the store. */
-    Instant lastHeartbeat() {
+    @Nullable Instant lastHeartbeat() {
         return lastHeartbeat;
     }
 
@@ -251,7 +254,7 @@ final class Housekeeper {
                 for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
                     Instant next;
                     try {
-                        next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).next(now);
+                        next = Cron.parse(schedule.cron(), java.time.ZoneId.of(schedule.zone())).following(now);
                     } catch (RuntimeException e) {
                         // Written by a node with another idea of cron; try again in an hour rather than every second.
                         LOGGER.log(System.Logger.Level.WARNING, "Recurring task " + schedule.name() + " of " + schedule.topic()
@@ -288,13 +291,14 @@ final class Housekeeper {
         long deadline = System.nanoTime() + purgeBudget.toNanos();
         Map<Integer, Map<Outcome, Period>> retention = new java.util.TreeMap<>(EngineCore.transact(store, store::retention));
         List<Integer> order = new java.util.ArrayList<>(retention.keySet());
-        if (purgeStoppedAt != null) {
-            int start = (int) order.stream().filter(id -> id <= purgeStoppedAt).count();
+        Integer stoppedAt = purgeStoppedAt;
+        if (stoppedAt != null) {
+            int start = (int) order.stream().filter(id -> id <= stoppedAt).count();
             java.util.Collections.rotate(order, -start);
         }
         purgeStoppedAt = null;
         for (int topic : order) {
-            for (Map.Entry<Outcome, Period> kept : retention.get(topic).entrySet()) {
+            for (Map.Entry<Outcome, Period> kept : Objects.requireNonNull(retention.get(topic)).entrySet()) {
                 Instant cutoff = now.atZone(ZoneOffset.UTC).minus(kept.getValue()).toInstant();
                 int deleted;
                 do {

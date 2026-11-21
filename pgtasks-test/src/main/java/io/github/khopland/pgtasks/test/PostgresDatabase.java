@@ -15,6 +15,8 @@ import javax.sql.DataSource;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A fresh database on the shared test server. Closing it closes every pool it handed out and
  * drops the database.
@@ -24,7 +26,7 @@ public final class PostgresDatabase implements AutoCloseable {
     private final TestPostgres.Server server;
     private final String name;
     private final List<HikariDataSource> pools = new CopyOnWriteArrayList<>();
-    private volatile HikariDataSource dataSource;
+    private volatile @Nullable HikariDataSource dataSource;
 
     PostgresDatabase(TestPostgres.Server server, String name) {
         this.server = server;

@@ -49,6 +49,7 @@ public final class LegacyImport {
     private static final Pattern TABLE = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?");
 
     /** 1.x states by ordinal: ACTIVE 0, READY 1, EXPIRED 2, FAILED 3, SUSPENDED 4, FILTERED 5, SUCCEEDED 6, RECREATED 7, REDUNDANT 8. */
+    @SuppressWarnings("InlineFormatString") // the statement reads better on its own than inside the method
     private static final String COPY = """
         WITH legacy AS MATERIALIZED (
             SELECT nextval('tasks.task_id_seq') AS id, l.*

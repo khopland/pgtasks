@@ -2,9 +2,12 @@ package io.github.khopland.pgtasks.memory;
 
 import java.time.Instant;
 import java.time.Period;
+import java.util.Locale;
 import java.util.Map;
 
 import io.github.khopland.pgtasks.Outcome;
+
+import org.jspecify.annotations.Nullable;
 
 /** The in-memory tables. Rows are immutable, so a transaction can undo by putting the old row back. */
 final class Rows {
@@ -16,15 +19,15 @@ final class Rows {
         SCHEDULED, RETRYING, READY, ACTIVE, SUSPENDED, FAILED;
 
         String label() {
-            return name().toLowerCase();
+            return name().toLowerCase(Locale.ROOT);
         }
     }
 
     /** @param retention per outcome, or null if no node set it */
-    record Topic(int id, String name, Instant createdAt, boolean paused, Map<Outcome, Period> retention, String revivedVersion,
-                 Instant reviveSweptAt) {
+    record Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention,
+                 @Nullable String revivedVersion, @Nullable Instant reviveSweptAt) {
 
-        Topic(int id, String name, Instant createdAt, boolean paused, Map<Outcome, Period> retention) {
+        Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention) {
             this(id, name, createdAt, paused, retention, null, null);
         }
 
@@ -45,7 +48,7 @@ final class Rows {
         }
     }
 
-    record Node(int id, String name, String version, Instant startedAt, Instant heartbeatAt) {
+    record Node(int id, String name, @Nullable String version, Instant startedAt, Instant heartbeatAt) {
 
         Node beat(Instant now) {
             return new Node(id, name, version, startedAt, now);
@@ -56,22 +59,22 @@ final class Rows {
         int topicId,
         long id,
         String identifier,
-        String reference,
-        String payload,
-        String payloadType,
-        Long parentId,
-        Long rootId,
+        @Nullable String reference,
+        @Nullable String payload,
+        @Nullable String payloadType,
+        @Nullable Long parentId,
+        @Nullable Long rootId,
         Instant createdAt,
-        String outcome,
-        String previousOutcome,
-        String output,
-        String error,
+        @Nullable String outcome,
+        @Nullable String previousOutcome,
+        @Nullable String output,
+        @Nullable String error,
         int attempts,
-        Instant completedAt,
-        String traceContext
+        @Nullable Instant completedAt,
+        @Nullable String traceContext
     ) {
 
-        Task finish(String outcome, String output, int attempts, Instant now) {
+        Task finish(String outcome, @Nullable String output, int attempts, Instant now) {
             return new Task(topicId, id, identifier, reference, payload, payloadType, parentId, rootId, createdAt,
                 outcome, previousOutcome, output, error, attempts, now, traceContext);
         }
@@ -93,7 +96,7 @@ final class Rows {
     }
 
     record Schedule(int id, int topicId, String name, String identifier, String cron, String zone, String insertion,
-                    String payload, String payloadType, Instant nextRunAt, Instant lastRunAt) {
+                    @Nullable String payload, @Nullable String payloadType, Instant nextRunAt, @Nullable Instant lastRunAt) {
 
         Schedule fired(Instant at, Instant next) {
             return new Schedule(id, topicId, name, identifier, cron, zone, insertion, payload, payloadType, next, at);
@@ -106,17 +109,17 @@ final class Rows {
         String identifier,
         State state,
         int priority,
-        Instant runAt,
+        @Nullable Instant runAt,
         int attempt,
-        Integer nodeId,
-        Instant claimedAt,
-        String dedupKey,
+        @Nullable Integer nodeId,
+        @Nullable Instant claimedAt,
+        @Nullable String dedupKey,
         int failures,
-        Instant firstFailedAt,
+        @Nullable Instant firstFailedAt,
         int expiries
     ) {
 
-        Queued with(State state, Instant runAt, int attempt, Integer nodeId, Instant claimedAt) {
+        Queued with(State state, @Nullable Instant runAt, int attempt, @Nullable Integer nodeId, @Nullable Instant claimedAt) {
             return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, failures, firstFailedAt, expiries);
         }
 
@@ -138,7 +141,8 @@ final class Rows {
         }
     }
 
-    record Attempt(int topicId, long taskId, int attempt, Integer nodeId, Instant startedAt, Instant finishedAt, String result, String error) {
+    record Attempt(int topicId, long taskId, int attempt, @Nullable Integer nodeId, Instant startedAt, Instant finishedAt, String result,
+                   @Nullable String error) {
     }
 
     record Bucket(String name, double tokens, Instant refilledAt) {

@@ -19,6 +19,8 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.ParameterContext;
 import org.junit.jupiter.api.extension.ParameterResolver;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A task engine for each test, on the in-memory store with a {@link ManualClock}, started before
  * the test and stopped after it: handlers tested without a database or Spring, retries and delays
@@ -43,10 +45,10 @@ import org.junit.jupiter.api.extension.ParameterResolver;
 public final class TaskEngineExtension implements BeforeEachCallback, AfterEachCallback, ParameterResolver {
 
     private final Consumer<TaskEngineBuilder> setup;
-    private ManualClock clock;
-    private LocalTransactions transactions;
-    private TaskEngine engine;
-    private TaskTester tester;
+    private @Nullable ManualClock clock;
+    private @Nullable LocalTransactions transactions;
+    private @Nullable TaskEngine engine;
+    private @Nullable TaskTester tester;
 
     private TaskEngineExtension(Consumer<TaskEngineBuilder> setup) {
         this.setup = Objects.requireNonNull(setup, "setup");
@@ -68,19 +70,23 @@ public final class TaskEngineExtension implements BeforeEachCallback, AfterEachC
 
     @Override
     public void beforeEach(ExtensionContext context) {
-        clock = ManualClock.startingNow();
-        transactions = new LocalTransactions();
+        ManualClock clock = ManualClock.startingNow();
+        LocalTransactions transactions = new LocalTransactions();
         TaskEngineBuilder builder = TaskEngine.builder().store(new InMemoryTaskStore(clock)).transactions(transactions).node("test");
         setup.accept(builder);
-        engine = builder.build().start();
-        tester = TaskTester.of(engine);
+        TaskEngine engine = builder.build().start();
+        this.clock = clock;
+        this.transactions = transactions;
+        this.engine = engine;
+        this.tester = TaskTester.of(engine);
     }
 
     @Override
     public void afterEach(ExtensionContext context) {
-        if (engine != null) {
-            engine.stop(Duration.ofSeconds(5));
+        TaskEngine running = engine;
+        if (running != null) {
             engine = null;
+            running.stop(Duration.ofSeconds(5));
         }
     }
 
@@ -108,7 +114,7 @@ public final class TaskEngineExtension implements BeforeEachCallback, AfterEachC
         return started(transactions);
     }
 
-    private <T> T started(T value) {
+    private static <T> T started(@Nullable T value) {
         if (value == null) {
             throw new IllegalStateException("The engine runs only during a test: register the extension with @RegisterExtension");
         }

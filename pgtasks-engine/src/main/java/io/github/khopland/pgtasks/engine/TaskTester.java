@@ -37,6 +37,7 @@ public final class TaskTester {
     private final TaskStore store;
     private final List<Captured<?>> captured = new CopyOnWriteArrayList<>();
 
+    @SuppressWarnings("ReferenceEquality") // the same store instance, not an equal one
     private TaskTester(List<TaskEngine> engines) {
         if (engines.isEmpty()) {
             throw new IllegalArgumentException("Give the tester at least one engine");

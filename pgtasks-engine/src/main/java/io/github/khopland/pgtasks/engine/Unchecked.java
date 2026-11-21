@@ -5,6 +5,8 @@ import java.util.concurrent.Callable;
 
 import io.github.khopland.pgtasks.TaskStorageException;
 
+import org.jspecify.annotations.Nullable;
+
 /** Runs store work behind the public API, which throws only unchecked exceptions. */
 final class Unchecked {
 
@@ -16,7 +18,7 @@ final class Unchecked {
     private Unchecked() {
     }
 
-    static <T> T call(String what, Callable<T> work) {
+    static <T extends @Nullable Object> T call(String what, Callable<T> work) {
         try {
             return work.call();
         } catch (RuntimeException e) {

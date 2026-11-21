@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,6 +21,8 @@ import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Queue gauges per topic, from the counts the housekeeping leader snapshots (every minute by
@@ -75,8 +78,8 @@ public final class TaskMetrics implements MeterBinder {
     private final InstantSource clock;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
     private volatile Map<String, TopicSnapshot> latest = Map.of();
-    private volatile Instant readAt;
-    private volatile MeterRegistry registry;
+    private volatile @Nullable Instant readAt;
+    private volatile @Nullable MeterRegistry registry;
 
     /** Reads the engine's snapshots at most every 10 seconds. */
     public TaskMetrics(TaskEngine engine) {
@@ -116,32 +119,33 @@ public final class TaskMetrics implements MeterBinder {
                     .tag("limit", limit.name())
                     .tag("kind", kind)
                     .strongReference(true)
-            .register(registry);
+                    .register(registry);
                 Gauge.builder(LIMIT_BURST, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::burst))
                     .description("Claims the rate limit allows at once")
                     .baseUnit("tasks")
                     .tag("limit", limit.name())
                     .tag("kind", kind)
                     .strongReference(true)
-            .register(registry);
+                    .register(registry);
             }
         }
     }
 
     private double limit(String name, String kind, ToDoubleFunction<RateLimit> value) {
         return limits.get().stream().filter(limit -> limit.name().equals(name)).findFirst()
-            .map(limit -> kind.equals("configured") ? limit.configured() : limit.effective())
+            .flatMap(limit -> Optional.ofNullable(kind.equals("configured") ? limit.configured() : limit.effective()))
             .map(value::applyAsDouble).orElse(Double.NaN);
     }
 
-    private TopicSnapshot snapshot(String topic) {
+    private @Nullable TopicSnapshot snapshot(String topic) {
         refresh(false);
         return latest.get(topic);
     }
 
     private synchronized void refresh(boolean now) {
         Instant time = clock.instant();
-        if (!now && readAt != null && Duration.between(readAt, time).compareTo(refresh) < 0) {
+        Instant last = readAt;
+        if (!now && last != null && Duration.between(last, time).compareTo(refresh) < 0) {
             return;
         }
         readAt = time;
@@ -156,6 +160,7 @@ public final class TaskMetrics implements MeterBinder {
     }
 
     private void register(String topic) {
+        MeterRegistry registry = Objects.requireNonNull(this.registry, "bindTo(registry) first");
         STATES.forEach((state, value) -> Gauge.builder(QUEUE, this, metrics -> metrics.count(topic, value))
             .description("Unfinished tasks, from the last snapshot")
             .baseUnit("tasks")
@@ -194,7 +199,7 @@ public final class TaskMetrics implements MeterBinder {
         return snapshot == null ? Double.NaN : value.applyAsDouble(snapshot.counts());
     }
 
-    private double age(String topic, java.util.function.Function<TopicSnapshot, Instant> since) {
+    private double age(String topic, java.util.function.Function<TopicSnapshot, @Nullable Instant> since) {
         TopicSnapshot snapshot = snapshot(topic);
         if (snapshot == null) {
             return Double.NaN;

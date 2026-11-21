@@ -25,6 +25,8 @@ import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Processes topics on this node. On start it lets the store check or migrate its schema,
  * registers the node, creates every topic registered by name, and starts one poll loop per topic
@@ -61,15 +63,15 @@ public final class TaskEngine implements AutoCloseable {
     /** Workers of topics paused or gone, finishing their running batches, and the threads waiting for them. */
     private final Map<TopicWorker<?>, Thread> draining = new ConcurrentHashMap<>();
     private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
-    private EngineCore core;
-    private Housekeeper housekeeper;
+    private @Nullable EngineCore core;
+    private @Nullable Housekeeper housekeeper;
     private final RateLimits limits;
-    private Notifier notifier;
+    private @Nullable Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
     private List<EventRoute<?>> eventRoutes = List.of();
     private List<Recurring<?>> recurring = List.of();
-    private String version;
+    private @Nullable String version;
     private volatile boolean started;
     private boolean prepared;
     /** Whether it was started and stopped before, so a start must switch the reloads back on. */
@@ -139,7 +141,7 @@ public final class TaskEngine implements AutoCloseable {
             specs.add(new TaskStore.ScheduleSpec(schedule.name(), schedule.identifier(), schedule.cron().expression(),
                 schedule.cron().zone().getId(), schedule.insertion(),
                 schedule.payload() == null ? null : topic.codec().encode(schedule.payload()), topic.codec().type(),
-                schedule.cron().next(now)));
+                schedule.cron().following(now)));
         }
         return specs;
     }
@@ -152,12 +154,12 @@ public final class TaskEngine implements AutoCloseable {
         return this;
     }
 
-    TaskEngine withVersion(String version) {
+    TaskEngine withVersion(@Nullable String version) {
         this.version = version;
         return this;
     }
 
-    TaskEngine withFallbackCodecs(PayloadCodecs codecs) {
+    TaskEngine withFallbackCodecs(@Nullable PayloadCodecs codecs) {
         tasks.fallbackCodecs(codecs);
         return this;
     }
@@ -302,11 +304,12 @@ public final class TaskEngine implements AutoCloseable {
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, limits, settings.observer());
-        notifier = settings.notifier();
+        Notifier wakeUps = settings.notifier();
+        notifier = wakeUps;
         housekeeper = null;
         try {
-            if (notifier != null) {
-                notifier.start(new Notifier.Listener() {
+            if (wakeUps != null) {
+                wakeUps.start(new Notifier.Listener() {
                     @Override
                     public void ready(int topicId) {
                         TopicWorker<?> worker = workersById.get(topicId);
@@ -333,12 +336,13 @@ public final class TaskEngine implements AutoCloseable {
                     }
                 });
             }
-            housekeeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
+            Housekeeper keeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
                 limits.refresh();
                 reviveSweep();
             }, purgeBudget);
-            housekeeper.start();
+            housekeeper = keeper;
+            keeper.start();
             reviveForVersion();
             started = true;
             reconcileTopics();
@@ -347,11 +351,12 @@ public final class TaskEngine implements AutoCloseable {
                 stop(Duration.ZERO);
             } else {
                 // Not started, so stop() would do nothing: end what this start got going.
-                if (notifier != null) {
-                    notifier.close();
+                if (wakeUps != null) {
+                    wakeUps.close();
                 }
-                if (housekeeper != null) {
-                    housekeeper.stop();
+                Housekeeper keeper = housekeeper;
+                if (keeper != null) {
+                    keeper.stop();
                 }
             }
             throw e;
@@ -403,7 +408,7 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     /** The topic registered by name, or else made from the first template that matches; null if neither. */
-    private Topic<?> topicFor(String name) {
+    private @Nullable Topic<?> topicFor(String name) {
         Topic<?> topic = topicsByName.get(name);
         if (topic != null) {
             return topic;
@@ -413,6 +418,9 @@ public final class TaskEngine implements AutoCloseable {
 
     private void launch(TaskStore.TopicInfo info) throws Exception {
         Topic<?> topic = topicFor(info.name());
+        if (topic == null) {
+            throw new IllegalStateException("No topic or template for " + info.name());
+        }
         if (!topicsByName.containsKey(info.name())) {
             // Topics registered by name record their retention at start; these show up later.
             EngineCore.transact(store, transaction -> {
@@ -422,7 +430,7 @@ public final class TaskEngine implements AutoCloseable {
             LOGGER.log(System.Logger.Level.INFO, "Processing topic " + info.name() + " on this node");
         }
         directory.register(info.name(), info.id());
-        TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), core);
+        TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), running(core));
         workersByName.put(info.name(), worker);
         workersById.put(info.id(), worker);
         worker.start();
@@ -462,9 +470,10 @@ public final class TaskEngine implements AutoCloseable {
             return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(), List.of());
         }
         java.time.Instant now = store.clock().instant();
-        java.time.Instant beat = housekeeper.lastHeartbeat();
-        EngineHealth.Notifications notifications = notifier == null ? EngineHealth.Notifications.NONE
-            : notifier.connected() ? EngineHealth.Notifications.CONNECTED : EngineHealth.Notifications.DISCONNECTED;
+        java.time.Instant beat = running(housekeeper).lastHeartbeat();
+        Notifier wakeUps = notifier;
+        EngineHealth.Notifications notifications = wakeUps == null ? EngineHealth.Notifications.NONE
+            : wakeUps.connected() ? EngineHealth.Notifications.CONNECTED : EngineHealth.Notifications.DISCONNECTED;
         List<EngineHealth.StuckClaim> stuck = new java.util.ArrayList<>();
         for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
             TopicWorker<?> worker = workersById.get(claim.topicId());
@@ -478,7 +487,15 @@ public final class TaskEngine implements AutoCloseable {
         List<String> openBreakers = workersByName.values().stream().filter(TopicWorker::breakerOpen)
             .map(worker -> worker.topic().ref().name()).sorted().toList();
         return new EngineHealth(true, settings.nodeName(), nodeId, beat, beat == null ? null : Duration.between(beat, now), term,
-            housekeeper.leading(), notifications, stuck, openBreakers);
+            running(housekeeper).leading(), notifications, stuck, openBreakers);
+    }
+
+    /** What {@link #start} set up, while the engine runs. */
+    private static <T> T running(@Nullable T part) {
+        if (part == null) {
+            throw new IllegalStateException("The engine is not running");
+        }
+        return part;
     }
 
     /** The topics this node is processing now. */
@@ -516,7 +533,7 @@ public final class TaskEngine implements AutoCloseable {
     /** Heartbeats and renews or takes the housekeeping lease, now. */
     void heartbeatNow() throws Exception {
         if (started) {
-            housekeeper.heartbeat();
+            running(housekeeper).heartbeat();
         }
     }
 
@@ -526,6 +543,7 @@ public final class TaskEngine implements AutoCloseable {
      * failed before it. Nodes of the old version may still run some of them during a rolling deploy.
      */
     private void reviveForVersion() {
+        String version = this.version;
         if (version == null) {
             if (topics.stream().anyMatch(topic -> topic.settings().deadLetters().reviveOnNewVersion())) {
                 LOGGER.log(System.Logger.Level.WARNING, "Some topics revive their dead letters on a new version, but the engine has no version; "
@@ -566,7 +584,7 @@ public final class TaskEngine implements AutoCloseable {
     void runLeaderJobsNow() throws Exception {
         if (started) {
             reviveSweep();
-            housekeeper.runLeaderJobsNow();
+            running(housekeeper).runLeaderJobsNow();
         }
     }
 
@@ -592,7 +610,7 @@ public final class TaskEngine implements AutoCloseable {
 
     /** Whether this node holds the housekeeping lease and runs the cluster-wide jobs. */
     public boolean leadsHousekeeping() {
-        return started && housekeeper.leading();
+        return started && running(housekeeper).leading();
     }
 
     /** Covers claims on their way in: committed, but not yet known to their worker. */
@@ -655,8 +673,9 @@ public final class TaskEngine implements AutoCloseable {
         long deadline = System.nanoTime() + timeout.toNanos();
         try {
             // Nothing new starts: no wake-ups, no reloads.
-            if (notifier != null) {
-                notifier.close();
+            Notifier wakeUps = notifier;
+            if (wakeUps != null) {
+                wakeUps.close();
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
             limits.stopRefreshing(TopicWorker.PATIENCE);
@@ -684,7 +703,10 @@ public final class TaskEngine implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            housekeeper.stop();
+            Housekeeper keeper = housekeeper;
+            if (keeper != null) {
+                keeper.stop();
+            }
         }
     }
 

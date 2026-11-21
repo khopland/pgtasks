@@ -22,6 +22,8 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Transaction-aware enqueue. Only {@link #independently()} ever commits on its own. With a store
  * that keeps its tasks outside the application's database, {@link #push} holds the pushes back
@@ -47,7 +49,7 @@ final class DefaultTasks implements Tasks {
     private final TransactionBinding transactions;
     private final Consumer<String> wakeLocally;
     private final TaskObserver taskObserver;
-    private volatile PayloadCodecs fallbackCodecs;
+    private volatile @Nullable PayloadCodecs fallbackCodecs;
     private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile Observer observer = (topic, insertion, creations, results) -> { };
 
@@ -71,7 +73,7 @@ final class DefaultTasks implements Tasks {
         this.taskObserver = taskObserver;
     }
 
-    void fallbackCodecs(PayloadCodecs codecs) {
+    void fallbackCodecs(@Nullable PayloadCodecs codecs) {
         this.fallbackCodecs = codecs;
     }
 
@@ -182,7 +184,8 @@ final class DefaultTasks implements Tasks {
      * Writes in the given store transaction without committing. {@code parents}, if given, holds
      * the task that staged each creation, for the lineage columns.
      */
-    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) {
+    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
+                                @Nullable List<? extends Task<?>> parents) {
         try {
             return store(transaction, topic, insertion, creations, parents);
         } catch (SQLException e) {
@@ -190,7 +193,8 @@ final class DefaultTasks implements Tasks {
         }
     }
 
-    private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations, List<? extends Task<?>> parents) throws SQLException {
+    private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
+                                     @Nullable List<? extends Task<?>> parents) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
@@ -201,7 +205,8 @@ final class DefaultTasks implements Tasks {
         }
     }
 
-    private static <T> List<TaskStore.NewTask> newTasks(PayloadCodec<T> codec, List<Creation<T>> creations, List<? extends Task<?>> parents, String traceContext) {
+    private static <T> List<TaskStore.NewTask> newTasks(PayloadCodec<T> codec, List<Creation<T>> creations,
+                                                       @Nullable List<? extends Task<?>> parents, @Nullable String traceContext) {
         List<TaskStore.NewTask> tasks = new ArrayList<>(creations.size());
         for (int index = 0; index < creations.size(); index++) {
             Creation<T> creation = creations.get(index);

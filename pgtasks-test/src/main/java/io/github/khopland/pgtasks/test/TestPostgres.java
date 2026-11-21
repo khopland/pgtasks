@@ -12,6 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * One real Postgres server per JVM, shared by every test.
  *
@@ -29,7 +31,7 @@ public final class TestPostgres {
     private static final AtomicInteger COUNTER = new AtomicInteger();
     private static final Map<String, String> TEMPLATES = new ConcurrentHashMap<>();
 
-    private static volatile Server server;
+    private static volatile @Nullable Server server;
 
     private TestPostgres() {
     }
@@ -118,7 +120,7 @@ public final class TestPostgres {
                 .setServerConfig("fsync", "off")
                 .setServerConfig("synchronous_commit", "off")
                 .setServerConfig("full_page_writes", "off");
-            for (String setting : System.getProperty("pgtasks.test.postgres.config", "").split(";")) {
+            for (String setting : System.getProperty("pgtasks.test.postgres.config", "").split(";", -1)) {
                 int equals = setting.indexOf('=');
                 if (equals > 0) {
                     builder.setServerConfig(setting.substring(0, equals).strip(), setting.substring(equals + 1).strip());
@@ -129,6 +131,7 @@ public final class TestPostgres {
                 try {
                     embedded.close();
                 } catch (IOException ignored) {
+                    // The JVM is exiting; the data directory is temporary either way.
                 }
             }, "pgtasks-test-postgres-shutdown"));
             return new Server("jdbc:postgresql://localhost:" + embedded.getPort() + "/postgres", "postgres", "");

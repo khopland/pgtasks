@@ -7,6 +7,8 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Sees what the engine does, for metrics, tracing and logging context, without the engine
  * depending on any of them. {@code pgtasks-micrometer} implements it with Micrometer.
@@ -85,7 +87,7 @@ public interface TaskObserver {
 
         PushObservation NONE = new PushObservation() {
             @Override
-            public String traceContext() {
+            public @Nullable String traceContext() {
                 return null;
             }
 
@@ -95,7 +97,7 @@ public interface TaskObserver {
         };
 
         /** The pushing code's trace as a W3C {@code traceparent}, or null. */
-        String traceContext();
+        @Nullable String traceContext();
 
         @Override
         void close();

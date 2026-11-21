@@ -11,6 +11,8 @@ import io.github.khopland.pgtasks.spi.Notifier;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * LISTENs for the notifications that the queue triggers send when tasks become ready, and that
  * changes to topics and rate limit overrides send. Uses one
@@ -33,7 +35,7 @@ public final class PostgresNotifier implements Notifier {
 
     private final ConnectionFactory connections;
     private final AtomicBoolean running = new AtomicBoolean();
-    private volatile Thread thread;
+    private volatile @Nullable Thread thread;
     private volatile boolean connected;
 
     public PostgresNotifier(ConnectionFactory connections) {

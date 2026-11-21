@@ -34,6 +34,8 @@ import io.github.khopland.pgtasks.spi.StoreProvider;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Builds an engine from configurers. Settings come in layers, each overriding the one before:
  * built-in defaults, global defaults, the module's defaults, the topic's options, and overrides
@@ -63,8 +65,8 @@ public final class TaskEngineBuilder {
     private record Declared(TopicRef<?> ref, String module) {
     }
 
-    private TaskStore store;
-    private DataSource dataSource;
+    private @Nullable TaskStore store;
+    private @Nullable DataSource dataSource;
     private String node = "node";
     private final Map<String, String> storeOptions = new HashMap<>();
     private final List<Named<TaskConfigurer>> configurers = new ArrayList<>();
@@ -72,11 +74,11 @@ public final class TaskEngineBuilder {
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
-    private String version;
-    private PayloadCodecs fallbackCodecs;
+    private @Nullable String version;
+    private @Nullable PayloadCodecs fallbackCodecs;
     private boolean topicsCreatedOnPush;
     private boolean notifications = true;
-    private Notifier notifier;
+    private @Nullable Notifier notifier;
     private final Map<Class<?>, PayloadCodec<?>> codecs = new HashMap<>();
 
     TaskEngineBuilder() {
@@ -162,13 +164,13 @@ public final class TaskEngineBuilder {
      * The application's version, recorded with this node in tasks.node, and what a topic that
      * revives its dead letters on a new version compares; see {@link DeadLetterPolicy}.
      */
-    public TaskEngineBuilder version(String version) {
+    public TaskEngineBuilder version(@Nullable String version) {
         this.version = version;
         return this;
     }
 
     /** Codecs for payload types without one of their own, such as JSON; see {@link PayloadCodecs}. */
-    public TaskEngineBuilder codecs(PayloadCodecs codecs) {
+    public TaskEngineBuilder codecs(@Nullable PayloadCodecs codecs) {
         this.fallbackCodecs = codecs;
         return this;
     }
@@ -177,6 +179,7 @@ public final class TaskEngineBuilder {
      * Sees pushes and batches, for metrics and tracing, such as pgtasks-micrometer's. Called again,
      * it adds another: every observer sees everything.
      */
+    @SuppressWarnings("ReferenceEquality") // NONE is the one no-op instance
     public TaskEngineBuilder observer(TaskObserver observer) {
         Objects.requireNonNull(observer);
         this.observer = this.observer == TaskObserver.NONE ? observer : TaskObserver.composite(List.of(this.observer, observer));
@@ -184,7 +187,7 @@ public final class TaskEngineBuilder {
     }
 
     /** Wake-ups; by default the store's own, such as LISTEN/NOTIFY on Postgres. */
-    public TaskEngineBuilder notifier(Notifier notifier) {
+    public TaskEngineBuilder notifier(@Nullable Notifier notifier) {
         this.notifier = notifier;
         return this;
     }
@@ -323,8 +326,8 @@ public final class TaskEngineBuilder {
     }
 
     private static final class LimitSpec implements GlobalOptions.LimitOptions {
-        Rate rate;
-        Integer burst;
+        @Nullable Rate rate;
+        @Nullable Integer burst;
         final List<RateWindow> windows = new ArrayList<>();
 
         @Override
@@ -498,7 +501,7 @@ public final class TaskEngineBuilder {
                 @Override
                 public <T> TaskRegistry codec(Class<T> type, PayloadCodec<T> codec) {
                     PayloadCodec<?> previous = allCodecs.putIfAbsent(type, codec);
-                    if (previous != null && previous != codec) {
+                    if (previous != null && !previous.equals(codec)) {
                         problems.add("Two codecs for " + type.getName() + ", one from " + configurer.name());
                     }
                     return this;
@@ -548,8 +551,8 @@ public final class TaskEngineBuilder {
         limitOverrides.forEach((name, values) -> values.forEach((key, value) -> {
             try {
                 switch (key) {
-                    case "rate" -> global.limits.get(name).rate = Rate.parse(value);
-                    case "burst" -> global.limits.get(name).burst(Integer.parseInt(value.trim()));
+                    case "rate" -> limitSpec(global, name).rate = Rate.parse(value);
+                    case "burst" -> limitSpec(global, name).burst(Integer.parseInt(value.trim()));
                     default -> problems.add("Unknown limit setting limits." + name + "." + key + "; known: rate, burst");
                 }
             } catch (IllegalArgumentException e) {
@@ -571,7 +574,7 @@ public final class TaskEngineBuilder {
             });
             topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
                 try {
-                    Object parsed = parseOverride(key, value, (Retry) values.get("retry"));
+                    Object parsed = parseOverride(key, value, setting(values, "retry", Retry.class));
                     // Each retry.* key changes one part of the retry policy, which is one setting.
                     String setting = key.startsWith("retry.") ? "retry" : key;
                     values.put(setting, parsed);
@@ -591,7 +594,7 @@ public final class TaskEngineBuilder {
                 problems.add("Topic " + topic.name + " (" + topic.module + "): " + e.getMessage());
             }
             Map<String, Setting> report = new TreeMap<>();
-            values.forEach((key, value) -> report.put(key, new Setting(describe(value), sources.get(key))));
+            values.forEach((key, value) -> report.put(key, new Setting(describe(value), Objects.requireNonNull(sources.get(key)))));
             effective.add(new EffectiveSettings(topic.name, topic.module, report));
         }
         Map<String, Declared> pushedTo = new LinkedHashMap<>();
@@ -613,6 +616,7 @@ public final class TaskEngineBuilder {
         TaskStore chosen = store;
         Notifier wakeUps = notifier;
         if (chosen == null) {
+            DataSource dataSource = Objects.requireNonNull(this.dataSource, "dataSource");
             StoreProvider provider = ServiceLoader.load(StoreProvider.class).stream()
                 .map(ServiceLoader.Provider::get)
                 .sorted(Comparator.comparingInt(StoreProvider::order))
@@ -703,7 +707,7 @@ public final class TaskEngineBuilder {
     /** A {@link Topic}, or a {@link TopicTemplate} for a pattern. */
     @SuppressWarnings("unchecked")
     private static <T> Object build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
-                                     PayloadCodecs fallback) {
+                                     @Nullable PayloadCodecs fallback) {
         PayloadCodec<T> codec = (PayloadCodec<T>) codecs.get(topic.type);
         if (codec == null && topic.type == String.class) {
             codec = (PayloadCodec<T>) PayloadCodec.string();
@@ -721,8 +725,9 @@ public final class TaskEngineBuilder {
             if (limit == null) {
                 throw new IllegalArgumentException("unknown limit '" + name + "'; define it in TaskGlobals; known: " + global.limits.keySet());
             }
-            int burst = limit.burst != null ? limit.burst : (int) Math.max(1, Math.ceil(limit.rate.perSecond()));
-            rateLimit = new RateLimit(name, limit.rate.perSecond(), burst, limit.windows);
+            Rate rate = Objects.requireNonNull(limit.rate, "rate");
+            int burst = limit.burst != null ? limit.burst : (int) Math.max(1, Math.ceil(rate.perSecond()));
+            rateLimit = new RateLimit(name, rate.perSecond(), burst, limit.windows);
         }
         Map<Outcome, Period> retention = new EnumMap<>(Outcome.class);
         for (Outcome outcome : Outcome.values()) {
@@ -731,16 +736,16 @@ public final class TaskEngineBuilder {
             }
         }
         TopicSettings settings = new TopicSettings(
-            (Integer) values.get("batch-size"),
-            (Integer) values.get("concurrency"),
-            (Ordering) values.get("ordering"),
-            (Retry) values.get("retry"),
-            (Duration) values.get("batch-deadline"),
-            (Duration) values.get("poll-interval"),
+            setting(values, "batch-size", Integer.class),
+            setting(values, "concurrency", Integer.class),
+            setting(values, "ordering", Ordering.class),
+            setting(values, "retry", Retry.class),
+            setting(values, "batch-deadline", Duration.class),
+            setting(values, "poll-interval", Duration.class),
             rateLimit,
             retention,
-            (Breaker) values.get("breaker"),
-            (DeadLetterPolicy) values.get("dead-letters")
+            setting(values, "breaker", Breaker.class),
+            setting(values, "dead-letters", DeadLetterPolicy.class)
         );
         return topic.pattern
             ? new TopicTemplate<>(topic.name, topic.type, topic.handler, codec, settings, topic.spec.resources)
@@ -774,7 +779,16 @@ public final class TaskEngineBuilder {
         }
     }
 
-    private static String longestPrefix(java.util.Set<String> names, String key) {
+    /** A setting every topic has, from the defaults if nothing else set it. */
+    private static <V> V setting(Map<String, Object> values, String key, Class<V> type) {
+        return type.cast(Objects.requireNonNull(values.get(key), key));
+    }
+
+    private static LimitSpec limitSpec(Globals global, String name) {
+        return Objects.requireNonNull(global.limits.get(name), name);
+    }
+
+    private static @Nullable String longestPrefix(java.util.Set<String> names, String key) {
         return names.stream().filter(name -> key.startsWith(name + ".")).max(Comparator.comparingInt(String::length)).orElse(null);
     }
 
@@ -809,7 +823,7 @@ public final class TaskEngineBuilder {
         };
     }
 
-    private static Outcome outcome(String label) {
+    private static @Nullable Outcome outcome(String label) {
         for (Outcome outcome : Outcome.values()) {
             if (outcome.label().equals(label)) {
                 return outcome;

@@ -3,6 +3,8 @@ package io.github.khopland.pgtasks.engine;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
+import org.jspecify.annotations.Nullable;
+
 /** The structured error stored in tasks.task.error and tasks.attempt.error. */
 final class ErrorJson {
 
@@ -11,7 +13,7 @@ final class ErrorJson {
     private ErrorJson() {
     }
 
-    static String of(String message, Throwable cause) {
+    static String of(@Nullable String message, @Nullable Throwable cause) {
         StringBuilder json = new StringBuilder("{");
         field(json, "message", message != null ? message : cause != null ? cause.toString() : "failed");
         if (cause != null) {

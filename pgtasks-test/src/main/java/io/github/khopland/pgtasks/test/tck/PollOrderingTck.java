@@ -23,6 +23,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import org.jspecify.annotations.Nullable;
+
 /** TCK: the per-identifier ordering contract from plan section 10, cell by cell. */
 public abstract class PollOrderingTck extends StoreTck {
 
@@ -72,7 +74,7 @@ public abstract class PollOrderingTck extends StoreTck {
             Arguments.of("dead-lettered", true, false, false),
             Arguments.of("finished", true, true, true)
         ).flatMap(row -> {
-            Object[] values = row.get();
+            @Nullable Object[] values = row.get();
             return Stream.of(
                 Arguments.of(values[0], Ordering.FIFO, true),
                 Arguments.of(values[0], Ordering.SINGULAR_BY_IDENTIFIER, values[1]),
@@ -114,7 +116,7 @@ public abstract class PollOrderingTck extends StoreTck {
     @EnumSource(value = Ordering.class, names = "SINGULAR.*", mode = EnumSource.Mode.MATCH_ALL)
     void later_failed_tasks_do_not_hold_back_earlier_ones(Ordering ordering) throws SQLException {
         StoreFixture fixture = setUp();
-        long first = fixture.push(topic, Insertion.APPEND, prioritized("x", 0)).getFirst().id();
+        long first = StoreFixture.id(fixture.push(topic, Insertion.APPEND, prioritized("x", 0)).getFirst());
         fixture.push(topic, Insertion.APPEND, prioritized("x", 5));
         // FIFO by priority claims the later task first; it dead-letters.
         ClaimedTask later = fixture.claim(topic, node, Ordering.FIFO, 1).getFirst();
@@ -127,7 +129,7 @@ public abstract class PollOrderingTck extends StoreTck {
     @EnumSource(value = Ordering.class, names = "SINGULAR.*", mode = EnumSource.Mode.MATCH_ALL)
     void an_active_task_blocks_its_identifier_in_both_directions(Ordering ordering) throws SQLException {
         StoreFixture fixture = setUp();
-        long first = fixture.push(topic, Insertion.APPEND, prioritized("x", 0)).getFirst().id();
+        long first = StoreFixture.id(fixture.push(topic, Insertion.APPEND, prioritized("x", 0)).getFirst());
         fixture.push(topic, Insertion.APPEND, prioritized("x", 5));
         // The later task is running, e.g. because the earlier one committed late.
         fixture.claim(topic, node, Ordering.FIFO, 1);

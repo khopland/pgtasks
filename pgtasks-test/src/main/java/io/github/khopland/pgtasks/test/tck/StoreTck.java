@@ -2,13 +2,15 @@ package io.github.khopland.pgtasks.test.tck;
 
 import org.junit.jupiter.api.AfterEach;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Base of the store TCK. A store's test class extends each TCK class and creates its fixture;
  * the fixture is created lazily, so a subclass can set it up in its own {@code @BeforeEach}.
  */
 public abstract class StoreTck {
 
-    private StoreFixture fixture;
+    private @Nullable StoreFixture fixture;
 
     protected abstract StoreFixture createFixture() throws Exception;
 

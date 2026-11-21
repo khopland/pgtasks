@@ -8,6 +8,8 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Several observers seen as one, each wrapped so one that throws doesn't keep the others from
  * seeing anything. A push's stored trace is the first observer's that gives one.
@@ -25,7 +27,7 @@ final class CompositeObserver implements TaskObserver {
         List<PushObservation> each = observers.stream().map(observer -> observer.pushing(topic, tasks)).toList();
         return new PushObservation() {
             @Override
-            public String traceContext() {
+            public @Nullable String traceContext() {
                 return each.stream().map(PushObservation::traceContext).filter(java.util.Objects::nonNull).findFirst().orElse(null);
             }
 

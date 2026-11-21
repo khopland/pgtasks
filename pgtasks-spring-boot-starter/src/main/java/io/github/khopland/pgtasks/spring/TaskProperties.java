@@ -31,7 +31,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        chosen on its own: without a DataSource, startup fails
  * @param schemaMode      how the Postgres store treats the tasks schema at startup: {@code migrate}
  *                        (the built-in runner), {@code validate} (Flyway, Liquibase or a DBA
- *                        pipeline applies it) or {@code none}
+ *                        pipeline applies it) or {@code none}, which leaves it to the application
  * @param node            this node's name in tasks.node; by default {@code spring.application.name}
  * @param notifications   wake workers through LISTEN/NOTIFY; off relies on polling alone
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
@@ -48,6 +48,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)
  */
 @ConfigurationProperties("pgtasks")
+@SuppressWarnings("InvalidParam") // {@code none} is a schema mode, not a misspelt {@code node}
 public record TaskProperties(
     @DefaultValue("true") boolean enabled,
     @DefaultValue("postgres") Store store,

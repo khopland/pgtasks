@@ -266,7 +266,8 @@ public class TaskEndpoint {
      * Ids, or a filter, or all of them, but only when asked for in so many words: one stray call
      * with an empty body would otherwise finish every dead letter of a topic.
      */
-    private static DeadLetterQuery deadLetterQuery(List<Long> taskIds, String error, String failedFrom, String failedUntil, String all) {
+    private static DeadLetterQuery deadLetterQuery(@Nullable List<Long> taskIds, @Nullable String error, @Nullable String failedFrom,
+                                                   @Nullable String failedUntil, @Nullable String all) {
         boolean filtered = error != null || failedFrom != null || failedUntil != null;
         if (taskIds != null) {
             return DeadLetterQuery.ids(taskIds);
@@ -367,7 +368,7 @@ public class TaskEndpoint {
         return body;
     }
 
-    private static Map<String, Object> rate(RateLimit limit) {
+    private static @Nullable Map<String, Object> rate(@Nullable RateLimit limit) {
         if (limit == null) {
             return null;
         }
@@ -408,7 +409,7 @@ public class TaskEndpoint {
         return type.find() ? "{\"type\":\"" + type.group(1) + "\",\"message\":\"" + HIDDEN + "\"}" : HIDDEN;
     }
 
-    private static String text(Instant instant) {
+    private static @Nullable String text(@Nullable Instant instant) {
         return instant == null ? null : instant.toString();
     }
 
@@ -432,11 +433,11 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(WebEndpointResponse.STATUS_NOT_FOUND);
     }
 
-    private static WebEndpointResponse<Object> badRequest(String message) {
+    private static WebEndpointResponse<Object> badRequest(@Nullable String message) {
         return new WebEndpointResponse<>(error(message), WebEndpointResponse.STATUS_BAD_REQUEST);
     }
 
-    private static Map<String, Object> error(String message) {
+    private static Map<String, Object> error(@Nullable String message) {
         return Map.of("error", message == null ? "invalid request" : message);
     }
 }

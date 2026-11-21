@@ -19,6 +19,7 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
  */
 final class MemoryTransaction implements StoreTransaction {
 
+    @SuppressWarnings("ReferenceEquality") // a proxy equals only itself
     private static final Connection NO_CONNECTION = (Connection) Proxy.newProxyInstance(
         Connection.class.getClassLoader(),
         new Class<?>[] {Connection.class},

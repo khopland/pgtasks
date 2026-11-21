@@ -2,6 +2,8 @@ package io.github.khopland.pgtasks.engine;
 
 import java.util.concurrent.Callable;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Marks the threads that run a topic's handler, so a push from there can be told apart: one
  * that should have been staged with {@code task.push(...)}, to commit with the task's completion.
@@ -19,7 +21,7 @@ final class HandlerThread {
     }
 
     /** The topic whose handler this thread runs, or null. */
-    static String topic() {
+    static @Nullable String topic() {
         return TOPIC.isBound() ? TOPIC.get() : null;
     }
 }

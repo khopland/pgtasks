@@ -8,6 +8,8 @@ import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.TransactionBinding;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Node-wide settings and collaborators, as the builder resolves them from {@link TaskGlobals};
  * {@link #defaults(String)} holds the built-in defaults.
@@ -34,7 +36,7 @@ record EngineSettings(
     Duration expiry,
     Duration promoteInterval,
     int maxInFlightBatches,
-    Notifier notifier,
+    @Nullable Notifier notifier,
     TransactionBinding transactions,
     Map<Class<?>, PayloadCodec<?>> codecs,
     Duration snapshotInterval,
@@ -88,7 +90,7 @@ record EngineSettings(
         return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer, expiries);
     }
 
-    public EngineSettings withNotifier(Notifier notifier) {
+    public EngineSettings withNotifier(@Nullable Notifier notifier) {
         return new EngineSettings(nodeName, heartbeat, expiry, promoteInterval, maxInFlightBatches, notifier, transactions, codecs, snapshotInterval, purgeInterval, observer, expiries);
     }
 

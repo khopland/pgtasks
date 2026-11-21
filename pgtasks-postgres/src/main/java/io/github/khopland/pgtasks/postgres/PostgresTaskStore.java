@@ -40,6 +40,8 @@ import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The task store on the {@code tasks} schema (see {@link TaskSchema}). Every operation is one
  * statement, except a claim: it first pins its plan with transaction-local planner settings, and
@@ -848,7 +850,7 @@ public final class PostgresTaskStore implements TaskStore {
         boolean[] dropped = new boolean[tasks.size()];
         for (int index = 0; index < tasks.size(); index++) {
             NewTask task = tasks.get(index);
-            boolean superseded = insertion != Insertion.APPEND && last.get(task.identifier()) != index;
+            boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
             if (superseded && insertion == Insertion.DELETE) {
                 dropped[index] = true;
                 continue;
@@ -857,9 +859,9 @@ public final class PostgresTaskStore implements TaskStore {
             states.add(superseded ? null : task.suspended() ? "suspended" : task.delay() != null && !task.delay().isZero() ? "scheduled" : "ready");
         }
         int size = stored.size();
-        Object[] identifiers = new Object[size], payloads = new Object[size], types = new Object[size], references = new Object[size];
-        Object[] parents = new Object[size], roots = new Object[size], delays = new Object[size], priorities = new Object[size], dedup = new Object[size];
-        Object[] traces = new Object[size];
+        @Nullable Object[] identifiers = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], references = new @Nullable Object[size];
+        @Nullable Object[] parents = new @Nullable Object[size], roots = new @Nullable Object[size], delays = new @Nullable Object[size], priorities = new @Nullable Object[size], dedup = new @Nullable Object[size];
+        @Nullable Object[] traces = new @Nullable Object[size];
         for (int index = 0; index < size; index++) {
             NewTask task = stored.get(index);
             identifiers[index] = task.identifier();
@@ -887,7 +889,7 @@ public final class PostgresTaskStore implements TaskStore {
             .array("dedup", "text", dedup)
             .array("traces", "text", traces);
         List<Pushed> results = new ArrayList<>(tasks.size());
-        try (PreparedStatement statement = pushes.get(insertion).prepare(connection, parameters);
+        try (PreparedStatement statement = Objects.requireNonNull(pushes.get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             for (int index = 0; index < tasks.size(); index++) {
                 String identifier = tasks.get(index).identifier();
@@ -937,7 +939,7 @@ public final class PostgresTaskStore implements TaskStore {
             .set("topic", request.topicId())
             .set("node", request.nodeId())
             .set("limit", limit);
-        try (PreparedStatement statement = polls.get(request.ordering()).prepare(connection, parameters);
+        try (PreparedStatement statement = Objects.requireNonNull(polls.get(request.ordering())).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 tasks.add(new ClaimedTask(
@@ -950,8 +952,8 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getString("reference"),
                     resultSet.getObject("parent_id", Long.class),
                     resultSet.getObject("root_id", Long.class),
-                    instant(resultSet, "created_at"),
-                    instant(resultSet, "claimed_at"),
+                    requiredInstant(resultSet, "created_at"),
+                    requiredInstant(resultSet, "claimed_at"),
                     resultSet.getString("trace_context"),
                     resultSet.getInt("failures"),
                     instant(resultSet, "first_failed_at")
@@ -1021,7 +1023,7 @@ public final class PostgresTaskStore implements TaskStore {
         Set<Long> matched = new HashSet<>();
         if (!finished.isEmpty()) {
             int size = finished.size();
-            Object[] ids = new Object[size], attempts = new Object[size], outcomes = new Object[size], outputs = new Object[size];
+            @Nullable Object[] ids = new @Nullable Object[size], attempts = new @Nullable Object[size], outcomes = new @Nullable Object[size], outputs = new @Nullable Object[size];
             for (int index = 0; index < size; index++) {
                 Completion completion = finished.get(index);
                 Resolution.Finished resolution = (Resolution.Finished) completion.resolution();
@@ -1044,8 +1046,8 @@ public final class PostgresTaskStore implements TaskStore {
         }
         if (!waiting.isEmpty()) {
             int size = waiting.size();
-            Object[] ids = new Object[size], attempts = new Object[size], states = new Object[size], delays = new Object[size];
-            Object[] uncounted = new Object[size], errors = new Object[size], started = new Object[size];
+            @Nullable Object[] ids = new @Nullable Object[size], attempts = new @Nullable Object[size], states = new @Nullable Object[size], delays = new @Nullable Object[size];
+            @Nullable Object[] uncounted = new @Nullable Object[size], errors = new @Nullable Object[size], started = new @Nullable Object[size];
             for (int index = 0; index < size; index++) {
                 Completion completion = waiting.get(index);
                 Resolution.Waiting resolution = (Resolution.Waiting) completion.resolution();
@@ -1179,7 +1181,7 @@ public final class PostgresTaskStore implements TaskStore {
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
             .array("outcomes", "text", outcomes.stream().map(io.github.khopland.pgtasks.Outcome::label).toArray())
-            .array("periods", "text", outcomes.stream().map(outcome -> retention.get(outcome).toString()).toArray());
+            .array("periods", "text", outcomes.stream().map(outcome -> String.valueOf(retention.get(outcome))).toArray());
         try (PreparedStatement statement = setRetention.prepare(transaction.connection(), parameters)) {
             statement.executeUpdate();
         }
@@ -1221,7 +1223,7 @@ public final class PostgresTaskStore implements TaskStore {
                 result.add(new TopicSnapshot(resultSet.getString(1), new QueueCounts(resultSet.getLong(2), resultSet.getLong(3), resultSet.getLong(4),
                     resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), resultSet.getLong(8), instant(resultSet, "next_run_at"),
                     instant(resultSet, "oldest_ready_at"), resultSet.getLong("failing"), instant(resultSet, "oldest_failing_at")),
-                    instant(resultSet, "taken_at")));
+                    requiredInstant(resultSet, "taken_at")));
             }
         }
         return result;
@@ -1233,14 +1235,14 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = activeClaims.prepare(transaction.connection(), NamedSql.parameters().set("node", nodeId));
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
-                claims.add(new ActiveClaim(resultSet.getInt(1), resultSet.getLong(2), resultSet.getInt(3), instant(resultSet, "claimed_at")));
+                claims.add(new ActiveClaim(resultSet.getInt(1), resultSet.getLong(2), resultSet.getInt(3), requiredInstant(resultSet, "claimed_at")));
             }
         }
         return claims;
     }
 
     @Override
-    public int registerNode(StoreTransaction transaction, String name, String version) throws SQLException {
+    public int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version));
              ResultSet resultSet = statement.executeQuery()) {
@@ -1289,7 +1291,7 @@ public final class PostgresTaskStore implements TaskStore {
             .array("groups", "integer", numbers.toArray())
             .array("identifiers", "text", identifiers.toArray());
         Set<String> released = new LinkedHashSet<>();
-        try (PreparedStatement statement = junctions.get(counts).prepare(transaction.connection(), parameters);
+        try (PreparedStatement statement = Objects.requireNonNull(junctions.get(counts)).prepare(transaction.connection(), parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 released.add(resultSet.getString(1));
@@ -1311,10 +1313,10 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
-                                                 Long expectedVersion) throws SQLException {
+    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
+                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException {
         // Validates the values the way the row will hold them, before touching the database.
-        new LimitOverride(name, perSecond, burst, until, 0, null, by);
+        new LimitOverride(name, perSecond, burst, until, 0, Instant.EPOCH, by);
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("name", name)
             .set("rate", perSecond)
@@ -1345,7 +1347,7 @@ public final class PostgresTaskStore implements TaskStore {
             resultSet.getObject("burst", Integer.class),
             instant(resultSet, "until"),
             resultSet.getLong("version"),
-            instant(resultSet, "updated_at"),
+            requiredInstant(resultSet, "updated_at"),
             resultSet.getString("updated_by")
         );
     }
@@ -1414,8 +1416,8 @@ public final class PostgresTaskStore implements TaskStore {
     @Override
     public void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> schedules) throws SQLException {
         int size = schedules.size();
-        Object[] names = new Object[size], identifiers = new Object[size], crons = new Object[size], zones = new Object[size];
-        Object[] insertions = new Object[size], payloads = new Object[size], types = new Object[size], next = new Object[size];
+        @Nullable Object[] names = new @Nullable Object[size], identifiers = new @Nullable Object[size], crons = new @Nullable Object[size], zones = new @Nullable Object[size];
+        @Nullable Object[] insertions = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], next = new @Nullable Object[size];
         for (int index = 0; index < size; index++) {
             ScheduleSpec schedule = schedules.get(index);
             names[index] = schedule.name();
@@ -1478,7 +1480,7 @@ public final class PostgresTaskStore implements TaskStore {
                     Insertion.valueOf(resultSet.getString("insertion")),
                     resultSet.getString("payload"),
                     resultSet.getString("payload_type"),
-                    instant(resultSet, "next_run_at"),
+                    requiredInstant(resultSet, "next_run_at"),
                     instant(resultSet, "last_run_at")));
             }
         }
@@ -1515,7 +1517,7 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = failingGroups.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("limit", limit));
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
-                groups.add(new FailureGroup(resultSet.getString("error"), resultSet.getLong("tasks"), instant(resultSet, "oldest"),
+                groups.add(new FailureGroup(resultSet.getString("error"), resultSet.getLong("tasks"), requiredInstant(resultSet, "oldest"),
                     resultSet.getLong("example"), resultSet.getString("message")));
             }
         }
@@ -1541,7 +1543,7 @@ public final class PostgresTaskStore implements TaskStore {
             resultSet.getString("output"),
             resultSet.getString("error"),
             resultSet.getString("previous_outcome"),
-            instant(resultSet, "created_at"),
+            requiredInstant(resultSet, "created_at"),
             instant(resultSet, "completed_at"),
             resultSet.getInt("failures"),
             instant(resultSet, "first_failed_at")
@@ -1572,7 +1574,12 @@ public final class PostgresTaskStore implements TaskStore {
         return attempts;
     }
 
-    private static Instant instant(ResultSet resultSet, String column) throws SQLException {
+    /** A timestamp of a NOT NULL column. */
+    private static Instant requiredInstant(ResultSet resultSet, String column) throws SQLException {
+        return Objects.requireNonNull(instant(resultSet, column), column);
+    }
+
+    private static @Nullable Instant instant(ResultSet resultSet, String column) throws SQLException {
         OffsetDateTime value = resultSet.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();
     }

@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
@@ -12,6 +13,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The poll loop of one topic on this node. Takes a topic permit and a node permit, claims at
@@ -37,7 +40,7 @@ final class TopicWorker<T> {
     private final Signal stopSignal = new Signal();
     private final ExecutorService batches;
     private volatile boolean running, stopping;
-    private Thread poller;
+    private @Nullable Thread poller;
     private final CircuitBreaker breaker;
 
     // For telling when the engine is idle: claims started, the last one that found nothing, batches running.
@@ -63,7 +66,7 @@ final class TopicWorker<T> {
     }
 
     /** When the open breaker sends its next probe, by the store's clock; null if closed or a probe is out. */
-    java.time.Instant nextProbe() {
+    java.time.@Nullable Instant nextProbe() {
         return breaker.nextProbe();
     }
 
@@ -223,10 +226,12 @@ final class TopicWorker<T> {
                 }
                 permits.release();
                 dispatched = true;
-                if (claimed.admissionWait() != null) {
+                Duration admissionWait = claimed.admissionWait();
+                if (admissionWait != null) {
                     // New work doesn't shorten a wait for the rate limit; a changed limit does.
-                    core.observer().limitWait(topic.ref(), topic.settings().rateLimit().name(), claimed.admissionWait());
-                    limitSignal.await(claimed.admissionWait());
+                    RateLimit limit = Objects.requireNonNull(topic.settings().rateLimit(), "an admission wait without a rate limit");
+                    core.observer().limitWait(topic.ref(), limit.name(), admissionWait);
+                    limitSignal.await(admissionWait);
                 } else {
                     signalsAtEmptyClaim = signalsBefore;
                     lastEmptyClaim = claim;

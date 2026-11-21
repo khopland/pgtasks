@@ -8,6 +8,7 @@ import java.time.Period;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -40,6 +41,8 @@ import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Tasks in memory, for running an app locally without a database and for fast tests. It passes
@@ -93,7 +96,7 @@ public final class InMemoryTaskStore implements TaskStore {
     @Override
     public Notifier notifier() {
         return new Notifier() {
-            private Listener listener;
+            private @Nullable Listener listener;
 
             @Override
             public void start(Listener listener) {
@@ -216,7 +219,7 @@ public final class InMemoryTaskStore implements TaskStore {
         Set<String> queuedIdentifiers = new LinkedHashSet<>();
         for (int index = 0; index < newTasks.size(); index++) {
             NewTask task = newTasks.get(index);
-            boolean superseded = insertion != Insertion.APPEND && last.get(task.identifier()) != index;
+            boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
             if (superseded && insertion == Insertion.DELETE) {
                 results.add(new Pushed(task.identifier(), Pushed.Status.REDUNDANT, null));
                 continue;
@@ -252,7 +255,7 @@ public final class InMemoryTaskStore implements TaskStore {
                     if (insertion == Insertion.DELETE) {
                         deleteTask(memory, old.taskId());
                     } else {
-                        memory.put(tasks, old.taskId(), tasks.get(old.taskId()).redundant(now));
+                        memory.put(tasks, old.taskId(), task(old.taskId()).redundant(now));
                     }
                 }
             }
@@ -328,19 +331,19 @@ public final class InMemoryTaskStore implements TaskStore {
         for (Rows.Queued row : picked) {
             Rows.Queued active = row.with(State.ACTIVE, null, row.attempt() + 1, request.nodeId(), now);
             putQueued(memory, active);
-            Rows.Task task = tasks.get(row.taskId());
+            Rows.Task task = task(row.taskId());
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
                 task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext(), row.failures(), row.firstFailedAt()));
         }
         if (admission != null && !claimed.isEmpty()) {
-            Rows.Bucket bucket = buckets.get(admission.name());
+            Rows.Bucket bucket = Objects.requireNonNull(buckets.get(admission.name()), "bucket");
             Instant refilledAt = bucket.refilledAt().isAfter(now) ? bucket.refilledAt() : now;
             memory.put(buckets, admission.name(), new Rows.Bucket(admission.name(), Math.max(0, available - claimed.size()), refilledAt));
         }
         return claimed.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(claimed), null);
     }
 
-    private static Set<State> blocking(Ordering ordering) {
+    private static @Nullable Set<State> blocking(Ordering ordering) {
         return switch (ordering) {
             case FIFO -> null;
             case SINGULAR_BY_IDENTIFIER -> EnumSet.of(State.READY, State.RETRYING);
@@ -354,7 +357,7 @@ public final class InMemoryTaskStore implements TaskStore {
         return queue.values().stream().anyMatch(other -> other.topicId() == candidate.topicId()
             && other.identifier().equals(candidate.identifier())
             && other.taskId() != candidate.taskId()
-            && (other.state() == State.ACTIVE || other.taskId() < candidate.taskId() && blocking.contains(other.state())));
+            && (other.state() == State.ACTIVE || (other.taskId() < candidate.taskId() && blocking.contains(other.state()))));
     }
 
     private Rows.Bucket bucket(MemoryTransaction memory, String name, int burst) {
@@ -411,7 +414,7 @@ public final class InMemoryTaskStore implements TaskStore {
                     continue;
                 }
                 matched.add(row.taskId());
-                Rows.Task task = tasks.get(row.taskId());
+                Rows.Task task = task(row.taskId());
                 switch (completion.resolution()) {
                     case Resolution.Finished finished -> {
                         memory.remove(queue, row.taskId());
@@ -452,7 +455,7 @@ public final class InMemoryTaskStore implements TaskStore {
         Instant now = now();
         Set<Integer> topics = new LinkedHashSet<>();
         List<Rows.Queued> due = queue.values().stream()
-            .filter(row -> (row.state() == State.SCHEDULED || row.state() == State.RETRYING) && !row.runAt().isAfter(now))
+            .filter(row -> (row.state() == State.SCHEDULED || row.state() == State.RETRYING) && !Objects.requireNonNull(row.runAt()).isAfter(now))
             .sorted(Comparator.comparing(Rows.Queued::runAt))
             .limit(limit)
             .toList();
@@ -480,7 +483,7 @@ public final class InMemoryTaskStore implements TaskStore {
                 boolean ready = !dead && expiries.backoff().isZero();
                 Instant runAt = dead || ready ? null : now.plus(expiries.backoff().multipliedBy(1L << Math.min(row.expiries(), 20)));
                 putQueued(memory, row.with(dead ? State.FAILED : ready ? State.READY : State.RETRYING, runAt, row.attempt(), null, null).expiredAt(now));
-                Rows.Task task = tasks.get(row.taskId());
+                Rows.Task task = task(row.taskId());
                 memory.put(tasks, task.id(), task.failed("{\"message\":\"" + (dead ? "Expired " + (row.expiries() + 1)
                     + " times: the node running it stopped every time" : "Expired: the node running it stopped") + "\",\"type\":\"expired\"}", row.attempt()));
                 memory.append(attempts, new Rows.Attempt(row.topicId(), row.taskId(), row.attempt(), row.nodeId(),
@@ -595,12 +598,12 @@ public final class InMemoryTaskStore implements TaskStore {
         memory(transaction);
         return queue.values().stream()
             .filter(row -> row.state() == State.ACTIVE && Objects.equals(row.nodeId(), nodeId))
-            .map(row -> new ActiveClaim(row.topicId(), row.taskId(), row.attempt(), row.claimedAt()))
+            .map(row -> new ActiveClaim(row.topicId(), row.taskId(), row.attempt(), Objects.requireNonNull(row.claimedAt())))
             .toList();
     }
 
     @Override
-    public int registerNode(StoreTransaction transaction, String name, String version) {
+    public int registerNode(StoreTransaction transaction, String name, @Nullable String version) {
         MemoryTransaction memory = memory(transaction);
         int id = nextNode++;
         Instant now = now();
@@ -630,8 +633,8 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
-                                                 Long expectedVersion) {
+    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
+                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) {
         MemoryTransaction memory = memory(transaction);
         if (!buckets.containsKey(name)) {
             throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
@@ -647,6 +650,16 @@ public final class InMemoryTaskStore implements TaskStore {
         return Optional.of(changed);
     }
 
+    /** A task that must exist, such as the task of a queued row. */
+    private Rows.Task task(long id) {
+        return Objects.requireNonNull(tasks.get(id), () -> "No task " + id);
+    }
+
+    /** A topic that must exist, such as the topic of a stored row. */
+    private Rows.Topic topic(int id) {
+        return Objects.requireNonNull(topics.get(id), () -> "No topic " + id);
+    }
+
     /** Deletes a task and its attempt log. */
     private void deleteTask(MemoryTransaction memory, long taskId) {
         memory.remove(tasks, taskId);
@@ -655,7 +668,7 @@ public final class InMemoryTaskStore implements TaskStore {
 
     @Override
     public List<TaskView> deadLetters(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
-        return failed(memory(transaction), topicId, query, limit).stream()
+        return failed(topicId, query, limit).stream()
             .map(row -> find(transaction, row.taskId()).orElseThrow())
             .toList();
     }
@@ -663,7 +676,7 @@ public final class InMemoryTaskStore implements TaskStore {
     @Override
     public List<Long> revive(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
         MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> revived = failed(memory, topicId, query, limit);
+        List<Rows.Queued> revived = failed(topicId, query, limit);
         revived.forEach(row -> putQueued(memory, row.with(State.READY, null, 0, null, null).withoutFailures()));
         return revived.stream().map(Rows.Queued::taskId).toList();
     }
@@ -671,11 +684,11 @@ public final class InMemoryTaskStore implements TaskStore {
     @Override
     public List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) {
         MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> discarded = failed(memory, topicId, query, limit);
+        List<Rows.Queued> discarded = failed(topicId, query, limit);
         Instant now = now();
         for (Rows.Queued row : discarded) {
             memory.remove(queue, row.taskId());
-            Rows.Task task = tasks.get(row.taskId());
+            Rows.Task task = task(row.taskId());
             memory.put(tasks, task.id(), task.finish("failed", task.output(), row.attempt(), now));
         }
         if (!discarded.isEmpty()) {
@@ -696,7 +709,7 @@ public final class InMemoryTaskStore implements TaskStore {
             boolean same = old != null && old.cron().equals(spec.cron()) && old.zone().equals(spec.zone());
             int id = old != null ? old.id() : nextSchedule++;
             memory.put(schedules, id, new Rows.Schedule(id, topicId, spec.name(), spec.identifier(), spec.cron(), spec.zone(),
-                spec.insertion().name(), spec.payload(), spec.payloadType(), same ? old.nextRunAt() : spec.nextRunAt(),
+                spec.insertion().name(), spec.payload(), spec.payloadType(), old != null && same ? old.nextRunAt() : spec.nextRunAt(),
                 old == null ? null : old.lastRunAt()));
         }
         existing.values().stream().filter(row -> !wanted.contains(row.name())).forEach(row -> memory.remove(schedules, row.id()));
@@ -706,7 +719,7 @@ public final class InMemoryTaskStore implements TaskStore {
     public List<Schedule> schedules(StoreTransaction transaction) {
         memory(transaction);
         return schedules.values().stream()
-            .sorted(Comparator.comparing((Rows.Schedule row) -> topics.get(row.topicId()).name()).thenComparing(Rows.Schedule::name))
+            .sorted(Comparator.comparing((Rows.Schedule row) -> topic(row.topicId()).name()).thenComparing(Rows.Schedule::name))
             .map(this::schedule)
             .toList();
     }
@@ -733,19 +746,19 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     private Schedule schedule(Rows.Schedule row) {
-        return new Schedule(row.id(), row.topicId(), topics.get(row.topicId()).name(), row.name(), row.identifier(), row.cron(), row.zone(),
+        return new Schedule(row.id(), row.topicId(), topic(row.topicId()).name(), row.name(), row.identifier(), row.cron(), row.zone(),
             Insertion.valueOf(row.insertion()), row.payload(), row.payloadType(), row.nextRunAt(), row.lastRunAt());
     }
 
     /** The topic's dead letters, lowest id first: the given ones, or all, after an id. */
-    private List<Rows.Queued> failed(MemoryTransaction memory, int topicId, DeadLetterQuery query, int limit) {
+    private List<Rows.Queued> failed(int topicId, DeadLetterQuery query, int limit) {
         Set<Long> wanted = query.taskIds() == null ? null : Set.copyOf(query.taskIds());
         return queue.values().stream()
             .filter(row -> row.topicId() == topicId && row.state() == State.FAILED && row.taskId() > query.afterId())
             .filter(row -> wanted == null || wanted.contains(row.taskId()))
-            .filter(row -> query.error() == null || query.error().equals(errorKey(tasks.get(row.taskId()).error())))
-            .filter(row -> query.failedFrom() == null || row.firstFailedAt() != null && !row.firstFailedAt().isBefore(query.failedFrom()))
-            .filter(row -> query.failedUntil() == null || row.firstFailedAt() != null && row.firstFailedAt().isBefore(query.failedUntil()))
+            .filter(row -> query.error() == null || query.error().equals(errorKey(task(row.taskId()).error())))
+            .filter(row -> query.failedFrom() == null || (row.firstFailedAt() != null && !row.firstFailedAt().isBefore(query.failedFrom())))
+            .filter(row -> query.failedUntil() == null || (row.firstFailedAt() != null && row.firstFailedAt().isBefore(query.failedUntil())))
             .sorted(Comparator.comparingLong(Rows.Queued::taskId))
             .limit(limit)
             .toList();
@@ -760,10 +773,10 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         Rows.Queued row = queue.get(taskId);
         return Optional.of(new TaskView(
-            topics.get(task.topicId()).name(),
+            topic(task.topicId()).name(),
             task.id(),
             task.identifier(),
-            row != null ? row.state().label() : task.outcome(),
+            row != null ? row.state().label() : Objects.requireNonNull(task.outcome()),
             row == null,
             row != null ? row.attempt() : task.attempts(),
             row != null ? row.runAt() : null,
@@ -788,7 +801,7 @@ public final class InMemoryTaskStore implements TaskStore {
     public QueueCounts count(StoreTransaction transaction, int topicId) {
         memory(transaction);
         Instant now = now();
-        long[] counts = new long[State.values().length];
+        Map<State, Long> counts = new EnumMap<>(State.class);
         long due = 0;
         Instant next = null;
         Long oldestReady = null;
@@ -798,10 +811,11 @@ public final class InMemoryTaskStore implements TaskStore {
             if (row.topicId() != topicId) {
                 continue;
             }
-            counts[row.state().ordinal()]++;
+            counts.merge(row.state(), 1L, Long::sum);
             if (row.failures() > 0) {
                 failing++;
-                oldestFailing = oldestFailing == null || row.firstFailedAt().isBefore(oldestFailing) ? row.firstFailedAt() : oldestFailing;
+                Instant failedAt = Objects.requireNonNull(row.firstFailedAt());
+                oldestFailing = oldestFailing == null || failedAt.isBefore(oldestFailing) ? failedAt : oldestFailing;
             }
             if (row.state() == State.READY && (oldestReady == null || row.taskId() < oldestReady)) {
                 oldestReady = row.taskId();
@@ -811,9 +825,9 @@ public final class InMemoryTaskStore implements TaskStore {
                 next = next == null || row.runAt().isBefore(next) ? row.runAt() : next;
             }
         }
-        return new QueueCounts(counts[State.SCHEDULED.ordinal()], counts[State.RETRYING.ordinal()], counts[State.READY.ordinal()],
-            counts[State.ACTIVE.ordinal()], counts[State.SUSPENDED.ordinal()], counts[State.FAILED.ordinal()], due, next,
-            oldestReady == null ? null : tasks.get(oldestReady).createdAt(), failing, oldestFailing);
+        return new QueueCounts(counts.getOrDefault(State.SCHEDULED, 0L), counts.getOrDefault(State.RETRYING, 0L),
+            counts.getOrDefault(State.READY, 0L), counts.getOrDefault(State.ACTIVE, 0L), counts.getOrDefault(State.SUSPENDED, 0L),
+            counts.getOrDefault(State.FAILED, 0L), due, next, oldestReady == null ? null : task(oldestReady).createdAt(), failing, oldestFailing);
     }
 
     @Override
@@ -849,7 +863,7 @@ public final class InMemoryTaskStore implements TaskStore {
         MemoryTransaction memory = memory(transaction);
         Rows.Topic topic = topics.get(topicId);
         Instant now = now();
-        if (topic == null || topic.reviveSweptAt() != null && topic.reviveSweptAt().isAfter(now.minus(every))) {
+        if (topic == null || (topic.reviveSweptAt() != null && topic.reviveSweptAt().isAfter(now.minus(every)))) {
             return false;
         }
         memory.put(topics, topicId, topic.sweptAt(now));
@@ -862,13 +876,13 @@ public final class InMemoryTaskStore implements TaskStore {
         Map<String, List<Rows.Queued>> groups = new HashMap<>();
         queue.values().stream()
             .filter(row -> row.topicId() == topicId && row.failures() > 0)
-            .forEach(row -> groups.computeIfAbsent(errorKey(tasks.get(row.taskId()).error()), ignored -> new ArrayList<>()).add(row));
+            .forEach(row -> groups.computeIfAbsent(errorKey(task(row.taskId()).error()), ignored -> new ArrayList<>()).add(row));
         return groups.entrySet().stream()
             .map(group -> {
                 Rows.Queued example = group.getValue().stream().min(Comparator.comparingLong(Rows.Queued::taskId)).orElseThrow();
-                Instant oldest = group.getValue().stream().map(Rows.Queued::firstFailedAt).min(Comparator.naturalOrder()).orElseThrow();
+                Instant oldest = group.getValue().stream().map(row -> Objects.requireNonNull(row.firstFailedAt())).min(Comparator.naturalOrder()).orElseThrow();
                 return new FailureGroup(group.getKey(), group.getValue().size(), oldest, example.taskId(),
-                    jsonField(tasks.get(example.taskId()).error(), "message"));
+                    jsonField(task(example.taskId()).error(), "message"));
             })
             .sorted(Comparator.comparingLong(FailureGroup::tasks).reversed().thenComparing(FailureGroup::error))
             .limit(limit)
@@ -876,7 +890,7 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     /** The error's type, or its message if it has none, as Postgres groups them. */
-    private static String errorKey(String error) {
+    private static String errorKey(@Nullable String error) {
         String type = jsonField(error, "type");
         if (type != null) {
             return type;
@@ -886,7 +900,7 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     /** A string field of the flat JSON the engine writes; enough for grouping, not a JSON parser. */
-    private static String jsonField(String json, String name) {
+    private static @Nullable String jsonField(@Nullable String json, String name) {
         if (json == null) {
             return null;
         }

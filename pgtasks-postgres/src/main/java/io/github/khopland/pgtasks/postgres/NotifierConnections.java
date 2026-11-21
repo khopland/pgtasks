@@ -6,6 +6,8 @@ import java.sql.SQLException;
 
 import javax.sql.DataSource;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The notifier's long-lived connection. Taken from the application's pool, it would hold one of
  * the pool's connections for as long as the engine runs, so it is opened directly when the pool
@@ -17,10 +19,10 @@ final class NotifierConnections implements PostgresNotifier.ConnectionFactory {
     private static final System.Logger LOGGER = System.getLogger(NotifierConnections.class.getName());
 
     private final DataSource dataSource;
-    private final PoolInfo.Direct direct;
+    private final PoolInfo.@Nullable Direct direct;
     private volatile boolean fromPool;
 
-    private NotifierConnections(DataSource dataSource, PoolInfo.Direct direct) {
+    private NotifierConnections(DataSource dataSource, PoolInfo.@Nullable Direct direct) {
         this.dataSource = dataSource;
         this.direct = direct;
         this.fromPool = direct == null;
@@ -42,9 +44,10 @@ final class NotifierConnections implements PostgresNotifier.ConnectionFactory {
 
     @Override
     public Connection open() throws SQLException {
-        if (!fromPool) {
+        PoolInfo.Direct target = direct;
+        if (!fromPool && target != null) {
             try {
-                return DriverManager.getConnection(direct.url(), direct.properties());
+                return DriverManager.getConnection(target.url(), target.properties());
             } catch (SQLException e) {
                 if (e.getSQLState() != null && e.getSQLState().startsWith("08")) {
                     throw e; // unreachable: the notifier retries

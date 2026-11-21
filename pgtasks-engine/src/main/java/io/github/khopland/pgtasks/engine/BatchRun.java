@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
@@ -27,6 +28,8 @@ import io.github.khopland.pgtasks.spi.TaskStore.Completion;
 import io.github.khopland.pgtasks.spi.TaskStore.Outcome;
 import io.github.khopland.pgtasks.spi.TaskStore.Resolution;
 import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * One claimed batch, from decoding to completion:
@@ -55,9 +58,9 @@ final class BatchRun<T> {
     private final List<ClaimedTask> claimed;
     /** A single task sent while the topic's breaker is open: its failure doesn't count. */
     private final boolean probe;
-    private BatchScope scope;
+    private @Nullable BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
-    private VirtualMachineError fatal;
+    private @Nullable VirtualMachineError fatal;
     /**
      * Tasks whose failure the retry policy blames on the task itself, such as bad input, and
      * dead-letters at once: the breaker leaves them out, since they say nothing about whether a
@@ -84,7 +87,7 @@ final class BatchRun<T> {
         Decisions.Builder early = Decisions.builder();
         for (ClaimedTask claim : claimed) {
             claims.put(claim.id(), claim);
-            T payload;
+            @Nullable T payload;
             try {
                 payload = claim.payload() == null ? null : topic.codec().decode(claim.payload());
             } catch (RuntimeException | LinkageError e) {
@@ -150,13 +153,13 @@ final class BatchRun<T> {
 
     static final Resolution RELEASED = RELEASE;
 
-    private Task<T> task(ClaimedTask claim, T payload) {
+    private Task<T> task(ClaimedTask claim, @Nullable T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
             claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.traceContext());
     }
 
     /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop. */
-    private Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened, TaskObserver.BatchObservation observation) {
+    private @Nullable Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened, TaskObserver.BatchObservation observation) {
         List<Task<?>> tasks = List.copyOf(runnable);
         try (BatchScope scope = scope(topic)) {
             for (BatchResource<?> resource : topic.resources()) {
@@ -253,8 +256,8 @@ final class BatchRun<T> {
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                                 TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
-        decisions.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
-        early.verdicts().forEach(verdict -> completions.add(completion(claims.get(verdict.task().id()), verdict.decision())));
+        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
         try {
@@ -323,7 +326,7 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : pushes.entrySet()) {
-            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), parents.get(entry.getKey())));
+            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey()))));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
@@ -364,12 +367,17 @@ final class BatchRun<T> {
         return released;
     }
 
+    /** The claim of a task in this batch. */
+    private static ClaimedTask claimOf(Map<Long, ClaimedTask> claims, Task<?> task) {
+        return Objects.requireNonNull(claims.get(task.id()), () -> "Task " + task.id() + " is not in this batch");
+    }
+
     private void release(Map<Long, ClaimedTask> claims, List<Long> ids) {
         if (ids.isEmpty()) {
             return;
         }
         List<Completion> releases = ids.stream().map(id -> {
-            ClaimedTask claim = claims.get(id);
+            ClaimedTask claim = Objects.requireNonNull(claims.get(id));
             return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE);
         }).toList();
         try {

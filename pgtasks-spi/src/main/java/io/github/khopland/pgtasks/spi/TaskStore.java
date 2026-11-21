@@ -27,6 +27,8 @@ import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Storage for tasks. Every operation runs in a {@link StoreTransaction} and never commits it.
  * Two implementations pass the same TCK: Postgres, and the in-memory store for local runs and
@@ -50,7 +52,7 @@ public interface TaskStore {
      * Wake-ups for one engine on this store, such as LISTEN/NOTIFY, or null to rely on polling.
      * Each engine asks for its own.
      */
-    default Notifier notifier() {
+    default @Nullable Notifier notifier() {
         return null;
     }
 
@@ -121,7 +123,12 @@ public interface TaskStore {
      */
     Promoted promoteDue(StoreTransaction transaction, int limit) throws SQLException;
 
-    /** @param tasks how many tasks became ready; @param topics the topics they belong to, each once */
+    /**
+     * What a promotion did.
+     *
+     * @param tasks  how many tasks became ready
+     * @param topics the topics they belong to, each once
+     */
     record Promoted(int tasks, List<Integer> topics) {
         public static final Promoted NONE = new Promoted(0, List.of());
 
@@ -163,7 +170,7 @@ public interface TaskStore {
      */
     List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException;
 
-    int registerNode(StoreTransaction transaction, String name, String version) throws SQLException;
+    int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException;
 
     /**
      * Takes or renews this node's lease on a group of cluster-wide jobs, such as housekeeping. At
@@ -243,8 +250,8 @@ public interface TaskStore {
      * @return the override as changed, or empty if its version isn't {@code expectedVersion}
      * @throws IllegalArgumentException if no node has configured the limit
      */
-    Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, Double perSecond, Integer burst, Instant until, String by,
-                                          Long expectedVersion) throws SQLException;
+    Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
+                                          @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException;
 
     /** One task as tasks.task_view shows it. */
     Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException;
@@ -270,7 +277,7 @@ public interface TaskStore {
     List<Long> revive(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException;
 
     /** Revives these dead letters, or the topic's oldest {@code limit} if null; others are skipped. */
-    default List<Long> revive(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+    default List<Long> revive(StoreTransaction transaction, int topicId, @Nullable Collection<Long> taskIds, int limit) throws SQLException {
         return revive(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
     }
 
@@ -283,7 +290,7 @@ public interface TaskStore {
      */
     List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException;
 
-    default List<Long> discard(StoreTransaction transaction, int topicId, Collection<Long> taskIds, int limit) throws SQLException {
+    default List<Long> discard(StoreTransaction transaction, int topicId, @Nullable Collection<Long> taskIds, int limit) throws SQLException {
         return discard(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
     }
 
@@ -328,8 +335,8 @@ public interface TaskStore {
      * A recurring task as configured: what to push, when, and how. The payload is encoded; the
      * cron is read in {@code zone}.
      */
-    record ScheduleSpec(String name, String identifier, String cron, String zone, Insertion insertion, String payload, String payloadType,
-                        Instant nextRunAt) {
+    record ScheduleSpec(String name, String identifier, String cron, String zone, Insertion insertion, @Nullable String payload,
+                        @Nullable String payloadType, Instant nextRunAt) {
         public ScheduleSpec {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(identifier, "identifier");
@@ -346,16 +353,16 @@ public interface TaskStore {
      */
     record NewTask(
         String identifier,
-        String payload,
-        String payloadType,
-        String reference,
-        Duration delay,
+        @Nullable String payload,
+        @Nullable String payloadType,
+        @Nullable String reference,
+        @Nullable Duration delay,
         boolean suspended,
         int priority,
-        String dedupKey,
-        Long parentId,
-        Long rootId,
-        String traceContext
+        @Nullable String dedupKey,
+        @Nullable Long parentId,
+        @Nullable Long rootId,
+        @Nullable String traceContext
     ) {
         public NewTask {
             Objects.requireNonNull(identifier, "identifier");
@@ -381,7 +388,7 @@ public interface TaskStore {
     record TopicInfo(int id, String name, boolean paused) {
     }
 
-    record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit, Admission admission) {
+    record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit, @Nullable Admission admission) {
         public ClaimRequest {
             Objects.requireNonNull(ordering, "ordering");
             if (limit < 1) {
@@ -395,16 +402,16 @@ public interface TaskStore {
         String identifier,
         int attempt,
         int priority,
-        String payload,
-        String payloadType,
-        String reference,
-        Long parentId,
-        Long rootId,
+        @Nullable String payload,
+        @Nullable String payloadType,
+        @Nullable String reference,
+        @Nullable Long parentId,
+        @Nullable Long rootId,
         Instant createdAt,
         Instant claimedAt,
-        String traceContext,
+        @Nullable String traceContext,
         int failures,
-        Instant firstFailedAt
+        @Nullable Instant firstFailedAt
     ) {
     }
 
@@ -412,7 +419,7 @@ public interface TaskStore {
      * @param tasks         the claimed tasks
      * @param admissionWait if the rate limit allowed nothing, how long until it allows one task
      */
-    record Claim(List<ClaimedTask> tasks, Duration admissionWait) {
+    record Claim(List<ClaimedTask> tasks, @Nullable Duration admissionWait) {
         public static final Claim EMPTY = new Claim(List.of(), null);
     }
 
@@ -425,7 +432,7 @@ public interface TaskStore {
     sealed interface Resolution {
 
         /** The task leaves the queue with this outcome. */
-        record Finished(Outcome outcome, String output) implements Resolution {
+        record Finished(Outcome outcome, @Nullable String output) implements Resolution {
         }
 
         /**
@@ -436,7 +443,7 @@ public interface TaskStore {
          * @param counted whether this attempt counts against the retry policy
          * @param error   the failure, as a JSON object, for failed attempts
          */
-        record Waiting(WaitState state, Duration delay, boolean counted, String error) implements Resolution {
+        record Waiting(WaitState state, @Nullable Duration delay, boolean counted, @Nullable String error) implements Resolution {
             public Waiting {
                 Objects.requireNonNull(state, "state");
                 if ((state == WaitState.SCHEDULED || state == WaitState.RETRYING) != (delay != null)) {

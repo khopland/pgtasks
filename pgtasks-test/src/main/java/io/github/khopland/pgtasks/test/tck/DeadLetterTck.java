@@ -13,6 +13,8 @@ import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import org.junit.jupiter.api.Test;
 
+import org.jspecify.annotations.Nullable;
+
 /** TCK: listing, reviving and discarding dead letters. */
 public abstract class DeadLetterTck extends StoreTck {
 
@@ -38,11 +40,11 @@ public abstract class DeadLetterTck extends StoreTck {
         return fixture.inTransaction(transaction -> fixture.store().deadLetters(transaction, topic, after, limit));
     }
 
-    private List<Long> revive(StoreFixture fixture, Collection<Long> ids, int limit) throws SQLException {
+    private List<Long> revive(StoreFixture fixture, @Nullable Collection<Long> ids, int limit) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().revive(transaction, topic, ids, limit));
     }
 
-    private List<Long> discard(StoreFixture fixture, Collection<Long> ids, int limit) throws SQLException {
+    private List<Long> discard(StoreFixture fixture, @Nullable Collection<Long> ids, int limit) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().discard(transaction, topic, ids, limit));
     }
 
@@ -177,7 +179,7 @@ public abstract class DeadLetterTck extends StoreTck {
     void discarding_a_dead_letter_lets_the_tasks_it_held_back_run() throws SQLException {
         StoreFixture fixture = setUp();
         long dead = deadLetter(fixture, topic, "a");
-        long next = fixture.push(topic, Insertion.APPEND, StoreFixture.task("a")).getFirst().id();
+        long next = StoreFixture.id(fixture.push(topic, Insertion.APPEND, StoreFixture.task("a")).getFirst());
         assertThat(fixture.claim(topic, node, Ordering.SINGULAR_BY_IDENTIFIER_ON_FAILURE, 10))
             .as("held back by the dead letter").isEmpty();
 

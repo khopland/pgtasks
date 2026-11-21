@@ -3,6 +3,8 @@ package io.github.khopland.pgtasks.engine;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Runs a job soon on a virtual thread of its own, for notifications, which mustn't wait on the
  * store. Requests that arrive before the job starts are served by that one run; one that arrives
@@ -17,7 +19,7 @@ final class Coalesced {
     private final Housekeeper.Job job;
     private final AtomicBoolean pending = new AtomicBoolean();
     private volatile boolean stopped;
-    private volatile Thread running;
+    private volatile @Nullable Thread running;
 
     /**
      * @param thread names the thread, after "pgtasks-"

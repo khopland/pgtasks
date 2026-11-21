@@ -11,6 +11,8 @@ import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Lets {@code tasks.push(...)} join the current Spring transaction: on Postgres it writes on the
  * transaction's own connection, so the tasks commit or roll back with the application's data; on
@@ -22,10 +24,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  */
 public final class SpringTransactions implements TransactionBinding {
 
-    private final DataSource dataSource;
+    private final @Nullable DataSource dataSource;
 
     /** @param dataSource the tasks' DataSource; null for a store outside the database, such as the in-memory store */
-    public SpringTransactions(DataSource dataSource) {
+    public SpringTransactions(@Nullable DataSource dataSource) {
         this.dataSource = dataSource;
     }
 

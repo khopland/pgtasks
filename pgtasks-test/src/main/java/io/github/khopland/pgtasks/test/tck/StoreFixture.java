@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.test.tck;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.IntStream;
 
@@ -19,6 +20,8 @@ import io.github.khopland.pgtasks.spi.TaskStore.NewTask;
 import io.github.khopland.pgtasks.spi.TaskStore.Resolution;
 import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
 import io.github.khopland.pgtasks.spi.TaskStore;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Drives a task store for the TCK, each call in its own committed transaction. A store's test
@@ -39,11 +42,11 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     @FunctionalInterface
-    public interface Work<T> {
+    public interface Work<T extends @Nullable Object> {
         T run(StoreTransaction transaction) throws SQLException;
     }
 
-    public <T> T inTransaction(Work<T> work) throws SQLException {
+    public <T extends @Nullable Object> T inTransaction(Work<T> work) throws SQLException {
         try (StoreTransaction transaction = store().begin()) {
             T result = work.run(transaction);
             transaction.commit();
@@ -64,6 +67,11 @@ public abstract class StoreFixture implements AutoCloseable {
             store().heartbeat(transaction, node);
             return null;
         });
+    }
+
+    /** The id of a task the push stored, as queued or redundant. */
+    public static long id(Pushed pushed) {
+        return Objects.requireNonNull(pushed.id(), () -> pushed + " stored no task");
     }
 
     public static NewTask task(String identifier) {
@@ -95,7 +103,7 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     public long push(int topic, String identifier) throws SQLException {
-        return push(topic, Insertion.APPEND, task(identifier)).getFirst().id();
+        return id(push(topic, Insertion.APPEND, task(identifier)).getFirst());
     }
 
     public List<ClaimedTask> claim(int topic, int node, Ordering ordering, int limit) throws SQLException {
@@ -164,7 +172,7 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     /** The state as tasks.task_view shows it, or null if the task is gone. */
-    public String state(long task) {
+    public @Nullable String state(long task) {
         try {
             return view(task).map(TaskView::state).orElse(null);
         } catch (SQLException e) {

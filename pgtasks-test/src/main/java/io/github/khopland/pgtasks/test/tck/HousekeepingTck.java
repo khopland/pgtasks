@@ -194,7 +194,7 @@ public abstract class HousekeepingTck extends StoreTck {
         assertThat(snapshots.get(1).counts().total()).isZero();
         assertThat(snapshots.getFirst().takenAt()).isNotNull();
         // The first task is claimed, so the oldest ready one is the second.
-        assertThat(snapshots.getFirst().counts().oldestReadyAt()).isEqualTo(fixture.view(pushed.get(1).id()).orElseThrow().createdAt());
+        assertThat(snapshots.getFirst().counts().oldestReadyAt()).isEqualTo(fixture.view(StoreFixture.id(pushed.get(1))).orElseThrow().createdAt());
         assertThat(snapshots.get(1).counts().oldestReadyAt()).isNull();
     }
 }

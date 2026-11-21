@@ -66,7 +66,11 @@ public final class PostgresExtension implements BeforeEachCallback, AfterEachCal
 
     /** The database of the test that is currently running. */
     public PostgresDatabase database(ExtensionContext context) {
-        return context.getStore(NAMESPACE).get(PostgresDatabase.class, PostgresDatabase.class);
+        PostgresDatabase database = context.getStore(NAMESPACE).get(PostgresDatabase.class, PostgresDatabase.class);
+        if (database == null) {
+            throw new IllegalStateException("No database for " + context.getDisplayName() + "; it is created before each test");
+        }
+        return database;
     }
 
     @Override

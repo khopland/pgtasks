@@ -8,6 +8,8 @@ import java.util.Objects;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Per-topic settings. {@link #defaults()} is safe in production; change only what differs.
  *
@@ -30,7 +32,7 @@ record TopicSettings(
     Retry retry,
     Duration batchDeadline,
     Duration pollInterval,
-    RateLimit rateLimit,
+    @Nullable RateLimit rateLimit,
     Map<Outcome, Period> retention,
     Breaker breaker,
     DeadLetterPolicy deadLetters

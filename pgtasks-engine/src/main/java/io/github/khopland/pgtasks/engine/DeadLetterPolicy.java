@@ -2,6 +2,8 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * What happens to a topic's dead letters besides waiting for an operator.
  *
@@ -12,7 +14,7 @@ import java.time.Duration;
  *                           {@link TaskEngineBuilder#version(String)}
  * @param reviveEvery        revive them all this often, like the 1.x reset job; null for never
  */
-public record DeadLetterPolicy(boolean reviveOnNewVersion, Duration reviveEvery) {
+public record DeadLetterPolicy(boolean reviveOnNewVersion, @Nullable Duration reviveEvery) {
 
     /** Kept until someone revives or discards them. */
     public static final DeadLetterPolicy KEEP = new DeadLetterPolicy(false, null);

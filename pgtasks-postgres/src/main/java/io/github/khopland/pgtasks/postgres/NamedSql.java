@@ -13,6 +13,8 @@ import java.util.regex.Pattern;
 
 import org.postgresql.PGStatement;
 
+import org.jspecify.annotations.Nullable;
+
 /** SQL with {@code :name} parameters, so one value can be bound in several places. */
 final class NamedSql {
 
@@ -65,7 +67,7 @@ final class NamedSql {
                     throw new IllegalArgumentException("Missing SQL parameter: " + name);
                 }
                 Object value = parameters.values.get(name);
-                if (value instanceof ArrayValue(String type, Object[] elements)) {
+                if (value instanceof ArrayValue(String type, @Nullable Object[] elements)) {
                     Array array = connection.createArrayOf(type, elements);
                     statement.setArray(index + 1, array);
                 } else {
@@ -79,7 +81,8 @@ final class NamedSql {
         }
     }
 
-    private record ArrayValue(String type, Object[] elements) {
+    @SuppressWarnings("ArrayRecordComponent") // only handed to createArrayOf, never compared
+    private record ArrayValue(String type, @Nullable Object[] elements) {
     }
 
     static Parameters parameters() {
@@ -88,14 +91,14 @@ final class NamedSql {
 
     static final class Parameters {
 
-        private final Map<String, Object> values = new HashMap<>();
+        private final Map<String, @Nullable Object> values = new HashMap<>();
 
-        Parameters set(String name, Object value) {
+        Parameters set(String name, @Nullable Object value) {
             values.put(name, value);
             return this;
         }
 
-        Parameters array(String name, String type, Object[] elements) {
+        Parameters array(String name, String type, @Nullable Object[] elements) {
             values.put(name, new ArrayValue(type, elements));
             return this;
         }

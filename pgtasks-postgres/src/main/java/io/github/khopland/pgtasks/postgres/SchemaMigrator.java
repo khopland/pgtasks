@@ -41,11 +41,11 @@ final class SchemaMigrator {
     private final List<SchemaScript> repeatable;
 
     SchemaMigrator(List<SchemaScript> scripts) {
-        this.versioned = scripts.stream().filter(script -> !script.repeatable()).sorted(Comparator.comparing(SchemaScript::version)).toList();
+        this.versioned = scripts.stream().filter(script -> !script.repeatable()).sorted(Comparator.comparingInt(SchemaScript::number)).toList();
         this.repeatable = scripts.stream().filter(SchemaScript::repeatable).sorted(Comparator.comparing(SchemaScript::description)).toList();
         for (int index = 1; index < versioned.size(); index++) {
-            if (versioned.get(index).version().equals(versioned.get(index - 1).version())) {
-                throw new IllegalArgumentException("Two schema files have version " + versioned.get(index).version());
+            if (versioned.get(index).number() == versioned.get(index - 1).number()) {
+                throw new IllegalArgumentException("Two schema files have version " + versioned.get(index).number());
             }
         }
         if (versioned.isEmpty()) {
@@ -54,7 +54,7 @@ final class SchemaMigrator {
     }
 
     int latest() {
-        return versioned.getLast().version();
+        return versioned.getLast().number();
     }
 
     TaskSchema.Status migrate(Connection connection) throws SQLException {
@@ -78,7 +78,7 @@ final class SchemaMigrator {
                 }
             }
             for (Map.Entry<Integer, String> applied : appliedVersions.entrySet()) {
-                Optional<SchemaScript> local = versioned.stream().filter(script -> script.version().equals(applied.getKey())).findFirst();
+                Optional<SchemaScript> local = versioned.stream().filter(script -> script.number() == applied.getKey()).findFirst();
                 if (local.isEmpty() && applied.getKey() <= latest()) {
                     throw new TaskSchemaException("Version " + applied.getKey() + " of the tasks schema was applied, but this library has no such file. "
                         + "Applied versioned files must never be removed or renumbered.");
@@ -146,7 +146,7 @@ final class SchemaMigrator {
             }
             if (!script.repeatable()) {
                 Optional<TaskSchema.Meta> meta = TaskSchema.readMeta(connection);
-                if (meta.isEmpty() || meta.get().version() != script.version()) {
+                if (meta.isEmpty() || meta.get().version() != script.number()) {
                     throw new TaskSchemaException(script.name() + " must end by recording version " + script.version()
                         + " in tasks.meta, but tasks.meta says " + meta.map(m -> String.valueOf(m.version())).orElse("nothing"));
                 }

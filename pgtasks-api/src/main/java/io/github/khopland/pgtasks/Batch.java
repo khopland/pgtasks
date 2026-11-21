@@ -12,7 +12,7 @@ public interface Batch<T> {
     List<Task<T>> tasks();
 
     default List<@Nullable T> payloads() {
-        return tasks().stream().map(Task::payload).toList();
+        return tasks().stream().<@Nullable T>map(Task::payload).toList();
     }
 
     default List<String> identifiers() {

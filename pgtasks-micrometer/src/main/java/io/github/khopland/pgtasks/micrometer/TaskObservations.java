@@ -19,6 +19,8 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import org.slf4j.MDC;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The engine's observer for Micrometer.
  *
@@ -54,7 +56,7 @@ public final class TaskObservations implements TaskObserver {
     static final String TRACEPARENT = "traceparent";
 
     private final ObservationRegistry observations;
-    private final MeterRegistry meters;
+    private final @Nullable MeterRegistry meters;
     private final Map<String, java.util.concurrent.atomic.AtomicInteger> breakers = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Observations and the MDC only, without counters. */
@@ -63,7 +65,7 @@ public final class TaskObservations implements TaskObserver {
     }
 
     /** @param meters for the counters, or null for none */
-    public TaskObservations(ObservationRegistry observations, MeterRegistry meters) {
+    public TaskObservations(ObservationRegistry observations, @Nullable MeterRegistry meters) {
         this.observations = Objects.requireNonNull(observations, "observations");
         this.meters = meters;
     }
@@ -75,7 +77,11 @@ public final class TaskObservations implements TaskObserver {
         private final int tasks;
 
         PushContext(TopicRef<?> topic, int tasks) {
-            super(Map::put, Kind.PRODUCER);
+            super((carrier, key, value) -> {
+                if (carrier != null) {
+                    carrier.put(key, value);
+                }
+            }, Kind.PRODUCER);
             this.topic = topic;
             this.tasks = tasks;
             setCarrier(new HashMap<>());
@@ -127,8 +133,9 @@ public final class TaskObservations implements TaskObserver {
             .start();
         return new PushObservation() {
             @Override
-            public String traceContext() {
-                return context.getCarrier().get(TRACEPARENT);
+            public @Nullable String traceContext() {
+                Map<String, String> carrier = context.getCarrier();
+                return carrier == null ? null : carrier.get(TRACEPARENT);
             }
 
             @Override
@@ -193,7 +200,7 @@ public final class TaskObservations implements TaskObserver {
             @Override
             public Scope open() {
                 Observation.Scope scope = observation.openScope();
-                Map<String, String> previous = new HashMap<>();
+                Map<String, @Nullable String> previous = new HashMap<>();
                 put(previous, MDC_TOPIC, topic.name());
                 if (single != null) {
                     put(previous, MDC_ID, Long.toString(single.id()));
@@ -233,7 +240,7 @@ public final class TaskObservations implements TaskObserver {
         };
     }
 
-    private static void put(Map<String, String> previous, String key, String value) {
+    private static void put(Map<String, @Nullable String> previous, String key, String value) {
         previous.put(key, MDC.get(key));
         MDC.put(key, value);
     }
@@ -241,7 +248,7 @@ public final class TaskObservations implements TaskObserver {
     private Counter counter(String name, String description, TopicRef<?> topic, String tag, String value) {
         return Counter.builder(name).description(description).baseUnit("tasks")
             .tag("topic", topic.name()).tag(tag, value.toLowerCase(Locale.ROOT))
-            .register(meters);
+            .register(Objects.requireNonNull(meters, "meters"));
     }
 
     private static String name(Result result) {

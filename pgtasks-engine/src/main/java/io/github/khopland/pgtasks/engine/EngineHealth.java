@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * How one node is doing, for health checks.
  *
@@ -25,8 +27,8 @@ public record EngineHealth(
     boolean running,
     String node,
     int nodeId,
-    Instant lastHeartbeat,
-    Duration heartbeatAge,
+    @Nullable Instant lastHeartbeat,
+    @Nullable Duration heartbeatAge,
     Duration leaseTerm,
     boolean leader,
     Notifications notifications,
