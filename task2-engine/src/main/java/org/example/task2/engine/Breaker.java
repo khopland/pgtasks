@@ -11,7 +11,9 @@ import java.util.Objects;
  *
  * <p>A single task that keeps failing doesn't open it, however often it retries: it takes
  * failures from at least {@code minTasks} different tasks, so a poison task still reaches the
- * dead letters while the rest of the topic runs.
+ * dead letters while the rest of the topic runs. Failures the retry policy dead-letters at once
+ * ({@link Retry#deadLetterAt}), such as bad input, don't count at all: they are the task's fault,
+ * not an outage.
  *
  * @param opensAt    the share of the last {@code window} results that must be failures
  * @param window     how many recent results count; 0 turns the breaker off

@@ -59,6 +59,12 @@ final class BatchRun<T> {
     private BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private VirtualMachineError fatal;
+    /**
+     * Tasks whose failure the retry policy blames on the task itself, such as bad input, and
+     * dead-letters at once: the breaker leaves them out, since they say nothing about whether a
+     * downstream system is down.
+     */
+    private final Set<Long> taskFaults = new java.util.HashSet<>();
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
         this(worker, core, claimed, false);
@@ -390,7 +396,10 @@ final class BatchRun<T> {
                 // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
                 yield switch (retry.classify(failed.cause())) {
                     case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                    case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    case DEAD_LETTER -> {
+                        taskFaults.add(claim.id());
+                        yield new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    }
                     // A probe fails while the breaker is open: likely the outage, not the task.
                     case COUNTED -> probe
                         ? new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error)
@@ -403,10 +412,16 @@ final class BatchRun<T> {
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
     }
 
-    /** For the breaker: true for a task that failed, false for one that finished; waits that aren't failures left out. */
-    private static Map<Long, Boolean> breakerResults(List<Completion> completions) {
+    /**
+     * For the breaker: true for a task that failed, false for one that finished. Waits that aren't
+     * failures are left out, and so are failures the retry policy blames on the task.
+     */
+    private Map<Long, Boolean> breakerResults(List<Completion> completions) {
         Map<Long, Boolean> results = new LinkedHashMap<>();
         for (Completion completion : completions) {
+            if (taskFaults.contains(completion.taskId())) {
+                continue;
+            }
             switch (completion.resolution()) {
                 case Resolution.Finished ignored -> results.put(completion.taskId(), false);
                 case Resolution.Waiting waiting when waiting.error() != null -> results.put(completion.taskId(), true);

@@ -46,6 +46,32 @@ class BreakerTest {
         return TaskTester.of(engine);
     }
 
+    /** Review 2026-11-21: bad input the policy dead-letters at once opened the breaker, and the topic crawled at a task per probe. */
+    @Test
+    void bad_input_that_goes_straight_to_the_dead_letters_doesnt_open_the_breaker() throws Exception {
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore(clock))
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                runs.incrementAndGet();
+                if (task.payload().equals("bad")) {
+                    throw new IllegalArgumentException("invalid row");
+                }
+                return Decision.success();
+            }), topic -> topic.batchSize(10).retry(Retry.standard().deadLetterAt(IllegalArgumentException.class))
+                .breaker(Breaker.standard().opensAt(0.8, 10))))
+            .build()
+            .start();
+        TaskTester tester = TaskTester.of(engine);
+        engine.tasks().independently().push(WORK, Insertion.APPEND,
+            IntStream.range(0, 200).mapToObj(index -> Creation.of("t" + index, index % 10 < 8 ? "bad" : "good")).toList());
+
+        tester.awaitIdle();
+
+        assertThat(engine.health().openBreakers()).isEmpty();
+        assertThat(runs).as("every task ran once, without waiting for probes").hasValue(200);
+        assertThat(tester.counts(WORK).failed()).isEqualTo(160);
+    }
+
     @Test
     @DisplayName("During an outage the topic stops claiming, probes without using attempts, and resumes once a probe succeeds")
     void an_outage_opens_the_breaker_and_a_successful_probe_closes_it() throws Exception {
