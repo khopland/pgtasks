@@ -67,10 +67,10 @@ public class TaskAutoConfiguration {
             }
             builder.dataSource(dataSource).schemaMode(properties.schemaMode()).transactions(new SpringTransactions(dataSource));
         }
-        Map<String, TaskConfigurer> configurers = beans.getBeansOfType(TaskConfigurer.class);
+        Map<String, TaskConfigurer> configurers = beansOfType(beans, TaskConfigurer.class);
         Map<String, String> modules = ModuleNames.of(beans, java.util.List.copyOf(configurers.keySet()));
         configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
-        beans.getBeansOfType(TaskGlobals.class).forEach(builder::globals);
+        beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
         observer.ifUnique(builder::observer);
         codecs.ifUnique(builder::codecs);
         builder.version(properties.version() != null ? properties.version()
@@ -80,10 +80,34 @@ public class TaskAutoConfiguration {
         return builder.build();
     }
 
+    /**
+     * Every bean of a type, created one by one so a failure surfaces. {@code getBeansOfType} would
+     * quietly leave out a bean that is still being created, which is what a configurer depending
+     * on the engine through other beans is: the engine would start without its topics.
+     */
+    private static <T> Map<String, T> beansOfType(ConfigurableListableBeanFactory beans, Class<T> type) {
+        Map<String, T> found = new java.util.LinkedHashMap<>();
+        for (String name : beans.getBeanNamesForType(type)) {
+            try {
+                found.put(name, beans.getBean(name, type));
+            } catch (org.springframework.beans.factory.BeanCreationException e) {
+                if (e.contains(org.springframework.beans.factory.BeanCurrentlyInCreationException.class)) {
+                    throw new IllegalStateException(String.format(CYCLE, type.getSimpleName(), name), e);
+                }
+                throw e;
+            }
+        }
+        return found;
+    }
+
+    static final String CYCLE = "The %s bean '%s' depends on the task engine, which is built from it. Inject Tasks, which "
+        + "finds the engine on first use, or ObjectProvider<TaskEngine>, instead of TaskEngine in the beans it uses.";
+
+    /** Finds the engine on first use, so services that push can be used by handlers. */
     @Bean
     @ConditionalOnMissingBean
-    public Tasks tasks(TaskEngine engine) {
-        return engine.tasks();
+    public Tasks tasks(ObjectProvider<TaskEngine> engine) {
+        return new LazyTasks(() -> engine.getObject().tasks());
     }
 
     /** JSON for payload types without a codec, with the application's Jackson mapper, or a plain one. */

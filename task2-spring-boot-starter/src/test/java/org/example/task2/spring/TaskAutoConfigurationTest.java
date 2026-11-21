@@ -200,6 +200,68 @@ class TaskAutoConfigurationTest {
         });
     }
 
+    /** A service that pushes, used by a handler: the usual shape of a module. */
+    static class OrderService {
+        final Tasks tasks;
+        final List<String> handled = new CopyOnWriteArrayList<>();
+
+        OrderService(Tasks tasks) {
+            this.tasks = tasks;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class HandlerUsingAPushingService {
+        @Bean
+        OrderService orderService(Tasks tasks) {
+            return new OrderService(tasks);
+        }
+
+        @Bean
+        TaskConfigurer notifyTasks(OrderService service) {
+            return tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> {
+                service.handled.add(task.payload());
+                return Decision.success();
+            }));
+        }
+    }
+
+    /** Review 2026-11-21: getBeansOfType left the configurer out while it was in creation, and the engine started without its topic. */
+    @Test
+    void a_configurer_whose_handler_uses_a_service_that_pushes_is_not_left_out() {
+        memory().withUserConfiguration(HandlerUsingAPushingService.class).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(TaskEngine.class).topics()).extracting(topic -> topic.ref().name()).containsExactly("notify");
+            context.getBean(OrderService.class).tasks.independently().push(NOTIFY, "anna", "pushed by the service");
+            EngineFixture.await("the task ran", Duration.ofSeconds(5),
+                () -> context.getBean(OrderService.class).handled.contains("pushed by the service"));
+        });
+    }
+
+    static class EngineWatcher {
+        EngineWatcher(TaskEngine engine) {
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class HandlerUsingTheEngine {
+        @Bean
+        EngineWatcher engineWatcher(TaskEngine engine) {
+            return new EngineWatcher(engine);
+        }
+
+        @Bean
+        TaskConfigurer notifyTasks(EngineWatcher watcher) {
+            return tasks -> tasks.topic(NOTIFY, batch -> batch.decide(task -> Decision.success()));
+        }
+    }
+
+    @Test
+    void a_configurer_that_needs_the_engine_itself_fails_startup_saying_why() {
+        memory().withUserConfiguration(HandlerUsingTheEngine.class).run(context ->
+            assertThat(context).hasFailed().getFailure().hasStackTraceContaining("The TaskConfigurer bean 'notifyTasks' depends on the task engine"));
+    }
+
     record Order(String id, int quantity) {
     }
 
