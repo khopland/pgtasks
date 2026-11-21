@@ -167,6 +167,9 @@ class TopicDiscoveryTest {
                 .withNotifier(new PostgresNotifier(database::connect)),
             List.of(), List.of(assessments())).start();
         try {
+            // Only a notification carries the news here, so every node must be listening first.
+            List<TaskEngine> all = List.of(nodes.get(0), nodes.get(1), withTemplate, withTemplateToo);
+            EngineFixture.await("every node listening", Duration.ofSeconds(5), () -> all.stream().allMatch(TopicDiscoveryTest::listening));
             runner.createTopic("assessment-2027");
             EngineFixture.await("both template nodes to run the new topic", SOON,
                 () -> withTemplate.processing().contains("assessment-2027") && withTemplateToo.processing().contains("assessment-2027"));
@@ -186,6 +189,14 @@ class TopicDiscoveryTest {
         } finally {
             withTemplate.stop(Duration.ofSeconds(5));
             withTemplateToo.stop(Duration.ofSeconds(5));
+        }
+    }
+
+    private static boolean listening(TaskEngine engine) {
+        try {
+            return engine.health().notifications() == EngineHealth.Notifications.CONNECTED;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
         }
     }
 

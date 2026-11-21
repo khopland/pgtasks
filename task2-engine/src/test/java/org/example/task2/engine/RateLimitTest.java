@@ -117,6 +117,14 @@ class RateLimitTest {
         Thread.sleep(300);
         assertThat(runs.get()).as("everyone waits for the next permit").isEqualTo(1);
 
+        // Only a notification carries the change here, so every node must be listening first.
+        EngineFixture.await("every node listening", Duration.ofSeconds(5), () -> nodes.stream().allMatch(node -> {
+            try {
+                return node.health().notifications() == EngineHealth.Notifications.CONNECTED;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }));
         long started = System.nanoTime();
         nodes.get(1).limits().override(ONE_A_MINUTE.name(), Rate.perSecond(1000), 100, null, "ops", 0L);
         for (TaskEngine node : nodes) {
