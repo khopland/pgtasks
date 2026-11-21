@@ -22,6 +22,15 @@ public interface TaskObserver {
     };
 
     /**
+     * Every one of these observers, in order: each sees everything, and one that throws doesn't
+     * stop the others. A push stores the first trace context any of them gives.
+     */
+    static TaskObserver composite(java.util.List<? extends TaskObserver> observers) {
+        java.util.List<TaskObserver> all = observers.stream().filter(observer -> observer != NONE).<TaskObserver>map(observer -> observer).toList();
+        return all.isEmpty() ? NONE : all.size() == 1 ? all.getFirst() : new CompositeObserver(all);
+    }
+
+    /**
      * Tasks are about to be written to a topic, inside the pushing transaction. The returned
      * observation's {@link PushObservation#traceContext()} is stored with each task, and is closed
      * once the write is done, whether the transaction commits or not.

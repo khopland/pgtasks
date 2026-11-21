@@ -171,4 +171,51 @@ class ObserverTest {
         assertThat(handled).containsExactly("ok");
         assertThat(TaskTester.of(engine).counts(WORK).total()).isZero();
     }
+
+    @Test
+    void several_observers_each_see_everything_even_when_one_throws() {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        TaskObserver throwing = new TaskObserver() {
+            @Override
+            public PushObservation pushing(TopicRef<?> topic, int tasks) {
+                throw new IllegalStateException("a broken observer");
+            }
+
+            @Override
+            public void pushed(TopicRef<?> topic, List<Pushed> results) {
+                throw new IllegalStateException("a broken observer");
+            }
+        };
+        TaskObserver tracing = new TaskObserver() {
+            @Override
+            public PushObservation pushing(TopicRef<?> topic, int tasks) {
+                return new PushObservation() {
+                    @Override
+                    public String traceContext() {
+                        return TRACE;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                };
+            }
+
+            @Override
+            public void pushed(TopicRef<?> topic, List<Pushed> results) {
+                seen.add(topic.name());
+            }
+        };
+        List<String> traces = new CopyOnWriteArrayList<>();
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .observer(throwing).observer(tracing)
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> traces.add(task.task().traceContext())))
+            .build().start()) {
+            engine.tasks().independently().push(WORK, "a", "payload");
+            TaskTester.of(engine).awaitIdle();
+
+            assertThat(seen).containsExactly("work");
+            assertThat(traces).as("the trace the second observer gave was stored").containsExactly(TRACE);
+        }
+    }
 }

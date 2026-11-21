@@ -173,9 +173,13 @@ public final class TaskEngineBuilder {
         return this;
     }
 
-    /** Sees pushes and batches, for metrics and tracing, such as task2-micrometer's. */
+    /**
+     * Sees pushes and batches, for metrics and tracing, such as task2-micrometer's. Called again,
+     * it adds another: every observer sees everything.
+     */
     public TaskEngineBuilder observer(TaskObserver observer) {
-        this.observer = Objects.requireNonNull(observer);
+        Objects.requireNonNull(observer);
+        this.observer = this.observer == TaskObserver.NONE ? observer : TaskObserver.composite(List.of(this.observer, observer));
         return this;
     }
 

@@ -71,7 +71,11 @@ public class TaskAutoConfiguration {
         Map<String, String> modules = ModuleNames.of(beans, java.util.List.copyOf(configurers.keySet()));
         configurers.forEach((name, configurer) -> builder.configure(modules.get(name), configurer));
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
-        observer.ifUnique(builder::observer);
+        // Every observer bean, such as task2-micrometer's and the application's own.
+        java.util.List<TaskObserver> observers = observer.orderedStream().toList();
+        if (!observers.isEmpty()) {
+            builder.observer(TaskObserver.composite(observers));
+        }
         codecs.ifUnique(builder::codecs);
         builder.version(properties.version() != null ? properties.version()
             : build.getIfAvailable() != null ? build.getIfAvailable().getVersion() : null);

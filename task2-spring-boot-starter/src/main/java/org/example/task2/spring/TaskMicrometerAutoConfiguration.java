@@ -19,7 +19,7 @@ import org.springframework.context.annotation.Bean;
  * ({@link TaskObservations}), and with a {@link MeterRegistry} it also counts committed pushes and
  * results and gauges the queues ({@link TaskMetrics}). Tracing follows if a tracer is set up,
  * such as with {@code micrometer-tracing-bridge-otel}. A {@link TaskObserver} bean of the
- * application's own replaces the observations.
+ * application's own sees everything too, next to these.
  */
 @AutoConfiguration(before = TaskAutoConfiguration.class, afterName = {
     "org.springframework.boot.micrometer.observation.autoconfigure.ObservationAutoConfiguration",
@@ -31,7 +31,7 @@ public class TaskMicrometerAutoConfiguration {
 
     @Bean
     @ConditionalOnBean(ObservationRegistry.class)
-    @ConditionalOnMissingBean(TaskObserver.class)
+    @ConditionalOnMissingBean
     public TaskObservations taskObservations(ObservationRegistry observations, ObjectProvider<MeterRegistry> meters) {
         return new TaskObservations(observations, meters.getIfUnique());
     }

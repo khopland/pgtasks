@@ -101,12 +101,15 @@ class TaskMicrometerAutoConfigurationTest {
             .doesNotHaveBean(TaskObserver.class).doesNotHaveBean(TaskMetrics.class));
     }
 
+    /** Review 2026-11-21: an observer of the application's own silently turned the metrics and traces off. */
     @Test
-    void an_observer_bean_of_the_application_replaces_the_observations() {
+    void an_observer_bean_of_the_application_sees_everything_next_to_the_observations() {
         runner.withUserConfiguration(Micrometer.class, OwnObserver.class).run(context -> {
-            assertThat(context).hasNotFailed().doesNotHaveBean(TaskObservations.class);
+            assertThat(context).hasNotFailed().hasSingleBean(TaskObservations.class);
             context.getBean(org.example.task2.Tasks.class).independently().push(NOTIFY, "anna", "hello");
             assertThat(context.getBean(OwnObserver.class).pushedTo).containsExactly("notify");
+            assertThat(context.getBean(MeterRegistry.class).get(TaskObservations.PUSHED).tags("topic", "notify", "status", "queued").counter().count())
+                .isEqualTo(1);
         });
     }
 }
