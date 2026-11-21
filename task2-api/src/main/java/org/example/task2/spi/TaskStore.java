@@ -188,6 +188,13 @@ public interface TaskStore {
 
     void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
 
+    /**
+     * Deletes the rows of nodes whose last heartbeat is older than {@code deadFor} and that hold
+     * no claims: every start adds a row, so rolling deploys and autoscaling would grow the table
+     * forever. Returns how many.
+     */
+    int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException;
+
     /** Makes sure the admission state for a strict rate limit exists. */
     void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException;
 

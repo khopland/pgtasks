@@ -38,6 +38,19 @@ public interface TaskRegistry {
     }
 
     /**
+     * Several topics of one payload type with one handler and the same options, such as one per
+     * year or per region, each registered as if on its own.
+     */
+    default <T> TaskRegistry topics(List<TopicRef<T>> topics, BatchHandler<T> handler, Consumer<TopicOptions> options) {
+        topics.forEach(topic -> topic(topic, handler, options));
+        return this;
+    }
+
+    default <T> TaskRegistry topics(List<TopicRef<T>> topics, BatchHandler<T> handler) {
+        return topics(topics, handler, options -> { });
+    }
+
+    /**
      * Every topic whose name matches the pattern, such as {@code assessment-*}, including topics
      * created later at runtime: they run with this handler and these options. Overrides address
      * the pattern, as in {@code topics.assessment-*.concurrency}. See {@link TopicTemplate}.

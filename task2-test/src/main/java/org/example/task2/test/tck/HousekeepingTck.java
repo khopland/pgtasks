@@ -152,6 +152,24 @@ public abstract class HousekeepingTck extends StoreTck {
     }
 
     @Test
+    void nodes_dead_for_long_and_holding_nothing_are_forgotten() throws Exception {
+        StoreFixture fixture = fixture();
+        int topic = fixture.topic("topic");
+        int idle = fixture.node("idle"), claiming = fixture.node("claiming"), alive = fixture.node("alive");
+        fixture.push(topic, "a");
+        fixture.claim(topic, claiming);
+        fixture.advance(Duration.ofDays(4));
+        fixture.heartbeat(alive);
+
+        int deleted = fixture.inTransaction(transaction -> fixture.store().deleteDeadNodes(transaction, Duration.ofDays(3)));
+
+        assertThat(deleted).as("only the idle one: the other still holds a claim").isEqualTo(1);
+        int again = fixture.inTransaction(transaction -> fixture.store().deleteDeadNodes(transaction, Duration.ofDays(3)));
+        assertThat(again).isZero();
+        assertThat(idle).isNotEqualTo(alive);
+    }
+
+    @Test
     void count_snapshots_record_every_topic() throws Exception {
         StoreFixture fixture = fixture();
         int topic = fixture.topic("busy");

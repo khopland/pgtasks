@@ -782,6 +782,23 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
+    public int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) {
+        MemoryTransaction memory = memory(transaction);
+        Instant cutoff = now().minus(deadFor);
+        Set<Integer> claiming = new HashSet<>();
+        queue.values().forEach(row -> {
+            if (row.nodeId() != null) {
+                claiming.add(row.nodeId());
+            }
+        });
+        List<Rows.Node> dead = nodes.values().stream()
+            .filter(node -> node.heartbeatAt().isBefore(cutoff) && !claiming.contains(node.id()))
+            .toList();
+        dead.forEach(node -> memory.remove(nodes, node.id()));
+        return dead.size();
+    }
+
+    @Override
     public boolean claimRevival(StoreTransaction transaction, int topicId, String version) {
         MemoryTransaction memory = memory(transaction);
         Rows.Topic topic = topics.get(topicId);

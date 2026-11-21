@@ -164,4 +164,16 @@ class BuilderTest {
         assertThat(TaskEngineBuilder.duration("PT2M")).isEqualTo(Duration.ofMinutes(2));
         assertThat(TaskEngineBuilder.period("30d")).isEqualTo(Period.ofDays(30));
     }
+
+    @Test
+    void a_list_of_topic_refs_registers_each_with_the_same_handler_and_options() throws Exception {
+        List<TopicRef<String>> years = List.of(TopicRef.of("assessment-2025", String.class), TopicRef.of("assessment-2026", String.class));
+        TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .configure("assessment-module", tasks -> tasks.topics(years, batch -> batch.decide(task -> Decision.success()),
+                options -> options.concurrency(4)))
+            .build();
+
+        assertThat(engine.topics()).extracting(topic -> topic.ref().name()).containsExactly("assessment-2025", "assessment-2026");
+        assertThat(engine.topics()).extracting(topic -> topic.settings().concurrency()).containsOnly(4);
+    }
 }

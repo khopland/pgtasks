@@ -208,8 +208,12 @@ final class Housekeeper {
         }
     }
 
+    /** Nodes silent for this long, holding no claims, are forgotten. */
+    static final Duration FORGET_NODES_AFTER = Duration.ofDays(3);
+
     private void expire() throws Exception {
         EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry(), settings.expiries())).forEach(wake::accept);
+        EngineCore.transact(store, transaction -> store.deleteDeadNodes(transaction, FORGET_NODES_AFTER));
     }
 
     /** Promotes everything due, a batch per transaction, for as long as batches come back full. */

@@ -47,7 +47,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep;
+    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Juncture, NamedSql> junctions = new EnumMap<>(Juncture.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -352,6 +352,13 @@ public final class PostgresTaskStore implements TaskStore {
             FOR UPDATE OF s SKIP LOCKED
             """);
         scheduleFired = sql("UPDATE tasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
+        // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
+        deleteDeadNodes = sql("""
+            DELETE FROM tasks.node n
+            WHERE n.heartbeat_at < now() - :dead::bigint * interval '1 millisecond'
+              -- Only active rows have a node (a CHECK says so), and queue_active_idx covers those.
+              AND NOT EXISTS (SELECT 1 FROM tasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
+            """);
         // One row update decides which node of a new version, or which sweep, revives the dead letters.
         claimRevival = sql("""
             UPDATE tasks.topic SET revived_version = :version::text
@@ -1414,6 +1421,13 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return result;
+    }
+
+    @Override
+    public int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException {
+        try (PreparedStatement statement = deleteDeadNodes.prepare(transaction.connection(), NamedSql.parameters().set("dead", deadFor.toMillis()))) {
+            return statement.executeUpdate();
+        }
     }
 
     @Override
