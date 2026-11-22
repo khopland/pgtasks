@@ -1,9 +1,11 @@
 # NOTIFY at commit, throughput ceiling and wake-up latency
 
-Run on 2026-11-22 with `NotifyBenchmark` in `pgtasks-benchmark` (commit 9c40dc1), on the real
+Run on 2026-11-22 with `NotifyBenchmark` in `pgtasks-benchmark` at commit 9c40dc1 (b2b4d93 once rebased onto main), before the
+schema was renamed from `tasks` to `pgtasks`. The benchmark now runs on the renamed schema; only a
+3-second smoke run has checked that, and its numbers aren't comparable with these. It ran on the real
 engine and schema, with **`fsync`, `synchronous_commit` and `full_page_writes` on**. The question:
-pgtasks wakes workers with `pg_notify('tasks_ready', topic)` from a statement-level trigger on
-`tasks.queue`, so every push notifies inside the application's own transaction. Postgres
+pgtasks wakes workers with `pg_notify('pgtasks_ready', topic)` from a statement-level trigger on
+`pgtasks.queue`, so every push notifies inside the application's own transaction. Postgres
 serializes the commits of all transactions that notified behind one database-wide lock
 (`PreCommit_Notify` takes a lock on object 0 of `pg_database` and holds it until the commit has
 been flushed). Does that cap how fast an application with many concurrent transactions can commit?
@@ -223,7 +225,7 @@ won't notice.
 
 **Fix: notify after commit, debounced, from the engine.** Drop the INSERT trigger. When a push's
 transaction commits, the engine wakes its own workers for the topic (it already does for
-`independently()`). It also asks a per-node notifier to send `pg_notify('tasks_ready', topic)` in a
+`independently()`). It also asks a per-node notifier to send `pg_notify('pgtasks_ready', topic)` in a
 short transaction of its own: at once after a quiet spell, then at most once per topic per 10 ms.
 Only those short transactions queue for the notify lock, at most about 100 a second per node and
 topic, and the application's commits share flushes again. The benchmark's prototype matched the
@@ -256,11 +258,11 @@ Nothing in the library has changed yet; this is a proposal.
 
 ## Found on the way
 
-- **Completion walks the topic's history while `tasks.task` has no statistics.** On a fresh
-  database, before the first autoanalyze, the completion's UPDATE of `tasks.task` used
+- **Completion walks the topic's history while `pgtasks.task` has no statistics.** On a fresh
+  database, before the first autoanalyze, the completion's UPDATE of `pgtasks.task` used
   `task_completed_idx` with only `topic_id` as its condition. It read every task of the topic for
   each batch: 3,677 rows for 100 updated in one plan, and more with every task. The consumer fell to
-  about 50 to 100 tasks/s with a growing backlog. Once `tasks.task` is analyzed the plan uses
+  about 50 to 100 tasks/s with a growing backlog. Once `pgtasks.task` is analyzed the plan uses
   `task_pkey`. This is the open issue about a completion plan linear in the topic's own rows. It
   matters for a new installation hit by a burst before autovacuum's first analyze; pinning the
   plan, like the claim's, would close it. Not fixed here.

@@ -71,13 +71,15 @@ import org.postgresql.PGNotification;
  * 100,1000), {@code benchmark.latency-seconds} (default 30; LISTEN off runs four times as long),
  * {@code benchmark.postgres.config} (extra server settings, {@code k=v;k=v}, such as
  * {@code wal_sync_method=fsync_writethrough} for a real flush on macOS) and
- * {@code benchmark.data-directory}.
+ * {@code benchmark.schema} (default the library's, {@code pgtasks}) and {@code benchmark.data-directory}.
  */
 @EnabledIfSystemProperty(named = "benchmark.notify", matches = ".+")
 class NotifyBenchmark {
 
     private static final TopicRef<String> TOPIC = TopicRef.of("bench", String.class);
     private static final String TEMPLATE = "notify_template";
+    /** The schema the tasks live in, the library's default unless {@code benchmark.schema} says otherwise. */
+    private static final String SCHEMA = TaskSchema.validName(System.getProperty("benchmark.schema", TaskSchema.DEFAULT_SCHEMA));
     private static final String PRODUCER = "pgtasks-bench-producer";
 
     private static final List<String> PARTS = list("benchmark.notify", "all");
@@ -123,31 +125,31 @@ class NotifyBenchmark {
             try (Statement statement = connection.createStatement()) {
                 switch (this) {
                     case TRIGGER -> { }
-                    case NONE, DEBOUNCED -> statement.execute("DROP TRIGGER queue_insert_notify ON tasks.queue");
+                    case NONE, DEBOUNCED -> statement.execute(sql("DROP TRIGGER queue_insert_notify ON ${schema}.queue"));
                     case CONDITIONAL -> {
                         // The statement's own rows are visible to an AFTER trigger, so they are
                         // excluded. Rows other transactions haven't committed aren't, so two pushes
                         // into an idle topic at once may both notify, which is harmless.
-                        statement.execute("""
-                            CREATE OR REPLACE FUNCTION tasks.notify_ready_if_idle()
+                        statement.execute(sql("""
+                            CREATE OR REPLACE FUNCTION ${schema}.notify_ready_if_idle()
                             RETURNS trigger
                             LANGUAGE plpgsql
                             AS $$
                             BEGIN
-                                PERFORM pg_notify('tasks_ready', ready.topic_id::text)
+                                PERFORM pg_notify('${schema}_ready', ready.topic_id::text)
                                 FROM (SELECT DISTINCT topic_id FROM changed_rows WHERE state = 'ready') AS ready
                                 WHERE NOT EXISTS (
-                                    SELECT 1 FROM tasks.queue q
+                                    SELECT 1 FROM ${schema}.queue q
                                     WHERE q.topic_id = ready.topic_id AND q.state = 'ready'
                                       AND q.task_id <> ALL (ARRAY(SELECT task_id FROM changed_rows)));
                                 RETURN NULL;
                             END
-                            $$""");
-                        statement.execute("""
+                            $$"""));
+                        statement.execute(sql("""
                             CREATE OR REPLACE TRIGGER queue_insert_notify
-                                AFTER INSERT ON tasks.queue
+                                AFTER INSERT ON ${schema}.queue
                                 REFERENCING NEW TABLE AS changed_rows
-                                FOR EACH STATEMENT EXECUTE FUNCTION tasks.notify_ready_if_idle()""");
+                                FOR EACH STATEMENT EXECUTE FUNCTION ${schema}.notify_ready_if_idle()"""));
                     }
                 }
             }
@@ -262,7 +264,7 @@ class NotifyBenchmark {
             statement.execute("CREATE DATABASE " + TEMPLATE);
         }
         try (HikariDataSource pool = pool(TEMPLATE, "pgtasks-bench-setup", 2, true)) {
-            TaskSchema.migrate(pool);
+            TaskSchema.migrate(pool, SCHEMA);
             try (Connection connection = pool.getConnection(); Statement statement = connection.createStatement()) {
                 statement.execute("CREATE SCHEMA app");
                 statement.execute("""
@@ -272,12 +274,12 @@ class NotifyBenchmark {
                 // Without statistics, the planner completes a batch by walking every task of the
                 // topic in task_completed_idx, which gets slower with every task completed (see the
                 // write-up), and the consumer, not the producers, would set the pace.
-                statement.execute("""
-                    INSERT INTO tasks.task (topic_id, id, identifier, payload, created_at, outcome, attempts, completed_at)
-                    SELECT tasks.create_topic('%s'), nextval('tasks.task_id_seq'), 'h' || g, 'payload',
+                statement.execute(sql("""
+                    INSERT INTO ${schema}.task (topic_id, id, identifier, payload, created_at, outcome, attempts, completed_at)
+                    SELECT ${schema}.create_topic('%s'), nextval('${schema}.task_id_seq'), 'h' || g, 'payload',
                            now() - make_interval(secs => %d - g), 'succeeded', 1, now() - make_interval(secs => %d - g)
                     FROM generate_series(1, %d) g
-                    """.formatted(TOPIC.name(), HISTORY, HISTORY, HISTORY));
+                    """).formatted(TOPIC.name(), HISTORY, HISTORY, HISTORY));
                 statement.execute("VACUUM ANALYZE");
             }
         }
@@ -470,6 +472,7 @@ class NotifyBenchmark {
                 TaskEngine engine = TaskEngine.builder()
                     .dataSource(pool)
                     .node("bench-" + node)
+                    .schema(SCHEMA)
                     .notifications(listen)
                     .configure("bench", tasks -> tasks.eachTask(TOPIC, work -> {
                         startedAt.putIfAbsent(work.identifier(), System.nanoTime());
@@ -610,7 +613,7 @@ class NotifyBenchmark {
 
         private long backlog() throws SQLException {
             try (Connection connection = pools.getFirst().getConnection(); Statement statement = connection.createStatement();
-                 ResultSet resultSet = statement.executeQuery("SELECT count(*) FROM tasks.queue")) {
+                 ResultSet resultSet = statement.executeQuery(sql("SELECT count(*) FROM ${schema}.queue"))) {
                 resultSet.next();
                 return resultSet.getLong(1);
             }
@@ -654,14 +657,14 @@ class NotifyBenchmark {
 
     /** What the engine nodes' backends are doing: the statement, and what it waits on. */
     private static final String CONSUMER_WAITS = """
-        SELECT CASE WHEN a.query LIKE '%picked%' THEN 'claim' WHEN a.query LIKE '%DELETE FROM tasks.queue%' THEN 'complete'
+        SELECT CASE WHEN a.query LIKE '%picked%' THEN 'claim' WHEN a.query LIKE '%DELETE FROM ${schema}.queue%' THEN 'complete'
                     ELSE left(regexp_replace(a.query, '\\s+', ' ', 'g'), 40) END
                || ' | ' || coalesce(a.wait_event_type || ':' || a.wait_event, 'CPU')
         FROM pg_stat_activity a
         WHERE a.application_name LIKE 'pgtasks-bench-node-%' AND a.state = 'active' AND a.pid <> pg_backend_pid()
-        """;
+        """.replace("${schema}", SCHEMA);
 
-    /** Counts the tasks_ready notifications sent while it listens. */
+    /** Counts the ready notifications sent while it listens. */
     private static final class Listener {
 
         private final AtomicLong received = new AtomicLong();
@@ -671,7 +674,7 @@ class NotifyBenchmark {
         Listener(String url) throws SQLException {
             Connection connection = DriverManager.getConnection(url, "postgres", null);
             try (Statement statement = connection.createStatement()) {
-                statement.execute("LISTEN tasks_ready");
+                statement.execute(sql("LISTEN ${schema}_ready"));
             }
             thread = Thread.ofPlatform().name("notify-counter").daemon().start(() -> {
                 try (connection) {
@@ -722,7 +725,7 @@ class NotifyBenchmark {
         }
 
         private void run() {
-            try (PreparedStatement notify = connection.prepareStatement("SELECT pg_notify('tasks_ready', ?)")) {
+            try (PreparedStatement notify = connection.prepareStatement(sql("SELECT pg_notify('${schema}_ready', ?)"))) {
                 notify.setString(1, Integer.toString(topicId));
                 while (true) {
                     synchronized (this) {
@@ -782,7 +785,7 @@ class NotifyBenchmark {
 
     private static int topicId(HikariDataSource pool) throws SQLException {
         try (Connection connection = pool.getConnection();
-             PreparedStatement statement = connection.prepareStatement("SELECT id FROM tasks.topic WHERE name = ?")) {
+             PreparedStatement statement = connection.prepareStatement(sql("SELECT id FROM ${schema}.topic WHERE name = ?"))) {
             statement.setString(1, TOPIC.name());
             try (ResultSet resultSet = statement.executeQuery()) {
                 resultSet.next();
@@ -811,6 +814,11 @@ class NotifyBenchmark {
 
     private static List<String> list(String property, String fallback) {
         return Arrays.stream(System.getProperty(property, fallback).split(",")).map(String::strip).filter(each -> !each.isEmpty()).toList();
+    }
+
+    /** SQL written with {@code ${schema}} for the schema's name. */
+    private static String sql(String text) {
+        return text.replace("${schema}", SCHEMA);
     }
 
     private static void log(String format, Object... arguments) {
