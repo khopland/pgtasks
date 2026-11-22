@@ -38,10 +38,16 @@ import javax.sql.DataSource;
  */
 final class PlanAudit {
 
-    /** A scan node on the queue or the task table, or one of their indexes, with its actual rows and loops. */
+    /**
+     * A scan node on the queue or the task table, or one of their indexes, with its actual rows and
+     * loops. Rows are the average per loop: a whole number up to Postgres 17, two decimals from 18 on.
+     */
     private static final Pattern NODE = Pattern.compile(
-        "(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Bitmap Index Scan|Tid Scan|Tid Range Scan)(?: Backward)?(?: using \\S+)? on (\\w+)\\b.*actual rows=(\\d+) loops=(\\d+)");
-    private static final Pattern REMOVED = Pattern.compile("Rows Removed by (?:Filter|Index Recheck): (\\d+)");
+        "(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Bitmap Index Scan|Tid Scan|Tid Range Scan)(?: Backward)?(?: using \\S+)? on (\\w+)\\b"
+            + ".*actual rows=(\\d+(?:\\.\\d+)?) loops=(\\d+)");
+    /** Any scan, to notice one whose line {@link #NODE} no longer reads, as when 18 changed how rows are shown. */
+    private static final Pattern ANY_SCAN = Pattern.compile("Scan(?: Backward)?(?: using \\S+)? on (\\w+)\\b.*\\(actual ");
+    private static final Pattern REMOVED = Pattern.compile("Rows Removed by (?:Filter|Index Recheck): (\\d+(?:\\.\\d+)?)");
     private static final Pattern BUFFERS = Pattern.compile("Buffers: shared(?: hit=(\\d+))?(?: read=(\\d+))?");
     private static final Set<String> RELATIONS = Set.of("queue", "task");
 
@@ -109,10 +115,12 @@ final class PlanAudit {
         final int depth;
         final Node parent;
         final boolean counted;
-        final long rows, loops;
-        long removed, buffers, childBuffers;
+        final double rows;
+        final long loops;
+        double removed;
+        long buffers, childBuffers;
 
-        Node(int depth, Node parent, boolean counted, long rows, long loops) {
+        Node(int depth, Node parent, boolean counted, double rows, long loops) {
             this.depth = depth;
             this.parent = parent;
             this.counted = counted;
@@ -138,11 +146,16 @@ final class PlanAudit {
                 int depth = arrow >= 0 ? arrow : 0;
                 Matcher scan = NODE.matcher(line);
                 boolean counted = scan.find() && RELATIONS.contains(relation(scan.group(2)));
+                Matcher any = ANY_SCAN.matcher(line);
+                if (!counted && any.find() && RELATIONS.contains(relation(any.group(1)))) {
+                    // Counting nothing here would pass every statement: fail instead.
+                    throw new IllegalStateException("A scan of the queue or task table the audit can't read: " + line.strip());
+                }
                 while (!path.isEmpty() && path.peek().depth >= depth) {
                     path.pop();
                 }
                 Node node = counted
-                    ? new Node(depth, path.peek(), true, Long.parseLong(scan.group(3)), Long.parseLong(scan.group(4)))
+                    ? new Node(depth, path.peek(), true, Double.parseDouble(scan.group(3)), Long.parseLong(scan.group(4)))
                     : new Node(depth, path.peek(), false, 0, 0);
                 nodes.add(node);
                 path.push(node);
@@ -151,7 +164,7 @@ final class PlanAudit {
             Node current = nodes.getLast();
             Matcher removed = REMOVED.matcher(line);
             if (removed.find()) {
-                current.removed += Long.parseLong(removed.group(1));
+                current.removed += Double.parseDouble(removed.group(1));
             }
             Matcher read = BUFFERS.matcher(line);
             if (read.find()) {
@@ -166,7 +179,8 @@ final class PlanAudit {
         long rows = 0, buffers = 0;
         for (Node node : nodes) {
             if (node.counted) {
-                rows += (node.rows + node.removed) * node.loops;
+                // Both are averages per loop.
+                rows += Math.round((node.rows + node.removed) * node.loops);
                 buffers += Math.max(0, node.buffers - node.childBuffers);
             }
         }
