@@ -465,7 +465,12 @@ class NotifyBenchmark {
                             } else {
                                 break;
                             }
-                            rate = round(next);
+                            next = round(next);
+                            if (next == held || next == failed) {
+                                // Rounded onto a rate already tried: the gap is as narrow as the steps go.
+                                break;
+                            }
+                            rate = next;
                         }
                         String row = String.format(Locale.ROOT, "| %s | %d | %d | %s | %,.0f | %,.0f | %,d%s | %s | %s |",
                             variant.label, nodes, batches, shape.label(), pushable, flat.completedPerSecond(), held, limit,
