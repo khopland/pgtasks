@@ -30,6 +30,7 @@ import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.AttemptView;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
@@ -60,7 +61,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes;
+    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -384,6 +385,13 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE n.heartbeat_at < now() - :dead::bigint * interval '1 millisecond'
               -- Only active rows have a node (a CHECK says so), and queue_active_idx covers those.
               AND NOT EXISTS (SELECT 1 FROM pgtasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
+            """);
+        listNodes = sql("""
+            SELECT n.id, n.name, n.version, n.started_at, n.heartbeat_at,
+                   coalesce((SELECT array_agg(l.name ORDER BY l.name) FROM pgtasks.lease l
+                             WHERE l.node_id = n.id AND l.expires_at >= now()), '{}') AS leases
+            FROM pgtasks.node n
+            ORDER BY n.id
             """);
         // One row update decides which node of a new version, or which sweep, revives the dead letters.
         claimRevival = sql("""
@@ -1600,6 +1608,20 @@ public final class PostgresTaskStore implements TaskStore {
                 resultSet.getLong(5), resultSet.getLong(6), resultSet.getLong(7), instant(resultSet, "min"), instant(resultSet, "oldest_ready_at"),
                 resultSet.getLong("failing"), instant(resultSet, "oldest_failing_at"));
         }
+    }
+
+    @Override
+    public List<NodeView> nodes(StoreTransaction transaction) throws SQLException {
+        List<NodeView> nodes = new ArrayList<>();
+        try (PreparedStatement statement = listNodes.prepare(transaction.connection(), NamedSql.parameters());
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                nodes.add(new NodeView(resultSet.getInt("id"), resultSet.getString("name"), resultSet.getString("version"),
+                    requiredInstant(resultSet, "started_at"), requiredInstant(resultSet, "heartbeat_at"),
+                    List.of((String[]) resultSet.getArray("leases").getArray())));
+            }
+        }
+        return nodes;
     }
 
     @Override

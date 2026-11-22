@@ -16,6 +16,7 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -145,6 +146,14 @@ public final class TaskAdmin {
      */
     public List<TopicSnapshot> snapshots() {
         return Unchecked.call("Reading queue counts", () -> EngineCore.transact(store, store::snapshots));
+    }
+
+    /**
+     * Every node registered in the store, this one included, with its last heartbeat and the
+     * cluster-wide jobs it leads. A node whose heartbeat is late has stopped or lost the database.
+     */
+    public List<NodeView> nodes() {
+        return Unchecked.call("Listing nodes", () -> EngineCore.transact(store, store::nodes));
     }
 
     /** Every topic's recurring tasks as stored, with their next and last runs. */

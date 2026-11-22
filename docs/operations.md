@@ -97,7 +97,7 @@ of the leading column instead. The store's statements don't rely on that.
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.
 
 ```
-GET    /actuator/tasks                                   topics by module, limits, this node
+GET    /actuator/tasks                                   topics by module, limits, this node and every node
 GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
@@ -105,7 +105,7 @@ POST   /actuator/tasks/topics/{topic}/pause | resume | create
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
-GET    /actuator/tasks/tasks/{id}
+GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
 GET    /actuator/tasks/limits/{limit}
 POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
 DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
@@ -122,6 +122,105 @@ The `tasks` health indicator is UP while the engine runs and its heartbeat is on
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
 and after stop. Its details show leadership, notifications, claims stuck past their deadline and
 open breakers, without changing the status.
+
+## Dashboard
+
+![The dashboard's overview](dashboard.png)
+
+A web page over the tasks endpoint, for Spring MVC applications with Actuator. It's in the starter,
+off by default:
+
+```yaml
+pgtasks:
+  dashboard:
+    enabled: true
+    path: /pgtasks          # the default
+management:
+  endpoints.web.exposure.include: health,tasks
+```
+
+Then open `http://<host>/pgtasks/`. It shows:
+
+- **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
+  task, failing tasks and dead letters, whether this node's breaker is open, and paused or running.
+  Every registered node with its heartbeat (marked late after the lease term) and what it leads,
+  and the rate limits.
+- **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
+  list of dead letters to revive or discard by id (or all of them), the topic's effective settings
+  and where each came from, its recurring tasks, pause and resume, purge and delete.
+- **Task**: look one up by id in the header, with its attempts and errors.
+- **Limits**: override a rate, a burst or both, for a while or with no end, and reset. A change
+  sends the version the page loaded; if someone else changed the limit meanwhile, the page says so
+  and shows the current values instead of overwriting them.
+
+Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
+(discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
+"Live" refreshes the page every 10 seconds.
+
+**Security.** The page holds no data and has no server logic of its own: it reads and changes
+everything through `/actuator/tasks`, so it has exactly the endpoint's security, and shows
+payloads, outputs and error messages only as far as `management.endpoint.tasks.show-values`
+allows. Secure the dashboard's path like the endpoint, since its pages show the same things. It
+renders all data as text, never as HTML, and every response carries a Content-Security-Policy that
+allows only its own scripts and styles and no framing. It works offline: no CDN, no fonts.
+
+With Spring Security, the page's changes are POST and DELETE requests to the endpoint, so they
+need a CSRF token. The page gets it from `<path>/config.json`, which reads Spring Security's token
+for the request and hands it to the page; the page sends it in the header Spring Security names
+(`X-CSRF-TOKEN` by default). This needs no configuration, as long as the dashboard's path goes
+through the same security filter chain, with CSRF on, as the endpoint. With
+`CookieCsrfTokenRepository` the page also falls back to sending the `XSRF-TOKEN` cookie as
+`X-XSRF-TOKEN`. If you turned CSRF off for `/actuator/**`, nothing is needed either. For example:
+
+```java
+@Bean
+SecurityFilterChain security(HttpSecurity http) throws Exception {
+    return http
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/pgtasks/**", "/actuator/tasks/**").hasRole("OPS")
+            .anyRequest().authenticated())
+        .formLogin(Customizer.withDefaults())
+        .build();
+}
+```
+
+The page finds the endpoint at `<context path><management base path>/tasks`. If a proxy rewrites
+paths, set `pgtasks.dashboard.endpoint` to the URL the browser should call. If the endpoint isn't
+exposed, the page says so. WebFlux applications aren't supported.
+
+### When Actuator is on a port the browser can't reach
+
+In Kubernetes, Actuator often runs on its own port (`management.server.port`) that only the
+kubelet and Prometheus reach, so the page on the application's port can't call it. Then let the
+dashboard serve the same operations itself, next to the page:
+
+```yaml
+pgtasks:
+  dashboard:
+    enabled: true
+    path: /admin/pgtasks
+    api: dashboard          # the API at /admin/pgtasks/api; default: actuator
+```
+
+The page is at `/admin/pgtasks/` and its API at `/admin/pgtasks/api/...`, with the same paths,
+bodies and answers as `/actuator/tasks` (the tasks endpoint itself needn't be exposed). Values are
+still hidden as `management.endpoint.tasks.show-values` says, with `when-authorized` checking the
+roles of the request's user, and limit changes still need the current version.
+
+This puts operations that change tasks on the application's port, so the application's own
+security must protect the whole path, and it is off unless you ask for it. With Spring Security,
+one rule covers the page and its API, and CSRF works as above:
+
+```java
+.authorizeHttpRequests(auth -> auth
+    .requestMatchers("/admin/pgtasks/**").hasRole("OPS")
+    .anyRequest().authenticated())
+```
+
+Without Spring Security the dashboard logs a warning at startup. Keep the path off your public
+ingress (route it only through an internal one, or reach it with `kubectl port-forward`). Each pod
+shows the same topics, counts, dead letters, limits and nodes, since they come from the database;
+"running" and breaker state are that pod's own.
 
 ## Metrics and alerts
 

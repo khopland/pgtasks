@@ -31,6 +31,7 @@ import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.AttemptView;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
@@ -909,6 +910,19 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         Matcher matcher = Pattern.compile("\"" + name + "\":\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
         return matcher.find() ? matcher.group(1).replace("\\\"", "\"").replace("\\n", "\n").replace("\\\\", "\\") : null;
+    }
+
+    @Override
+    public List<NodeView> nodes(StoreTransaction transaction) {
+        memory(transaction);
+        Instant now = now();
+        return nodes.values().stream()
+            .sorted(Comparator.comparingInt(Rows.Node::id))
+            .map(node -> new NodeView(node.id(), node.name(), node.version(), node.startedAt(), node.heartbeatAt(),
+                leases.entrySet().stream()
+                    .filter(lease -> lease.getValue().nodeId() == node.id() && !lease.getValue().until().isBefore(now))
+                    .map(Map.Entry::getKey).sorted().toList()))
+            .toList();
     }
 
     @Override

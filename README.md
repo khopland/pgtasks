@@ -91,6 +91,9 @@ stored as Base64 text. To push from anywhere, inject `Tasks`:
 - `tasks.on(connection).push(...)` joins the transaction on an explicit JDBC connection.
 - `tasks.independently().push(...)` commits on its own.
 
+For a web dashboard over the Actuator endpoint, set `pgtasks.dashboard.enabled=true` and open
+`/pgtasks/` ([Dashboard](docs/operations.md#dashboard)).
+
 Only what differs per environment goes in YAML:
 
 ```yaml
@@ -151,7 +154,7 @@ engine.close();                                // drains running batches, then s
 - [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion, retries, limits and recurring tasks.
 - [Patterns](docs/patterns.md): effects that must happen exactly once, fan-out and fan-in, producers and consumers in separate services.
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
-- [Operations](docs/operations.md): schema, endpoint, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
+- [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
 - [Migrating from 1.x](docs/migrating-from-1.x.md): mapping the concepts, and moving queued tasks with `LegacyImport`.
 - Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [NOTIFY at commit, throughput and wake-up latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 

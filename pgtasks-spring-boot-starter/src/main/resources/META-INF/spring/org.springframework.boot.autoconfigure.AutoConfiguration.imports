@@ -1,3 +1,4 @@
 io.github.khopland.pgtasks.spring.TaskAutoConfiguration
 io.github.khopland.pgtasks.spring.TaskMicrometerAutoConfiguration
 io.github.khopland.pgtasks.spring.TaskActuatorAutoConfiguration
+io.github.khopland.pgtasks.spring.TaskDashboardAutoConfiguration

@@ -16,8 +16,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.LimitOverride;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
@@ -44,7 +46,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * with the operator's changes. Everything here is also library API, on {@link TaskEngine#admin()} and {@link TaskEngine#limits()}.
  *
  * <pre>
- * GET    /actuator/tasks                                   topics by module, limits, this node
+ * GET    /actuator/tasks                                   topics by module, limits, this node and every node
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
@@ -52,7 +54,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
- * GET    /actuator/tasks/tasks/{id}
+ * GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
  * GET    /actuator/tasks/limits/{limit}
  * POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
  * DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
@@ -113,6 +115,7 @@ public class TaskEndpoint {
         body.put("topics", topics);
         body.put("limits", engine.limits().list().stream().map(TaskEndpoint::limit).toList());
         body.put("node", node());
+        body.put("nodes", engine.admin().nodes().stream().map(TaskEndpoint::node).toList());
         return body;
     }
 
@@ -128,7 +131,11 @@ public class TaskEndpoint {
                 return body;
             }));
             case "limits" -> found(engine.limits().find(name).map(TaskEndpoint::limit));
-            case "tasks" -> found(number(name).flatMap(this::task).map(view -> task(view, shown)));
+            case "tasks" -> found(number(name).flatMap(this::task).map(view -> {
+                Map<String, Object> body = task(view, shown);
+                body.put("attempts", engine.admin().attempts(view.id()).stream().map(attempt -> attempt(attempt, shown)).toList());
+                return body;
+            }));
             default -> notFound();
         };
     }
@@ -293,8 +300,30 @@ public class TaskEndpoint {
         node.put("id", health.nodeId());
         node.put("running", health.running());
         node.put("leader", health.leader());
+        // A node whose heartbeat is older than this has stopped, or lost the database.
+        node.put("leaseTermSeconds", health.leaseTerm().toSeconds());
         node.put("processing", engine.processing().stream().sorted().toList());
         return node;
+    }
+
+    private static Map<String, Object> node(NodeView view) {
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("id", view.id());
+        node.put("name", view.name());
+        node.put("version", view.version());
+        node.put("startedAt", text(view.startedAt()));
+        node.put("heartbeatAt", text(view.heartbeatAt()));
+        node.put("leases", view.leases());
+        return node;
+    }
+
+    private static Map<String, Object> attempt(AttemptView view, boolean shown) {
+        Map<String, Object> attempt = new LinkedHashMap<>();
+        attempt.put("attempt", view.attempt());
+        attempt.put("node", view.nodeId());
+        attempt.put("result", view.result());
+        attempt.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
+        return attempt;
     }
 
     private List<Map<String, Object>> schedules(String topic) {

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>pgtasks</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#/"><img src="favicon.svg" alt="" width="22" height="22"><span>pgtasks</span></a>
+    <span id="node" class="bar-node"></span>
+    <form id="lookup" class="lookup" role="search">
+      <label class="visually-hidden" for="lookup-id">Task id</label>
+      <input id="lookup-id" name="id" inputmode="numeric" pattern="[0-9]+" placeholder="Task id" autocomplete="off">
+      <button type="submit">Find</button>
+    </form>
+    <div class="bar-tools">
+      <label class="toggle" title="Refresh every 10 seconds"><input id="refresh" type="checkbox"> Live</label>
+      <button id="theme" type="button" class="ghost" title="Theme">Auto</button>
+    </div>
+  </header>
+  <main id="main" tabindex="-1">
+    <p class="muted">Loading…</p>
+  </main>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <dialog id="dialog"></dialog>
+  <noscript><p class="panel">The pgtasks dashboard needs JavaScript.</p></noscript>
+</body>
+</html>
