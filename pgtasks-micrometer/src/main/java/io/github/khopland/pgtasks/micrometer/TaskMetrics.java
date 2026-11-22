@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToDoubleFunction;
@@ -32,7 +33,8 @@ import org.slf4j.LoggerFactory;
  * Queue gauges per topic, from the counts the housekeeping leader snapshots (every minute by
  * default), so a scrape never counts the queue. Snapshots are read at most once per
  * {@code refresh}, and gauges for topics created at runtime appear with the first read that
- * sees them.
+ * sees them. Bound to an engine, it reads nothing until the engine has prepared the store (the
+ * schema may not exist before), so the gauges are empty until then.
  *
  * <ul>
  *   <li>{@value #TOPICS}: how many topics the last snapshot has. It is there from the start, so
@@ -78,6 +80,7 @@ public final class TaskMetrics implements MeterBinder {
 
     private final Callable<List<TopicSnapshot>> snapshots;
     private final Supplier<List<RateLimits.Limit>> limits;
+    private final BooleanSupplier readable;
     private final Duration refresh;
     private final InstantSource clock;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
@@ -85,9 +88,9 @@ public final class TaskMetrics implements MeterBinder {
     private volatile @Nullable Instant readAt;
     private volatile @Nullable MeterRegistry registry;
 
-    /** Reads the engine's snapshots at most every 10 seconds. */
+    /** Reads the engine's snapshots at most every 10 seconds, once the engine has prepared the store. */
     public TaskMetrics(TaskEngine engine) {
-        this(engine.admin()::snapshots, () -> engine.limits().list(), Duration.ofSeconds(10), InstantSource.system());
+        this(engine.admin()::snapshots, () -> engine.limits().list(), engine::prepared, Duration.ofSeconds(10), InstantSource.system());
     }
 
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Duration refresh, InstantSource clock) {
@@ -97,6 +100,12 @@ public final class TaskMetrics implements MeterBinder {
     /** @param limits this node's rate limits, read on every scrape */
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Supplier<List<RateLimits.Limit>> limits, Duration refresh,
                        InstantSource clock) {
+        this(snapshots, limits, () -> true, refresh, clock);
+    }
+
+    private TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Supplier<List<RateLimits.Limit>> limits, BooleanSupplier readable,
+                        Duration refresh, InstantSource clock) {
+        this.readable = readable;
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.limits = Objects.requireNonNull(limits, "limits");
         this.refresh = Objects.requireNonNull(refresh, "refresh");
@@ -147,6 +156,11 @@ public final class TaskMetrics implements MeterBinder {
     }
 
     private synchronized void refresh(boolean now) {
+        if (!readable.getAsBoolean()) {
+            // Before the engine has prepared the store, its tables may not exist yet. Not marked as
+            // read, so the first scrape after it has reads at once.
+            return;
+        }
         Instant time = clock.instant();
         Instant last = readAt;
         if (!now && last != null && Duration.between(last, time).compareTo(refresh) < 0) {
