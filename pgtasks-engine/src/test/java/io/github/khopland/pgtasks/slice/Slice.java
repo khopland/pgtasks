@@ -34,7 +34,7 @@ public final class Slice {
     private Slice() {
     }
 
-    /** The application's own tables, next to the tasks schema. */
+    /** The application's own tables, next to the pgtasks schema. */
     public static void createDomainTables(PostgresDatabase database) {
         database.execute("""
             CREATE TABLE incoming (position bigserial PRIMARY KEY, person text NOT NULL, income bigint NOT NULL);

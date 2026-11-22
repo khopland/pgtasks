@@ -22,7 +22,7 @@ public sealed interface Decision {
 
     /**
      * Done, with a result to keep on the task, such as a receipt or a reference in another
-     * system: stored in {@code tasks.task.output}, shown by {@code admin().find(id)}.
+     * system: stored in {@code pgtasks.task.output}, shown by {@code admin().find(id)}.
      */
     static Decision success(String output) {
         return new Success(Objects.requireNonNull(output, "output"));

@@ -52,28 +52,28 @@ public final class LegacyImport {
     @SuppressWarnings("InlineFormatString") // the statement reads better on its own than inside the method
     private static final String COPY = """
         WITH legacy AS MATERIALIZED (
-            SELECT nextval('tasks.task_id_seq') AS id, l.*
+            SELECT nextval('pgtasks.task_id_seq') AS id, l.*
             FROM (SELECT sequence, identifier, state::integer AS state, created, completed, input, output, reference, scheduled
                   FROM %s
                   WHERE topic = :legacy AND (state::integer <= 4 OR :history::boolean)
                   ORDER BY sequence) l
         ),
         stored AS (
-            INSERT INTO tasks.task (id, topic_id, identifier, reference, payload, created_at, outcome, completed_at, output, attempts, error)
+            INSERT INTO pgtasks.task (id, topic_id, identifier, reference, payload, created_at, outcome, completed_at, output, attempts, error)
             SELECT id, :topic::integer, identifier, reference, input, created AT TIME ZONE 'UTC',
-                   CASE state WHEN 5 THEN 'filtered' WHEN 6 THEN 'succeeded' WHEN 7 THEN 'recreated' WHEN 8 THEN 'redundant' END::tasks.task_outcome,
+                   CASE state WHEN 5 THEN 'filtered' WHEN 6 THEN 'succeeded' WHEN 7 THEN 'recreated' WHEN 8 THEN 'redundant' END::pgtasks.task_outcome,
                    CASE WHEN state > 4 THEN coalesce(completed, created) AT TIME ZONE 'UTC' END,
                    output, 0,
                    CASE WHEN state = 3 THEN jsonb_build_object('message', 'Failed in Task 1.x, before the import', 'type', 'task1.failed') END
             FROM legacy
         ),
         queued AS (
-            INSERT INTO tasks.queue (task_id, topic_id, identifier, state, run_at, failures, first_failed_at)
+            INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, run_at, failures, first_failed_at)
             SELECT id, :topic::integer, identifier,
                    (CASE WHEN state = 3 THEN 'failed'
                          WHEN state = 4 THEN 'suspended'
                          WHEN scheduled AT TIME ZONE 'UTC' > now() THEN 'scheduled'
-                         ELSE 'ready' END)::tasks.queue_state,
+                         ELSE 'ready' END)::pgtasks.queue_state,
                    CASE WHEN state <= 2 AND scheduled AT TIME ZONE 'UTC' > now() THEN scheduled AT TIME ZONE 'UTC' END,
                    CASE WHEN state = 3 THEN 1 ELSE 0 END,
                    CASE WHEN state = 3 THEN coalesce(completed, created) AT TIME ZONE 'UTC' END

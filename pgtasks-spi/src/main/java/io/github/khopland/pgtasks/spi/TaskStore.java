@@ -253,7 +253,7 @@ public interface TaskStore {
     Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
                                           @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException;
 
-    /** One task as tasks.task_view shows it. */
+    /** One task as pgtasks.task_view shows it. */
     Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException;
 
     /** The unfinished tasks of a topic, by queue state. */

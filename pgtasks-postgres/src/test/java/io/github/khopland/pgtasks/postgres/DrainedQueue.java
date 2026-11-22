@@ -42,7 +42,7 @@ final class DrainedQueue implements AutoCloseable {
      */
     private static final List<String> READS_EVERYTHING = List.of(
         // Count snapshots: every topic's counts, once a minute on the housekeeping leader.
-        "INSERT INTO tasks.topic_count"
+        "INSERT INTO pgtasks.topic_count"
     );
 
     private final PostgresDatabase database;
@@ -61,42 +61,42 @@ final class DrainedQueue implements AutoCloseable {
      */
     static DrainedQueue create(String schema) {
         DrainedQueue drained = new DrainedQueue(TestPostgres.createDatabase("drained-queue-" + schema, database -> build(database, schema)), schema);
-        assertThat(drained.database.count(TaskSchema.qualify("SELECT reltuples::bigint FROM pg_class WHERE oid = 'tasks.queue'::regclass", schema)))
+        assertThat(drained.database.count(TaskSchema.qualify("SELECT reltuples::bigint FROM pg_class WHERE oid = 'pgtasks.queue'::regclass", schema)))
             .as("the queue's statistics say it is empty").isLessThanOrEqualTo(0);
-        assertThat(drained.database.count("SELECT count(*) FROM pg_namespace WHERE nspname IN ('tasks', '" + schema + "')"))
+        assertThat(drained.database.count("SELECT count(*) FROM pg_namespace WHERE nspname IN ('pgtasks', '" + schema + "')"))
             .as("only the " + schema + " schema exists, so a statement that ignores the configured name fails").isOne();
         return drained;
     }
 
     private static void build(PostgresDatabase database, String schema) throws SQLException {
         TaskSchema.migrate(database.dataSource(), schema);
-        execute(database, schema, "SELECT tasks.create_topic('" + BALLAST_TOPIC + "')");
+        execute(database, schema, "SELECT pgtasks.create_topic('" + BALLAST_TOPIC + "')");
         // A burst that came and went: the queue keeps its pages, and the analyze finds no live row.
         execute(database, schema, """
             WITH t AS (
-                INSERT INTO tasks.task (topic_id, identifier, outcome, completed_at)
-                SELECT (SELECT id FROM tasks.topic WHERE name = 'ballast'), 'burst-' || g, 'succeeded', now() - interval '1 year'
+                INSERT INTO pgtasks.task (topic_id, identifier, outcome, completed_at)
+                SELECT (SELECT id FROM pgtasks.topic WHERE name = 'ballast'), 'burst-' || g, 'succeeded', now() - interval '1 year'
                 FROM generate_series(1, %d) AS g
                 RETURNING id, topic_id, identifier
             )
-            INSERT INTO tasks.queue (task_id, topic_id, identifier, state)
+            INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state)
             SELECT id, topic_id, identifier, 'ready' FROM t
             """.formatted(BURST));
-        execute(database, schema, "DELETE FROM tasks.queue");
-        execute(database, schema, "ANALYZE tasks.queue");
-        execute(database, schema, "ALTER TABLE tasks.queue SET (autovacuum_enabled = false)");
+        execute(database, schema, "DELETE FROM pgtasks.queue");
+        execute(database, schema, "ANALYZE pgtasks.queue");
+        execute(database, schema, "ALTER TABLE pgtasks.queue SET (autovacuum_enabled = false)");
         // Live ballast the statistics don't know about. None of it active: TCK tests expire other
         // nodes' claims and would requeue it.
         execute(database, schema, """
             WITH t AS (
-                INSERT INTO tasks.task (topic_id, identifier, payload)
-                SELECT (SELECT id FROM tasks.topic WHERE name = 'ballast'), 'ballast-' || (g %% 2000), 'x'
+                INSERT INTO pgtasks.task (topic_id, identifier, payload)
+                SELECT (SELECT id FROM pgtasks.topic WHERE name = 'ballast'), 'ballast-' || (g %% 2000), 'x'
                 FROM generate_series(1, %d) AS g
                 RETURNING id, topic_id, identifier
             )
-            INSERT INTO tasks.queue (task_id, topic_id, identifier, state, run_at)
+            INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, run_at)
             SELECT id, topic_id, identifier,
-                   (ARRAY['ready', 'ready', 'suspended', 'failed', 'scheduled', 'retrying'])[1 + id %% 6]::tasks.queue_state,
+                   (ARRAY['ready', 'ready', 'suspended', 'failed', 'scheduled', 'retrying'])[1 + id %% 6]::pgtasks.queue_state,
                    CASE WHEN id %% 6 >= 4 THEN now() + interval '100 years' END
             FROM t
             """.formatted(BALLAST));

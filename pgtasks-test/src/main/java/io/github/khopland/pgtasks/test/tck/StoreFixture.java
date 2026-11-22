@@ -172,7 +172,7 @@ public abstract class StoreFixture implements AutoCloseable {
         return inTransaction(transaction -> store().find(transaction, task));
     }
 
-    /** The state as tasks.task_view shows it, or null if the task is gone. */
+    /** The state as pgtasks.task_view shows it, or null if the task is gone. */
     public @Nullable String state(long task) {
         try {
             return view(task).map(TaskView::state).orElse(null);

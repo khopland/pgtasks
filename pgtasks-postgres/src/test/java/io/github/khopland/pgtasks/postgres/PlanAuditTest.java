@@ -40,7 +40,7 @@ class PlanAuditTest {
         try (drained; Connection connection = drained.dataSource().getConnection()) {
             connection.setAutoCommit(false);
             // No topic: it can't use queue_identifier_idx to find one identifier's tasks.
-            try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM tasks.queue WHERE identifier = ?")) {
+            try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM pgtasks.queue WHERE identifier = ?")) {
                 statement.setString(1, "ballast-7");
                 try (ResultSet resultSet = statement.executeQuery()) {
                     resultSet.next();

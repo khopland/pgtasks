@@ -104,11 +104,11 @@ class ShutdownTest {
         Duration stopping = Duration.ofNanos(System.nanoTime() - started);
 
         assertThat(threadsLeft()).as("pgtasks threads left after stop").isEmpty();
-        assertThat(fixture.count("SELECT count(*) FROM tasks.queue WHERE state = 'active'")).as("claims left").isZero();
-        assertThat(fixture.count("SELECT count(*) FROM tasks.lease")).as("the housekeeping lease is given up").isZero();
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'active'")).as("claims left").isZero();
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.lease")).as("the housekeeping lease is given up").isZero();
         assertThat(stopping).as("running batches finish in well under the timeout").isLessThan(Duration.ofSeconds(3));
         assertThat(runs.get()).isLessThan(200);
-        assertThat(fixture.count("SELECT count(*) FROM tasks.queue q JOIN tasks.topic t ON t.id = q.topic_id WHERE t.name = 'slow' AND q.attempt > 0"))
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'slow' AND q.attempt > 0"))
             .as("unfinished tasks wait with no attempt counted").isZero();
     }
 
@@ -130,7 +130,7 @@ class ShutdownTest {
 
         assertThat(threadsLeft()).as("pgtasks threads left after stop").isEmpty();
         assertThat(stopping).isLessThan(Duration.ofSeconds(2));
-        assertThat(database.rows("SELECT state::text, attempt FROM tasks.queue ORDER BY task_id"))
+        assertThat(database.rows("SELECT state::text, attempt FROM pgtasks.queue ORDER BY task_id"))
             .as("handed back, due at once and keeping its place in line, the cancelled attempt not counted")
             .containsExactly(List.of("retrying", 0), List.of("retrying", 0), List.of("retrying", 0));
     }

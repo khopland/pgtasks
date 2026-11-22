@@ -3,7 +3,7 @@
 pgtasks keeps what 1.x does well: transactional enqueue, the insertion policies, ordering per
 identifier, and fan-in. Most of what applications wrote around 1.x is now in the library:
 housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres only, in its own
-`tasks` schema, and needs Java 25.
+`pgtasks` schema, and needs Java 25.
 
 ## What maps to what
 
@@ -20,7 +20,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | FAILED stays failed until `TaskReviver` resets it | A retry policy, then dead letters: revived by an operator, by error type, or on a new version |
 | EXPIRED tasks from dead owners are never requeued | Requeued with backoff once the owner counts as dead; dead-lettered the third time |
 | Contexts and `TaskSupplement` lookups | `BatchResource` (open, review, beforeCommit, afterCommit) and `batch.resource(...)` |
-| `TASK_PRETTY` | `tasks.task_view` |
+| `TASK_PRETTY` | `pgtasks.task_view` |
 | `TaskLimiter` | Concurrency per topic, the node-wide in-flight cap, and cluster-wide rate limits |
 
 Behaviour that changes:
@@ -39,10 +39,10 @@ Behaviour that changes:
 ## Moving queued tasks
 
 `LegacyImport` (in `pgtasks-postgres`) copies a 1.x `TASK` table in the same database into the
-`tasks` schema.
+`pgtasks` schema.
 
 1. Stop every 1.x node, so nothing claims or completes while you copy.
-2. Apply the `tasks` schema: start a 2.0 engine once with `schema-mode=migrate`, or run
+2. Apply the `pgtasks` schema: start a 2.0 engine once with `schema-mode=migrate`, or run
    `TaskSchema.migrate(dataSource)`, or your Flyway or Liquibase setup. If the engine uses another
    schema name (`pgtasks.schema`), pass the same name to `LegacyImport.Options.withSchema(...)`.
 3. Run the import:

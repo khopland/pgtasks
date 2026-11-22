@@ -68,7 +68,7 @@ class LegacyImportTest {
         assertThat(report.finished()).containsEntry("assessment", 0L);
         assertThat(database.rows("""
             SELECT t.identifier, q.state::text, t.payload, t.reference, q.run_at IS NOT NULL
-            FROM tasks.task t JOIN tasks.queue q ON q.task_id = t.id JOIN tasks.topic tp ON tp.id = t.topic_id
+            FROM pgtasks.task t JOIN pgtasks.queue q ON q.task_id = t.id JOIN pgtasks.topic tp ON tp.id = t.topic_id
             WHERE tp.name = 'assessment' ORDER BY t.id
             """)).containsExactly(
             row("p1", "ready", "first", "ref-1", false),
@@ -77,7 +77,7 @@ class LegacyImportTest {
             row("p4", "suspended", "waiting", null, false),
             row("p6", "scheduled", "later", null, true),
             row("p7", "ready", "was running", null, false));
-        assertThat(database.rows("SELECT error->>'type' FROM tasks.task WHERE identifier = 'p3'")).containsExactly(List.of("task1.failed"));
+        assertThat(database.rows("SELECT error->>'type' FROM pgtasks.task WHERE identifier = 'p3'")).containsExactly(List.of("task1.failed"));
 
         // The store claims them in the 1.x order.
         PostgresTaskStore store = new PostgresTaskStore(database.dataSource(), SchemaMode.NONE);
@@ -100,7 +100,7 @@ class LegacyImportTest {
         LegacyImport.Report report = LegacyImport.run(database.dataSource(), LegacyImport.Options.defaults().withHistory());
 
         assertThat(report.finished()).containsEntry("assessment", 1L);
-        assertThat(database.rows("SELECT outcome::text, output FROM tasks.task WHERE identifier = 'p5'")).containsExactly(List.of("succeeded", "ok"));
+        assertThat(database.rows("SELECT outcome::text, output FROM pgtasks.task WHERE identifier = 'p5'")).containsExactly(List.of("succeeded", "ok"));
     }
 
     @Test
@@ -113,7 +113,7 @@ class LegacyImportTest {
         assertThat(report.total()).isEqualTo(8);
         assertThat(database.count("SELECT count(*) FROM billing_tasks.task")).isEqualTo(8);
         assertThat(database.count("SELECT count(*) FROM billing_tasks.queue")).isEqualTo(7);
-        assertThat(database.count("SELECT count(*) FROM tasks.task")).as("the default schema is left alone").isZero();
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task")).as("the default schema is left alone").isZero();
         assertThat(LegacyImport.run(database.dataSource(), LegacyImport.Options.defaults().withSchema("billing_tasks")).skipped())
             .containsExactly("assessment", "notify");
     }
@@ -124,6 +124,6 @@ class LegacyImportTest {
 
         assertThatThrownBy(() -> LegacyImport.run(database.dataSource(), LegacyImport.Options.defaults().withTopicNames(legacy -> "all")))
             .hasMessageContaining("would both become topic all");
-        assertThat(database.count("SELECT count(*) FROM tasks.task")).isZero();
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task")).isZero();
     }
 }

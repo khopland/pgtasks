@@ -2,7 +2,7 @@ package io.github.khopland.pgtasks;
 
 import java.util.Locale;
 
-/** How a finished task ended, as recorded in tasks.task. */
+/** How a finished task ended, as recorded in pgtasks.task. */
 public enum Outcome {
     SUCCEEDED, FILTERED, FAILED, REDUNDANT, RECREATED;
 

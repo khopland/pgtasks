@@ -23,7 +23,7 @@ class PostgresStoreFixture extends StoreFixture {
      * so every statement is also tested while the planner believes the queue is empty.
      *
      * <p>The drained pass also runs on a schema named {@value #CUSTOM_SCHEMA}, in a database without a
-     * {@code tasks} schema, so the whole TCK and the plan audit run once under a configured name at no
+     * {@code pgtasks} schema, so the whole TCK and the plan audit run once under a configured name at no
      * extra cost. A plan doesn't depend on the schema's name.
      */
     enum QueueStatistics {
@@ -90,12 +90,12 @@ class PostgresStoreFixture extends StoreFixture {
     @Override
     public void advance(Duration duration) {
         String interval = "interval '" + duration.toMillis() + " milliseconds'";
-        execute("UPDATE tasks.queue SET run_at = run_at - " + interval + " WHERE run_at IS NOT NULL");
-        execute("UPDATE tasks.node SET heartbeat_at = heartbeat_at - " + interval);
-        execute("UPDATE tasks.rate_admission SET refilled_at = refilled_at - " + interval);
-        execute("UPDATE tasks.rate_limit SET until = until - " + interval + " WHERE until IS NOT NULL");
-        execute("UPDATE tasks.lease SET acquired_at = acquired_at - " + interval + ", expires_at = expires_at - " + interval);
-        execute("UPDATE tasks.topic SET revive_swept_at = revive_swept_at - " + interval + " WHERE revive_swept_at IS NOT NULL");
-        execute("UPDATE tasks.schedule SET next_run_at = next_run_at - " + interval);
+        execute("UPDATE pgtasks.queue SET run_at = run_at - " + interval + " WHERE run_at IS NOT NULL");
+        execute("UPDATE pgtasks.node SET heartbeat_at = heartbeat_at - " + interval);
+        execute("UPDATE pgtasks.rate_admission SET refilled_at = refilled_at - " + interval);
+        execute("UPDATE pgtasks.rate_limit SET until = until - " + interval + " WHERE until IS NOT NULL");
+        execute("UPDATE pgtasks.lease SET acquired_at = acquired_at - " + interval + ", expires_at = expires_at - " + interval);
+        execute("UPDATE pgtasks.topic SET revive_swept_at = revive_swept_at - " + interval + " WHERE revive_swept_at IS NOT NULL");
+        execute("UPDATE pgtasks.schedule SET next_run_at = next_run_at - " + interval);
     }
 }

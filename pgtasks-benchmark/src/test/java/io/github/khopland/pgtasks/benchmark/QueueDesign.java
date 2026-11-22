@@ -10,6 +10,7 @@ import javax.sql.DataSource;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
+import io.github.khopland.pgtasks.postgres.SchemaMode;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -17,13 +18,16 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 /** The pgtasks design: a small queue table for unfinished tasks, history in tasks.task. Uses the real store. */
 final class QueueDesign implements Design {
 
+    /** The schema the earlier runs used; the SQL below is written for it. */
+    private static final String SCHEMA = "tasks";
+
     private final DataSource dataSource;
     private final PostgresTaskStore store;
     private int topic, node;
 
     QueueDesign(DataSource dataSource) {
         this.dataSource = dataSource;
-        this.store = new PostgresTaskStore(dataSource);
+        this.store = new PostgresTaskStore(dataSource, SchemaMode.MIGRATE, SCHEMA);
     }
 
     @Override
@@ -33,7 +37,7 @@ final class QueueDesign implements Design {
 
     @Override
     public void create() throws Exception {
-        TaskSchema.migrate(dataSource);
+        TaskSchema.migrate(dataSource, SCHEMA);
         try (StoreTransaction transaction = store.begin()) {
             topic = store.createTopic(transaction, "bench");
             node = store.registerNode(transaction, "bench", "bench");

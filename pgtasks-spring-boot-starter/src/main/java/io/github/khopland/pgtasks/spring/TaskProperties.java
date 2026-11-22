@@ -30,13 +30,13 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param store           where tasks live: {@code postgres} (the default, through the application's
  *                        DataSource) or {@code memory}, for local runs and tests. Memory is never
  *                        chosen on its own: without a DataSource, startup fails
- * @param schemaMode      how the Postgres store treats the tasks schema at startup: {@code migrate}
+ * @param schemaMode      how the Postgres store treats the pgtasks schema at startup: {@code migrate}
  *                        (the built-in runner), {@code validate} (Flyway, Liquibase or a DBA
  *                        pipeline applies it) or {@code none}, which leaves it to the application
- * @param schema          the Postgres schema the tasks live in, {@code tasks} by default: a plain
+ * @param schema          the Postgres schema the tasks live in, {@code pgtasks} by default: a plain
  *                        lowercase identifier. Applications sharing a database each need their own.
  *                        With Flyway or Liquibase, pass the same name to them (docs/operations.md)
- * @param node            this node's name in tasks.node; by default {@code spring.application.name}
+ * @param node            this node's name in pgtasks.node; by default {@code spring.application.name}
  * @param notifications   wake workers through LISTEN/NOTIFY; off relies on polling alone
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
  *                        left is handed back without counting the attempt
@@ -61,7 +61,7 @@ public record TaskProperties(
     @DefaultValue("true") boolean enabled,
     @DefaultValue("postgres") Store store,
     @DefaultValue("migrate") String schemaMode,
-    @DefaultValue("tasks") String schema,
+    @DefaultValue("pgtasks") String schema,
     String node,
     @DefaultValue("true") boolean notifications,
     @DefaultValue("30s") Duration shutdownTimeout,

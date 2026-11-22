@@ -31,8 +31,8 @@ import javax.sql.DataSource;
  * Flyway.configure()
  *     .dataSource(dataSource)
  *     .locations("classpath:io/github/khopland/pgtasks/postgres/db")
- *     .schemas("tasks")
- *     .placeholders(Map.of("pgtasks_schema", "tasks"))
+ *     .schemas("pgtasks")
+ *     .placeholders(Map.of("pgtasks_schema", "pgtasks"))
  *     .table("flyway_task_history")
  *     .load()
  *     .migrate();
@@ -47,7 +47,7 @@ import javax.sql.DataSource;
  *
  * <p>Conventions every file follows, so all four paths behave the same:
  * {@code V<version>__<description>.sql} for tables, types and indexes, applied once, each ending
- * by recording its version and the lowest version it stays compatible with in {@code tasks.meta};
+ * by recording its version and the lowest version it stays compatible with in {@code pgtasks.meta};
  * {@code R__<description>.sql} for functions, views and triggers, idempotent and re-applied when
  * they change; and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
  * run outside a transaction, such as {@code CREATE INDEX CONCURRENTLY}.
@@ -59,7 +59,7 @@ import javax.sql.DataSource;
 public final class TaskSchema {
 
     /** The schema's name unless configured otherwise. */
-    public static final String DEFAULT_SCHEMA = "tasks";
+    public static final String DEFAULT_SCHEMA = "pgtasks";
 
     /**
      * The placeholder the SQL files write as {@code ${pgtasks_schema}}: a Flyway placeholder and a
@@ -73,8 +73,8 @@ public final class TaskSchema {
      */
     private static final Pattern NAME = Pattern.compile("[a-z_][a-z0-9_]{0,49}");
 
-    /** {@code tasks.} where it starts a qualified name in the store's SQL. */
-    private static final Pattern QUALIFIED = Pattern.compile("(?<![\\w.\"$])tasks\\.(?=[a-z_])");
+    /** {@code pgtasks.} where it starts a qualified name in the store's SQL. */
+    private static final Pattern QUALIFIED = Pattern.compile("(?<![\\w.\"$])pgtasks\\.(?=[a-z_])");
 
     public static final String LOCATION = "io/github/khopland/pgtasks/postgres/db";
 

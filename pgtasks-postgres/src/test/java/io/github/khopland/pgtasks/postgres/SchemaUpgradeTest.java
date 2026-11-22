@@ -161,7 +161,7 @@ class SchemaUpgradeTest {
             assertThat(deadLetters.getFirst().error()).contains("java.lang.IllegalStateException");
             assertThat(store.revive(transaction, topic, List.of(deadLetters.getFirst().id()), 10)).hasSize(1);
 
-            long finished = database.count("SELECT id FROM tasks.task WHERE identifier = 'person-0'");
+            long finished = database.count("SELECT id FROM pgtasks.task WHERE identifier = 'person-0'");
             assertThat(store.find(transaction, finished)).hasValueSatisfying(view -> {
                 assertThat(view.state()).isEqualTo("succeeded");
                 assertThat(view.output()).isEqualTo("ok");

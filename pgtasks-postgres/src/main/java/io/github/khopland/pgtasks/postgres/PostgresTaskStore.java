@@ -96,15 +96,15 @@ public final class PostgresTaskStore implements TaskStore {
         // commit is still found), the per-identifier check in claims is fenced (pollSql), and a
         // claim pins its plan (claimPlanning). ClaimPlanTest drains a burst on a queue analyzed
         // while empty.
-        createTopic = sql("SELECT tasks.create_topic(:name)");
-        findTopic = sql("SELECT id FROM tasks.topic WHERE name = :name");
-        listTopics = sql("SELECT id, name, paused FROM tasks.topic ORDER BY id");
+        createTopic = sql("SELECT pgtasks.create_topic(:name)");
+        findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
+        listTopics = sql("SELECT id, name, paused FROM pgtasks.topic ORDER BY id");
         // The topic triggers notify every node when paused actually changes (R__notify_topic.sql).
-        pauseTopic = sql("UPDATE tasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
-        registerNode = sql("INSERT INTO tasks.node (name, version) VALUES (:name, :version) RETURNING id");
-        heartbeat = sql("UPDATE tasks.node SET heartbeat_at = now() WHERE id = :node");
+        pauseTopic = sql("UPDATE pgtasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
+        registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id");
+        heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node");
         ensureAdmission = sql("""
-            INSERT INTO tasks.rate_admission (name, tokens, refilled_at)
+            INSERT INTO pgtasks.rate_admission (name, tokens, refilled_at)
             VALUES (:name, :burst, clock_timestamp())
             ON CONFLICT (name) DO NOTHING
             """);
@@ -113,13 +113,13 @@ public final class PostgresTaskStore implements TaskStore {
         admissionLock = sql("""
             SELECT least(:burst::double precision,
                          tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
-            FROM tasks.rate_admission
+            FROM pgtasks.rate_admission
             WHERE name = :name
             FOR UPDATE
             """);
         // Runs after the poll while the lock is held, so the refill is exact; refilled_at never moves back.
         admissionCharge = sql("""
-            UPDATE tasks.rate_admission
+            UPDATE pgtasks.rate_admission
             SET tokens = greatest(0, least(:burst::double precision,
                                            tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
                                      - :claimed::integer),
@@ -150,7 +150,7 @@ public final class PostgresTaskStore implements TaskStore {
                     AS d(task_id, attempt, outcome, output)
             ),
             done AS (
-                DELETE FROM tasks.queue q
+                DELETE FROM pgtasks.queue q
                 USING d
                 WHERE q.task_id = ANY (:ids::bigint[])
                   AND q.task_id = d.task_id
@@ -160,8 +160,8 @@ public final class PostgresTaskStore implements TaskStore {
                   AND q.state = 'active'
                 RETURNING q.task_id, q.attempt, d.outcome, d.output
             )
-            UPDATE tasks.task t
-            SET outcome = done.outcome::tasks.task_outcome,
+            UPDATE pgtasks.task t
+            SET outcome = done.outcome::pgtasks.task_outcome,
                 output = done.output,
                 attempts = done.attempt,
                 completed_at = now()
@@ -178,8 +178,8 @@ public final class PostgresTaskStore implements TaskStore {
                     AS d(task_id, attempt, state, delay_ms, uncounted, error, started_at)
             ),
             moved AS (
-                UPDATE tasks.queue q
-                SET state = d.state::tasks.queue_state,
+                UPDATE pgtasks.queue q
+                SET state = d.state::pgtasks.queue_state,
                     run_at = CASE WHEN d.delay_ms IS NULL THEN NULL ELSE now() + d.delay_ms * interval '1 millisecond' END,
                     node_id = NULL,
                     claimed_at = NULL,
@@ -198,14 +198,14 @@ public final class PostgresTaskStore implements TaskStore {
             -- Every failure, counted or not, leaves its error on the task, so what is failing shows
             -- while it retries, not only once it is dead.
             last_error AS (
-                UPDATE tasks.task t
+                UPDATE pgtasks.task t
                 SET error = d.error::jsonb, attempts = m.attempt
                 FROM moved m JOIN d ON d.task_id = m.task_id
                 WHERE t.topic_id = :topic::integer AND t.id = m.task_id AND d.error IS NOT NULL
             ),
             -- Only counted attempts are logged, so an outage of uncounted failures doesn't grow the log.
             logged AS (
-                INSERT INTO tasks.attempt (topic_id, task_id, attempt, node_id, started_at, result, error)
+                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result, error)
                 SELECT :topic::integer, d.task_id, d.attempt, :node::integer, coalesce(d.started_at, now()), 'failed', d.error::jsonb
                 FROM moved m JOIN d ON d.task_id = m.task_id
                 WHERE d.error IS NOT NULL AND d.uncounted = 0
@@ -213,7 +213,7 @@ public final class PostgresTaskStore implements TaskStore {
             -- The log keeps a task's first attempt and its last ten, so a task that keeps failing
             -- doesn't grow it without bound. (This statement doesn't see the row it inserts.)
             trimmed AS (
-                DELETE FROM tasks.attempt a
+                DELETE FROM pgtasks.attempt a
                 USING moved m JOIN d ON d.task_id = m.task_id
                 WHERE d.error IS NOT NULL AND d.uncounted = 0 AND a.task_id = m.task_id
                   AND a.attempt > 1 AND a.attempt <= d.attempt - 10
@@ -228,13 +228,13 @@ public final class PostgresTaskStore implements TaskStore {
         // the drained-queue pass of the TCK).
         promote = sql("""
             WITH due AS MATERIALIZED (
-                SELECT o.ctid AS row FROM tasks.queue o
+                SELECT o.ctid AS row FROM pgtasks.queue o
                 WHERE o.state IN ('scheduled', 'retrying') AND o.run_at <= (SELECT clock_timestamp())
                 ORDER BY o.run_at
                 LIMIT :limit::integer
                 FOR UPDATE OF o SKIP LOCKED
             )
-            UPDATE tasks.queue q
+            UPDATE pgtasks.queue q
             SET state = 'ready', run_at = NULL
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM due))
             RETURNING q.topic_id
@@ -243,18 +243,18 @@ public final class PostgresTaskStore implements TaskStore {
         expire = sql("""
             WITH stale AS (
                 SELECT o.ctid AS row, o.task_id, o.topic_id, o.attempt, o.node_id, o.claimed_at
-                FROM tasks.queue o
+                FROM pgtasks.queue o
                 WHERE o.state = 'active'
                   AND o.node_id <> :node::integer
-                  AND o.node_id IN (SELECT id FROM tasks.node WHERE heartbeat_at < now() - :expiry::bigint * interval '1 millisecond')
+                  AND o.node_id IN (SELECT id FROM pgtasks.node WHERE heartbeat_at < now() - :expiry::bigint * interval '1 millisecond')
                 FOR UPDATE OF o SKIP LOCKED
             ),
             -- Each expiry backs off a little longer, and the deadLetterAt-th one dead-letters the task:
             -- a task that takes its node down can't move from node to node forever.
             requeued AS (
-                UPDATE tasks.queue q
+                UPDATE pgtasks.queue q
                 SET state = CASE WHEN q.expiries + 1 >= :dead_at::integer THEN 'failed'
-                                 WHEN :backoff::bigint = 0 THEN 'ready' ELSE 'retrying' END::tasks.queue_state,
+                                 WHEN :backoff::bigint = 0 THEN 'ready' ELSE 'retrying' END::pgtasks.queue_state,
                     run_at = CASE WHEN q.expiries + 1 >= :dead_at::integer OR :backoff::bigint = 0 THEN NULL
                                   ELSE now() + :backoff::bigint * power(2, least(q.expiries, 20)) * interval '1 millisecond' END,
                     node_id = NULL, claimed_at = NULL,
@@ -265,7 +265,7 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING q.task_id, q.topic_id, q.state, q.attempt, q.expiries
             ),
             last_error AS (
-                UPDATE tasks.task t
+                UPDATE pgtasks.task t
                 SET error = jsonb_build_object('message', CASE WHEN r.state = 'failed'
                         THEN 'Expired ' || r.expiries || ' times: the node running it stopped every time'
                         ELSE 'Expired: the node running it stopped' END, 'type', 'expired'),
@@ -274,7 +274,7 @@ public final class PostgresTaskStore implements TaskStore {
                 WHERE t.id = r.task_id AND t.topic_id = r.topic_id
             ),
             logged AS (
-                INSERT INTO tasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
+                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
                 SELECT s.topic_id, s.task_id, s.attempt, s.node_id, coalesce(s.claimed_at, now()), 'expired'
                 FROM stale s JOIN requeued r ON r.task_id = s.task_id
             )
@@ -289,9 +289,9 @@ public final class PostgresTaskStore implements TaskStore {
                    coalesce(q.failures, 0) AS failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
                    t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at, t.headers::text AS headers
-            FROM tasks.task t
-            JOIN tasks.topic tp ON tp.id = t.topic_id
-            LEFT JOIN tasks.queue q ON q.task_id = t.id
+            FROM pgtasks.task t
+            JOIN pgtasks.topic tp ON tp.id = t.topic_id
+            LEFT JOIN pgtasks.queue q ON q.task_id = t.id
             WHERE t.id = :id::bigint
             """);
         // Dead letters are few, so queue_failed_idx keeps these to the topic's dead letters.
@@ -300,9 +300,9 @@ public final class PostgresTaskStore implements TaskStore {
                    q.attempt, q.run_at, q.priority, q.node_id, q.failures, q.first_failed_at,
                    t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
                    t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at, t.headers::text AS headers
-            FROM tasks.queue q
-            JOIN tasks.task t ON t.id = q.task_id
-            JOIN tasks.topic tp ON tp.id = q.topic_id
+            FROM pgtasks.queue q
+            JOIN pgtasks.task t ON t.id = q.task_id
+            JOIN pgtasks.topic tp ON tp.id = q.topic_id
             WHERE q.topic_id = :topic::integer AND q.state = 'failed' AND q.task_id > :after::bigint
               AND (:all::boolean OR q.task_id = ANY (:ids::bigint[]))
               AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
@@ -313,8 +313,8 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         String pickDeadLetters = """
             WITH picked AS MATERIALIZED (
-                SELECT o.ctid AS row FROM tasks.queue o
-                JOIN tasks.task t ON t.id = o.task_id
+                SELECT o.ctid AS row FROM pgtasks.queue o
+                JOIN pgtasks.task t ON t.id = o.task_id
                 WHERE o.topic_id = :topic::integer AND o.state = 'failed' AND o.task_id > :after::bigint
                   AND (:all::boolean OR o.task_id = ANY (:ids::bigint[]))
                   AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
@@ -324,20 +324,20 @@ public final class PostgresTaskStore implements TaskStore {
                 LIMIT :limit::integer
                 FOR UPDATE OF o SKIP LOCKED
             )""";
-        // The statement trigger on tasks.queue wakes the workers.
+        // The statement trigger on pgtasks.queue wakes the workers.
         revive = sql(pickDeadLetters + """
-            UPDATE tasks.queue q
+            UPDATE pgtasks.queue q
             SET state = 'ready', attempt = 0, run_at = NULL, failures = 0, first_failed_at = NULL, expiries = 0
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
             """);
         discard = sql(pickDeadLetters + """
             , gone AS (
-                DELETE FROM tasks.queue q
+                DELETE FROM pgtasks.queue q
                 WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
                 RETURNING q.task_id, q.attempt
             )
-            UPDATE tasks.task t
+            UPDATE pgtasks.task t
             SET outcome = 'failed', attempts = gone.attempt, completed_at = now()
             FROM gone
             WHERE t.topic_id = :topic::integer AND t.id = gone.task_id
@@ -351,10 +351,10 @@ public final class PostgresTaskStore implements TaskStore {
                     AS i(name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
             ),
             removed AS (
-                DELETE FROM tasks.schedule s
+                DELETE FROM pgtasks.schedule s
                 WHERE s.topic_id = :topic::integer AND s.name NOT IN (SELECT name FROM input)
             )
-            INSERT INTO tasks.schedule AS s (topic_id, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
+            INSERT INTO pgtasks.schedule AS s (topic_id, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
             SELECT :topic::integer, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at FROM input
             ON CONFLICT (topic_id, name) DO UPDATE
             SET identifier = excluded.identifier, insertion = excluded.insertion, payload = excluded.payload,
@@ -365,8 +365,8 @@ public final class PostgresTaskStore implements TaskStore {
         String scheduleColumns = """
             SELECT s.id, s.topic_id, tp.name AS topic, s.name, s.identifier, s.cron, s.zone, s.insertion, s.payload, s.payload_type,
                    s.next_run_at, s.last_run_at
-            FROM tasks.schedule s
-            JOIN tasks.topic tp ON tp.id = s.topic_id
+            FROM pgtasks.schedule s
+            JOIN pgtasks.topic tp ON tp.id = s.topic_id
             """;
         listSchedules = sql(scheduleColumns + "ORDER BY tp.name, s.name");
         dueSchedules = sql(scheduleColumns + """
@@ -375,22 +375,22 @@ public final class PostgresTaskStore implements TaskStore {
             LIMIT :limit::integer
             FOR UPDATE OF s SKIP LOCKED
             """);
-        scheduleFired = sql("UPDATE tasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
+        scheduleFired = sql("UPDATE pgtasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
         // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
         deleteDeadNodes = sql("""
-            DELETE FROM tasks.node n
+            DELETE FROM pgtasks.node n
             WHERE n.heartbeat_at < now() - :dead::bigint * interval '1 millisecond'
               -- Only active rows have a node (a CHECK says so), and queue_active_idx covers those.
-              AND NOT EXISTS (SELECT 1 FROM tasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
+              AND NOT EXISTS (SELECT 1 FROM pgtasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
             """);
         // One row update decides which node of a new version, or which sweep, revives the dead letters.
         claimRevival = sql("""
-            UPDATE tasks.topic SET revived_version = :version::text
+            UPDATE pgtasks.topic SET revived_version = :version::text
             WHERE id = :topic::integer AND revived_version IS DISTINCT FROM :version::text
             RETURNING id
             """);
         claimReviveSweep = sql("""
-            UPDATE tasks.topic SET revive_swept_at = now()
+            UPDATE pgtasks.topic SET revive_swept_at = now()
             WHERE id = :topic::integer AND (revive_swept_at IS NULL OR revive_swept_at <= now() - :every::bigint * interval '1 millisecond')
             RETURNING id
             """);
@@ -399,8 +399,8 @@ public final class PostgresTaskStore implements TaskStore {
             SELECT coalesce(t.error->>'type', t.error->>'message', 'unknown') AS error, count(*) AS tasks,
                    min(q.first_failed_at) AS oldest, min(q.task_id) AS example,
                    (array_agg(t.error->>'message' ORDER BY q.task_id))[1] AS message
-            FROM tasks.queue q
-            JOIN tasks.task t ON t.id = q.task_id
+            FROM pgtasks.queue q
+            JOIN pgtasks.task t ON t.id = q.task_id
             WHERE q.topic_id = :topic::integer AND q.failures > 0
             GROUP BY 1
             ORDER BY count(*) DESC, 1
@@ -417,28 +417,28 @@ public final class PostgresTaskStore implements TaskStore {
                    count(*) FILTER (WHERE state = 'failed'),
                    count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp()),
                    min(run_at),
-                   (SELECT created_at FROM tasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at,
+                   (SELECT created_at FROM pgtasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at,
                    count(*) FILTER (WHERE failures > 0) AS failing,
                    min(first_failed_at) AS oldest_failing_at
-            FROM tasks.queue
+            FROM pgtasks.queue
             WHERE topic_id = :topic::integer
             """);
         // Materialized for the same reason as promote: otherwise the limit doesn't hold. One range
         // of task_completed_idx (topic_id, outcome, completed_at).
         purge = sql("""
             WITH doomed AS MATERIALIZED (
-                SELECT d.id FROM tasks.task d
-                WHERE d.topic_id = :topic::integer AND d.outcome = :outcome::tasks.task_outcome AND d.completed_at < :before::timestamptz
+                SELECT d.id FROM pgtasks.task d
+                WHERE d.topic_id = :topic::integer AND d.outcome = :outcome::pgtasks.task_outcome AND d.completed_at < :before::timestamptz
                 ORDER BY d.completed_at
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
             ),
             -- A task's attempt log goes with it.
             attempts AS (
-                DELETE FROM tasks.attempt a
+                DELETE FROM pgtasks.attempt a
                 WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
-            DELETE FROM tasks.task t
+            DELETE FROM pgtasks.task t
             USING doomed
             WHERE t.topic_id = :topic::integer AND t.id = doomed.id
             """);
@@ -446,65 +446,65 @@ public final class PostgresTaskStore implements TaskStore {
         // stays, held by its queue row.
         purgeAll = sql("""
             WITH doomed AS MATERIALIZED (
-                SELECT d.id FROM tasks.task d
+                SELECT d.id FROM pgtasks.task d
                 WHERE d.topic_id = :topic::integer AND d.outcome IS NOT NULL
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
             ),
             attempts AS (
-                DELETE FROM tasks.attempt a
+                DELETE FROM pgtasks.attempt a
                 WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
-            DELETE FROM tasks.task t
+            DELETE FROM pgtasks.task t
             USING doomed
             WHERE t.topic_id = :topic::integer AND t.id = doomed.id
             """);
         // A push's foreign key check takes a share lock on the topic row, so this waits for
         // pushes in flight and makes later ones wait, then fail, once the row is gone.
-        lockTopic = sql("SELECT name FROM tasks.topic WHERE id = :topic::integer FOR UPDATE");
-        topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM tasks.task WHERE topic_id = :topic::integer)");
-        // The delete trigger on tasks.topic tells every node (R__notify_topic.sql).
+        lockTopic = sql("SELECT name FROM pgtasks.topic WHERE id = :topic::integer FOR UPDATE");
+        topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.task WHERE topic_id = :topic::integer)");
+        // The delete trigger on pgtasks.topic tells every node (R__notify_topic.sql).
         deleteTopic = sql("""
-            WITH schedules AS (DELETE FROM tasks.schedule WHERE topic_id = :topic::integer),
-                 counts AS (DELETE FROM tasks.topic_count WHERE topic_id = :topic::integer)
-            DELETE FROM tasks.topic WHERE id = :topic::integer
+            WITH schedules AS (DELETE FROM pgtasks.schedule WHERE topic_id = :topic::integer),
+                 counts AS (DELETE FROM pgtasks.topic_count WHERE topic_id = :topic::integer)
+            DELETE FROM pgtasks.topic WHERE id = :topic::integer
             """);
         // Written at every start, so it skips the write when nothing changed.
         setRetention = sql("""
-            UPDATE tasks.topic
+            UPDATE pgtasks.topic
             SET retention = jsonb_object(:outcomes::text[], :periods::text[])
             WHERE id = :topic::integer
               AND retention IS DISTINCT FROM jsonb_object(:outcomes::text[], :periods::text[])
             """);
         retention = sql("""
             SELECT t.id, r.key, r.value
-            FROM tasks.topic t
+            FROM pgtasks.topic t
             CROSS JOIN LATERAL jsonb_each_text(t.retention) AS r
             ORDER BY t.id
             """);
         limitOverrides = sql("""
             SELECT name, rate, burst, until, version, updated_at, updated_by
-            FROM tasks.rate_limit
+            FROM pgtasks.rate_limit
             ORDER BY name
             """);
         // Only a limit some node configured (it has a token bucket) can be overridden. A first
         // override is based on version 0; two at once serialize on the primary key, and the second
         // then finds version 1 and changes nothing.
         overrideLimit = sql("""
-            INSERT INTO tasks.rate_limit AS l (name, rate, burst, until, updated_by)
+            INSERT INTO pgtasks.rate_limit AS l (name, rate, burst, until, updated_by)
             SELECT a.name, :rate::double precision, :burst::integer, :until::timestamptz, :by::text
-            FROM tasks.rate_admission a
+            FROM pgtasks.rate_admission a
             WHERE a.name = :name
-              AND (coalesce(:expected::bigint, 0) = 0 OR EXISTS (SELECT 1 FROM tasks.rate_limit e WHERE e.name = :name))
+              AND (coalesce(:expected::bigint, 0) = 0 OR EXISTS (SELECT 1 FROM pgtasks.rate_limit e WHERE e.name = :name))
             ON CONFLICT (name) DO UPDATE
             SET rate = excluded.rate, burst = excluded.burst, until = excluded.until,
                 version = l.version + 1, updated_at = now(), updated_by = excluded.updated_by
             WHERE :expected::bigint IS NULL OR l.version = :expected::bigint
             RETURNING l.name, l.rate, l.burst, l.until, l.version, l.updated_at, l.updated_by
             """);
-        limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM tasks.rate_admission WHERE name = :name)");
+        limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
-            INSERT INTO tasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
+            INSERT INTO pgtasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
                                            oldest_ready_at, failing, oldest_failing_at)
             SELECT t.id, now(),
                    count(q.task_id) FILTER (WHERE q.state = 'scheduled'),
@@ -515,11 +515,11 @@ public final class PostgresTaskStore implements TaskStore {
                    count(q.task_id) FILTER (WHERE q.state = 'failed'),
                    count(q.task_id) FILTER (WHERE q.state IN ('scheduled', 'retrying') AND q.run_at <= now()),
                    min(q.run_at),
-                   (SELECT created_at FROM tasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready')),
+                   (SELECT created_at FROM pgtasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready')),
                    count(q.task_id) FILTER (WHERE q.failures > 0),
                    min(q.first_failed_at)
-            FROM tasks.topic t
-            LEFT JOIN tasks.queue q ON q.topic_id = t.id
+            FROM pgtasks.topic t
+            LEFT JOIN pgtasks.queue q ON q.topic_id = t.id
             GROUP BY t.id
             ON CONFLICT (topic_id) DO UPDATE SET taken_at = excluded.taken_at, scheduled = excluded.scheduled, retrying = excluded.retrying,
                 ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
@@ -529,7 +529,7 @@ public final class PostgresTaskStore implements TaskStore {
         // Takes a lease nobody holds or whose term ran out, or renews this node's own. Two nodes
         // asking at once serialize on the row; the second sees the first's fresh term and gets nothing.
         lead = sql("""
-            INSERT INTO tasks.lease AS l (name, node_id, acquired_at, expires_at)
+            INSERT INTO pgtasks.lease AS l (name, node_id, acquired_at, expires_at)
             VALUES (:name, :node::integer, now(), now() + :term::bigint * interval '1 millisecond')
             ON CONFLICT (name) DO UPDATE
             SET node_id = excluded.node_id,
@@ -538,23 +538,23 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE l.node_id = excluded.node_id OR l.expires_at < now()
             RETURNING l.expires_at
             """);
-        resign = sql("DELETE FROM tasks.lease WHERE name = :name AND node_id = :node::integer");
+        resign = sql("DELETE FROM pgtasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
             SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at,
                    c.oldest_ready_at, c.failing, c.oldest_failing_at
-            FROM tasks.topic_count c
-            JOIN tasks.topic tp ON tp.id = c.topic_id
+            FROM pgtasks.topic_count c
+            JOIN pgtasks.topic tp ON tp.id = c.topic_id
             ORDER BY tp.name
             """);
         activeClaims = sql("""
             SELECT topic_id, task_id, attempt, claimed_at
-            FROM tasks.queue
+            FROM pgtasks.queue
             WHERE node_id = :node::integer AND state = 'active'
             ORDER BY task_id
             """);
         listAttempts = sql("""
             SELECT task_id, attempt, node_id, result, error::text
-            FROM tasks.attempt
+            FROM pgtasks.attempt
             WHERE task_id = :id::bigint
             ORDER BY attempt, finished_at
             """);
@@ -602,11 +602,11 @@ public final class PostgresTaskStore implements TaskStore {
             case SUPERSEDE -> """
                 ,
                 superseded AS (
-                    DELETE FROM tasks.queue q
+                    DELETE FROM pgtasks.queue q
                     WHERE q.topic_id = :topic::integer
                       AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                       AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM tasks.queue o
+                        SELECT o.task_id FROM pgtasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state IN ('ready', 'scheduled', 'retrying')
@@ -614,18 +614,18 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING q.task_id
                 ),
                 superseded_tasks AS (
-                    UPDATE tasks.task t SET outcome = 'redundant', completed_at = now()
+                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
                     WHERE t.topic_id = :topic::integer AND t.id IN (SELECT task_id FROM superseded)
                 )
                 """;
             case REPLACE -> """
                 ,
                 replaced AS (
-                    DELETE FROM tasks.queue q
+                    DELETE FROM pgtasks.queue q
                     WHERE q.topic_id = :topic::integer
                       AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                       AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM tasks.queue o
+                        SELECT o.task_id FROM pgtasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state <> 'active'
@@ -633,14 +633,14 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING q.task_id
                 ),
                 replaced_open AS (
-                    UPDATE tasks.task t SET outcome = 'redundant', completed_at = now()
+                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
                     WHERE t.topic_id = :topic::integer AND t.id IN (SELECT task_id FROM replaced)
                 ),
                 replaced_done AS (
-                    UPDATE tasks.task t SET previous_outcome = t.outcome, outcome = 'redundant'
+                    UPDATE pgtasks.task t SET previous_outcome = t.outcome, outcome = 'redundant'
                     WHERE t.topic_id = :topic::integer
                       AND t.id IN (
-                        SELECT d.id FROM tasks.task d
+                        SELECT d.id FROM pgtasks.task d
                         WHERE d.topic_id = :topic::integer
                           AND d.identifier IN (SELECT identifier FROM queued)
                           AND d.outcome IN ('succeeded', 'filtered', 'failed')
@@ -650,11 +650,11 @@ public final class PostgresTaskStore implements TaskStore {
             case DELETE -> """
                 ,
                 deleted AS (
-                    DELETE FROM tasks.queue q
+                    DELETE FROM pgtasks.queue q
                     WHERE q.topic_id = :topic::integer
                       AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                       AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM tasks.queue o
+                        SELECT o.task_id FROM pgtasks.queue o
                         WHERE o.topic_id = :topic::integer
                           AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND o.state <> 'active'
@@ -662,10 +662,10 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING q.task_id
                 ),
                 deleted_tasks AS (
-                    DELETE FROM tasks.task t
+                    DELETE FROM pgtasks.task t
                     WHERE t.topic_id = :topic::integer
                       AND t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
-                          SELECT d.id FROM tasks.task d
+                          SELECT d.id FROM pgtasks.task d
                           WHERE d.topic_id = :topic::integer
                             AND d.identifier IN (SELECT identifier FROM queued)
                             AND d.outcome IS NOT NULL
@@ -673,14 +673,14 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING t.id
                 ),
                 deleted_attempts AS (
-                    DELETE FROM tasks.attempt a
+                    DELETE FROM pgtasks.attempt a
                     WHERE a.task_id = ANY (ARRAY(SELECT id FROM deleted_tasks))
                 )
                 """;
         };
         return """
             WITH input AS MATERIALIZED (
-                SELECT nextval('tasks.task_id_seq') AS id, i.*
+                SELECT nextval('pgtasks.task_id_seq') AS id, i.*
                 FROM unnest(:identifiers::text[], :payloads::text[], :types::text[], :references::text[],
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
                             :priorities::integer[], :dedup::text[], :headers::text[])
@@ -688,8 +688,8 @@ public final class PostgresTaskStore implements TaskStore {
                                          state, delay_ms, priority, dedup_key, headers, ord)
             ),
             queued AS (
-                INSERT INTO tasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
-                SELECT id, :topic::integer, identifier, state::tasks.queue_state, priority,
+                INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
+                SELECT id, :topic::integer, identifier, state::pgtasks.queue_state, priority,
                        CASE WHEN state = 'scheduled' THEN now() + delay_ms * interval '1 millisecond' END,
                        dedup_key
                 FROM input
@@ -699,10 +699,10 @@ public final class PostgresTaskStore implements TaskStore {
                 RETURNING task_id, identifier
             ),
             stored AS (
-                INSERT INTO tasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, headers,
+                INSERT INTO pgtasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, headers,
                                         outcome, completed_at)
                 SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id, headers::jsonb,
-                       CASE WHEN state IS NULL THEN 'redundant'::tasks.task_outcome END,
+                       CASE WHEN state IS NULL THEN 'redundant'::pgtasks.task_outcome END,
                        CASE WHEN state IS NULL THEN now() END
                 FROM input
                 WHERE state IS NULL OR id IN (SELECT task_id FROM queued)
@@ -720,11 +720,11 @@ public final class PostgresTaskStore implements TaskStore {
         // suspended tasks become ready.
         String present = switch (counts) {
             case SUSPENDED -> """
-                SELECT 1 FROM tasks.queue s
+                SELECT 1 FROM pgtasks.queue s
                 WHERE s.topic_id = :topic::integer AND s.identifier = g.identifier AND s.state = 'suspended'
                 """;
             case ANY -> """
-                SELECT 1 FROM tasks.task t
+                SELECT 1 FROM pgtasks.task t
                 WHERE t.topic_id = :topic::integer AND t.identifier = g.identifier
                   AND (t.outcome IS NULL OR t.outcome <> 'redundant')
                 """;
@@ -741,7 +741,7 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT group_no FROM checked GROUP BY group_no HAVING bool_and(present)
             ),
             released AS (
-                UPDATE tasks.queue q
+                UPDATE pgtasks.queue q
                 SET state = 'ready'
                 WHERE q.topic_id = :topic::integer
                   AND q.state = 'suspended'
@@ -774,7 +774,7 @@ public final class PostgresTaskStore implements TaskStore {
         //   benchmark's SINGULAR scenario: 13 ms claims, 5 times slower).
         String condition = blocking == null ? "" : """
                   AND NOT EXISTS (
-                      SELECT 1 FROM tasks.queue b
+                      SELECT 1 FROM pgtasks.queue b
                       WHERE b.topic_id = c.topic_id
                         AND b.identifier = c.identifier
                         AND b.task_id <> c.task_id
@@ -786,7 +786,7 @@ public final class PostgresTaskStore implements TaskStore {
         return """
             WITH picked AS MATERIALIZED (
                 SELECT c.ctid AS row
-                FROM tasks.queue c
+                FROM pgtasks.queue c
                 WHERE c.topic_id = :topic::integer
                   AND c.state = 'ready'
             """ + condition + """
@@ -795,7 +795,7 @@ public final class PostgresTaskStore implements TaskStore {
                 FOR UPDATE OF c SKIP LOCKED
             ),
             claimed AS (
-                UPDATE tasks.queue q
+                UPDATE pgtasks.queue q
                 SET state = 'active', node_id = :node::integer, attempt = q.attempt + 1, claimed_at = clock_timestamp()
                 WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
                 RETURNING q.task_id, q.identifier, q.attempt, q.priority, q.claimed_at, q.failures, q.first_failed_at
@@ -803,7 +803,7 @@ public final class PostgresTaskStore implements TaskStore {
             SELECT c.task_id, c.identifier, c.attempt, c.priority, c.claimed_at, c.failures, c.first_failed_at,
                    t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.headers::text AS headers
             FROM claimed c
-            JOIN tasks.task t ON t.id = c.task_id
+            JOIN pgtasks.task t ON t.id = c.task_id
             WHERE t.topic_id = :topic::integer
             ORDER BY c.priority DESC, c.task_id
             """;

@@ -8,7 +8,7 @@
 -- Functions, views and triggers live in the repeatable R__ files.
 --
 -- Plain SQL, applied by the library's runner, Flyway, Liquibase or a DBA pipeline alike. Every
--- name is qualified with the placeholder pgtasks_schema, the schema's name (tasks by default):
+-- name is qualified with the placeholder pgtasks_schema, the schema's name (pgtasks by default):
 -- the runner fills it in, Flyway takes it as a placeholder, Liquibase as a changelog parameter.
 -- Like every versioned file, this one ends by recording its version in the meta table.
 

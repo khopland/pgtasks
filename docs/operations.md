@@ -2,7 +2,7 @@
 
 ## The schema
 
-Everything lives in one schema, `tasks` unless you name another, as plain SQL files under
+Everything lives in one schema, `pgtasks` unless you name another, as plain SQL files under
 `io/github/khopland/pgtasks/postgres/db`. How it gets applied is up to you (`pgtasks.schema-mode`):
 
 - `migrate` (default): the built-in runner applies the files at startup, under an advisory lock,
@@ -13,12 +13,12 @@ Everything lives in one schema, `tasks` unless you name another, as plain SQL fi
   rights: a topic is a row.
 - `none`: nothing is checked.
 
-`tasks.task_view` shows each task with its current state, for looking around in SQL.
+`pgtasks.task_view` shows each task with its current state, for looking around in SQL.
 
 ### Naming the schema
 
 `pgtasks.schema` (or `TaskEngineBuilder.schema(...)`, or the `PostgresTaskStore` constructor) names
-the schema. Use it when `tasks` clashes with a schema of your own, or when two applications share a
+the schema. Use it when `pgtasks` clashes with a schema of your own, or when two applications share a
 database: each needs its own schema. The name must be a plain lowercase identifier
 (`[a-z_][a-z0-9_]*`), at most 50 characters, not starting with `pg_` and not an SQL keyword. The
 notification channels follow it (`<schema>_ready`, `<schema>_limit`, `<schema>_topic`), so
@@ -43,7 +43,7 @@ in. With another tool, pass the same name the engine uses:
   ```
 
 - **Liquibase**: include `io/github/khopland/pgtasks/postgres/db/changelog.xml` from your changelog.
-  The changelog parameter `pgtasks_schema` names the schema and defaults to `tasks`. Set it before
+  The changelog parameter `pgtasks_schema` names the schema and defaults to `pgtasks`. Set it before
   the include is parsed: with `spring.liquibase.parameters.pgtasks_schema=billing_tasks`,
   `liquibase.setChangeLogParameter("pgtasks_schema", ...)`, `-Dliquibase.parameter.pgtasks_schema=...`,
   or a `<property name="pgtasks_schema" value="billing_tasks"/>` above the include. The changeSet
@@ -173,7 +173,7 @@ downstream work a new one sets the header on the creation. With tracing, a remot
 Headers are a `jsonb` column, so support can find a flow by its correlation id:
 
 ```sql
-SELECT * FROM tasks.task_view WHERE headers->>'korrelasjonsid' = '...';
+SELECT * FROM pgtasks.task_view WHERE headers->>'korrelasjonsid' = '...';
 ```
 
 Add an index on that expression if you look them up often. The endpoint shows header names, and

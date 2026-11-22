@@ -89,16 +89,16 @@ class ChaosTest {
     }
 
     private long succeeded() {
-        return database.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'work' AND state = 'succeeded'");
+        return database.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'work' AND state = 'succeeded'");
     }
 
     /** No task lost, none completed twice: every parent succeeded and has exactly one committed child. */
     private void assertExactlyOnce(int count) {
         assertThat(succeeded()).as("succeeded tasks").isEqualTo(count);
-        assertThat(database.count("SELECT count(*) FROM tasks.queue WHERE topic_id = (SELECT id FROM tasks.topic WHERE name = 'work')"))
+        assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE topic_id = (SELECT id FROM pgtasks.topic WHERE name = 'work')"))
             .as("unfinished tasks").isZero();
-        assertThat(database.count("SELECT count(DISTINCT parent_id) FROM tasks.task_view WHERE topic = 'child'")).as("parents with a child").isEqualTo(count);
-        assertThat(database.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'child'")).as("children").isEqualTo(count);
+        assertThat(database.count("SELECT count(DISTINCT parent_id) FROM pgtasks.task_view WHERE topic = 'child'")).as("parents with a child").isEqualTo(count);
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'child'")).as("children").isEqualTo(count);
     }
 
     private static void sleep(Duration duration) {
@@ -129,7 +129,7 @@ class ChaosTest {
         await("every task to succeed", Duration.ofSeconds(60), () -> succeeded() == 200);
         assertExactlyOnce(200);
         assertThat(executions.values()).as("tasks the dead node was running ran again").anyMatch(count -> count.get() > 1);
-        assertThat(database.count("SELECT count(*) FROM tasks.attempt a JOIN tasks.node n ON n.id = a.node_id WHERE a.result = 'expired' AND n.name = 'node-a'"))
+        assertThat(database.count("SELECT count(*) FROM pgtasks.attempt a JOIN pgtasks.node n ON n.id = a.node_id WHERE a.result = 'expired' AND n.name = 'node-a'"))
             .as("expired attempts of the dead node").isPositive();
     }
 
@@ -162,8 +162,8 @@ class ChaosTest {
         sleep(Duration.ofSeconds(1)); // node A wakes up and tries to complete its stale batch
 
         assertExactlyOnce(50);
-        assertThat(database.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'child' AND payload = 'from node-a' AND parent_id IN "
-            + "(SELECT a.task_id FROM tasks.attempt a WHERE a.result = 'expired')")).as("children from the stale batch").isZero();
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'child' AND payload = 'from node-a' AND parent_id IN "
+            + "(SELECT a.task_id FROM pgtasks.attempt a WHERE a.result = 'expired')")).as("children from the stale batch").isZero();
     }
 
     @Test

@@ -187,13 +187,13 @@ class RecurringTest {
             .build()
             .start();
         engines.add(engine);
-        assertThat(database.count("SELECT count(*) FROM tasks.schedule WHERE zone = 'Europe/Oslo' AND next_run_at > now()")).isEqualTo(1);
+        assertThat(database.count("SELECT count(*) FROM pgtasks.schedule WHERE zone = 'Europe/Oslo' AND next_run_at > now()")).isEqualTo(1);
 
-        database.execute("UPDATE tasks.schedule SET next_run_at = now() - interval '1 second'");
+        database.execute("UPDATE pgtasks.schedule SET next_run_at = now() - interval '1 second'");
         EngineFixture.await("the recurring task ran", Duration.ofSeconds(5), () -> !ran.isEmpty());
 
         assertThat(ran).containsExactly("nightly-report:full");
-        assertThat(database.count("SELECT count(*) FROM tasks.schedule WHERE last_run_at IS NOT NULL AND next_run_at > now()")).isEqualTo(1);
+        assertThat(database.count("SELECT count(*) FROM pgtasks.schedule WHERE last_run_at IS NOT NULL AND next_run_at > now()")).isEqualTo(1);
     }
 
     @Test

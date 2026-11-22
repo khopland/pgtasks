@@ -61,7 +61,7 @@ class SchemaNameTest {
         store.prepare();
 
         assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'billing_tasks'")).isOne();
-        assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'tasks'")).isZero();
+        assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'pgtasks'")).isZero();
         assertThat(database.count("SELECT count(*) FROM billing_tasks.schema_history")).isEqualTo(TaskSchema.FILES.size());
     }
 

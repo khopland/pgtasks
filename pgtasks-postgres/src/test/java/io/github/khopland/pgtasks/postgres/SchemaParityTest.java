@@ -208,6 +208,6 @@ class SchemaParityTest {
     }
 
     private static String neutral(String line, String schema) {
-        return schema.equals(TaskSchema.DEFAULT_SCHEMA) ? line : line.replace(schema + ".", "tasks.").replace(schema + "_", "tasks_");
+        return schema.equals(TaskSchema.DEFAULT_SCHEMA) ? line : line.replace(schema + ".", "pgtasks.").replace(schema + "_", "pgtasks_");
     }
 }

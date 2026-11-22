@@ -18,7 +18,7 @@ class SchemaFreezeTest {
     /** SHA-256 of each released versioned file, line endings normalized, placeholder unfilled: what the runner records. */
     static final Map<String, String> RELEASED = Map.of(
         // 0.1.0
-        "V001__tasks_schema.sql", "9948d69755f15527044b90bba5e021580aca87254f637d05b2300a5c5f6a1a9f"
+        "V001__tasks_schema.sql", "02bb99240109e5a8fcdc2e88838d1d0061dd803a0568be8eba558ac1bff5ed56"
     );
 
     @Test

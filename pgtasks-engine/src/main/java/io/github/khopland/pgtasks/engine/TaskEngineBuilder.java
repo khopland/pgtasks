@@ -96,7 +96,7 @@ public final class TaskEngineBuilder {
     }
 
     /**
-     * This node's name, shown in tasks.node and in logs, such as the application's name. A
+     * This node's name, shown in pgtasks.node and in logs, such as the application's name. A
      * {@link TaskGlobals} that sets {@link GlobalOptions#node} takes precedence.
      */
     public TaskEngineBuilder node(String name) {
@@ -117,7 +117,7 @@ public final class TaskEngineBuilder {
     }
 
     /**
-     * The Postgres schema the tasks live in, {@code tasks} by default: a plain lowercase identifier.
+     * The Postgres schema the tasks live in, {@code pgtasks} by default: a plain lowercase identifier.
      * Applications that share a database each use their own; their notifications stay apart too.
      */
     public TaskEngineBuilder schema(String schema) {
@@ -175,7 +175,7 @@ public final class TaskEngineBuilder {
     }
 
     /**
-     * The application's version, recorded with this node in tasks.node, and what a topic that
+     * The application's version, recorded with this node in pgtasks.node, and what a topic that
      * revives its dead letters on a new version compares; see {@link DeadLetterPolicy}.
      */
     public TaskEngineBuilder version(@Nullable String version) {
