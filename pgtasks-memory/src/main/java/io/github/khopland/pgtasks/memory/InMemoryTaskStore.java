@@ -240,10 +240,12 @@ public final class InMemoryTaskStore implements TaskStore {
                 results.add(new Pushed(task.identifier(), Pushed.Status.DUPLICATE, null));
                 continue;
             }
-            State state = task.suspended() ? State.SUSPENDED : task.delay() != null && !task.delay().isZero() ? State.SCHEDULED : State.READY;
+            // A run time that has come is ready at once, as a zero delay is.
+            Instant runAt = task.runAt() != null ? task.runAt() : task.delay() != null && !task.delay().isZero() ? now.plus(task.delay()) : null;
+            State state = task.suspended() ? State.SUSPENDED : runAt != null && runAt.isAfter(now) ? State.SCHEDULED : State.READY;
             memory.put(tasks, id, row);
             putQueued(memory, new Rows.Queued(id, topicId, task.identifier(), state, task.priority(),
-                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey(), 0, null, 0));
+                state == State.SCHEDULED ? runAt : null, 0, null, null, task.dedupKey(), 0, null, 0));
             queuedIdentifiers.add(task.identifier());
             results.add(new Pushed(task.identifier(), Pushed.Status.QUEUED, id));
         }

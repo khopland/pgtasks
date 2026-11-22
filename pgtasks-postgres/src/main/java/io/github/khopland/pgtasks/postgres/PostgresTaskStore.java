@@ -714,17 +714,21 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT nextval('pgtasks.task_id_seq') AS id, i.*
                 FROM unnest(:identifiers::text[], :payloads::text[], :types::text[], :references::text[],
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
-                            :priorities::integer[], :dedup::text[], :headers::text[])
+                            :priorities::integer[], :dedup::text[], :headers::text[], :run_ats::text[])
                     WITH ORDINALITY AS i(identifier, payload, payload_type, reference, parent_id, root_id,
-                                         state, delay_ms, priority, dedup_key, headers, ord)""" + quiet + """
+                                         state, delay_ms, priority, dedup_key, headers, run_at, ord)""" + quiet + """
 
             ),
+            -- A delayed task waits for its run time: given, or the delay from now. One that has come,
+            -- by the clock of the database, is ready at once.
             queued AS (
                 INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
-                SELECT id, :topic::integer, identifier, state::pgtasks.queue_state, priority,
-                       CASE WHEN state = 'scheduled' THEN now() + delay_ms * interval '1 millisecond' END,
+                SELECT id, :topic::integer, identifier,
+                       CASE WHEN state = 'scheduled' AND due <= now() THEN 'ready' ELSE state END::pgtasks.queue_state, priority,
+                       CASE WHEN state = 'scheduled' AND due > now() THEN due END,
                        dedup_key
                 FROM input
+                CROSS JOIN LATERAL (SELECT coalesce(run_at::timestamptz, now() + delay_ms * interval '1 millisecond') AS due) AS d
                 WHERE state IS NOT NULL
                 ORDER BY ord
                 ON CONFLICT (topic_id, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
@@ -908,12 +912,12 @@ public final class PostgresTaskStore implements TaskStore {
                 continue;
             }
             stored.add(task);
-            states.add(superseded ? null : task.suspended() ? "suspended" : task.delay() != null && !task.delay().isZero() ? "scheduled" : "ready");
+            states.add(superseded ? null : task.suspended() ? "suspended" : task.delayed() ? "scheduled" : "ready");
         }
         int size = stored.size();
         @Nullable Object[] identifiers = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], references = new @Nullable Object[size];
         @Nullable Object[] parents = new @Nullable Object[size], roots = new @Nullable Object[size], delays = new @Nullable Object[size], priorities = new @Nullable Object[size], dedup = new @Nullable Object[size];
-        @Nullable Object[] headers = new @Nullable Object[size];
+        @Nullable Object[] headers = new @Nullable Object[size], runAts = new @Nullable Object[size];
         for (int index = 0; index < size; index++) {
             NewTask task = stored.get(index);
             identifiers[index] = task.identifier();
@@ -926,6 +930,7 @@ public final class PostgresTaskStore implements TaskStore {
             priorities[index] = task.priority();
             dedup[index] = task.dedupKey();
             headers[index] = HeaderJson.write(task.headers());
+            runAts[index] = task.runAt() == null ? null : task.runAt().toString();
         }
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
@@ -939,7 +944,8 @@ public final class PostgresTaskStore implements TaskStore {
             .array("delays", "bigint", delays)
             .array("priorities", "integer", priorities)
             .array("dedup", "text", dedup)
-            .array("headers", "text", headers);
+            .array("headers", "text", headers)
+            .array("run_ats", "text", runAts);
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = Objects.requireNonNull((wakeUp == WakeUp.BY_CALLER ? pushesWokenByCaller : pushes).get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {

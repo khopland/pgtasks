@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.test.tck;
 
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -81,6 +82,11 @@ public abstract class StoreFixture implements AutoCloseable {
 
     public static NewTask delayed(String identifier, Duration delay) {
         return new NewTask(identifier, null, null, null, delay, false, 0, null, null, null, Map.of());
+    }
+
+    /** A task due at a time, by the store's clock. */
+    public static NewTask at(String identifier, Instant runAt) {
+        return new NewTask(identifier, null, null, null, null, false, 0, null, null, null, Map.of(), runAt);
     }
 
     public static NewTask suspended(String identifier) {

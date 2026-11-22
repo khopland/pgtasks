@@ -2,6 +2,8 @@ package io.github.khopland.pgtasks.engine;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -254,17 +256,30 @@ final class DefaultTasks implements Tasks {
         }
     }
 
+    /**
+     * How far this node's clock may be behind the store's: a run time this close to now may be
+     * ready by the store's clock, so the push wakes workers. A wake-up too many costs one poll.
+     */
+    private static final Duration CLOCK_SKEW = Duration.ofSeconds(1);
+
     /** Whether the push queued a task that can run now, not suspended or delayed. */
-    private static boolean readyNow(List<TaskStore.NewTask> tasks, List<Pushed> results) {
+    private boolean readyNow(List<TaskStore.NewTask> tasks, List<Pushed> results) {
         for (int index = 0; index < tasks.size(); index++) {
             TaskStore.NewTask task = tasks.get(index);
             Pushed.Status status = results.get(index).status();
-            if ((status == Pushed.Status.QUEUED || status == Pushed.Status.PENDING) && !task.suspended()
-                && (task.delay() == null || task.delay().isZero())) {
+            if ((status == Pushed.Status.QUEUED || status == Pushed.Status.PENDING) && !task.suspended() && due(task)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean due(TaskStore.NewTask task) {
+        Instant runAt = task.runAt();
+        if (runAt != null) {
+            return !runAt.isAfter(store.clock().instant().plus(CLOCK_SKEW));
+        }
+        return task.delay() == null || task.delay().isZero();
     }
 
     /**
@@ -317,7 +332,8 @@ final class DefaultTasks implements Tasks {
                 creation.dedupKey(),
                 parent == null ? null : parent.id(),
                 parent == null ? null : parent.flowRootId(),
-                headers
+                headers,
+                creation.runAt()
             ));
         }
         return tasks;

@@ -385,7 +385,9 @@ public interface TaskStore {
 
     /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
-     * are and come back with every claim; an empty map stores none.
+     * are and come back with every claim; an empty map stores none. {@code runAt} is an absolute
+     * time, compared with the store's clock: a time not after it makes the task ready at once.
+     * At most one of {@code delay}, {@code runAt} and {@code suspended} is set.
      */
     record NewTask(
         String identifier,
@@ -398,11 +400,27 @@ public interface TaskStore {
         @Nullable String dedupKey,
         @Nullable Long parentId,
         @Nullable Long rootId,
-        Map<String, String> headers
+        Map<String, String> headers,
+        @Nullable Instant runAt
     ) {
         public NewTask {
             Objects.requireNonNull(identifier, "identifier");
             headers = Map.copyOf(headers);
+            if (runAt != null && (delay != null || suspended)) {
+                throw new IllegalArgumentException("a task runs at a time, after a delay or when released, not more than one");
+            }
+        }
+
+        /** A task without an absolute run time. */
+        public NewTask(String identifier, @Nullable String payload, @Nullable String payloadType, @Nullable String reference, @Nullable Duration delay,
+                       boolean suspended, int priority, @Nullable String dedupKey, @Nullable Long parentId, @Nullable Long rootId,
+                       Map<String, String> headers) {
+            this(identifier, payload, payloadType, reference, delay, suspended, priority, dedupKey, parentId, rootId, headers, null);
+        }
+
+        /** Whether the task waits for a time: a positive delay, or a run time. */
+        public boolean delayed() {
+            return runAt != null || (delay != null && !delay.isZero());
         }
     }
 
