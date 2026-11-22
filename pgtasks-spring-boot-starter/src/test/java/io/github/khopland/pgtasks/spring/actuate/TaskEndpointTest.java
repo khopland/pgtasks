@@ -204,6 +204,15 @@ class TaskEndpointTest {
     }
 
     @Test
+    void the_dashboard_is_off_unless_enabled() throws Exception {
+        String server = base.substring(0, base.length() - "/actuator".length());
+        HttpResponse<String> page = http.send(HttpRequest.newBuilder(URI.create(server + "/pgtasks/")).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(page.statusCode()).isEqualTo(404);
+        assertThat(http.send(HttpRequest.newBuilder(URI.create(server + "/pgtasks/app.js")).build(), HttpResponse.BodyHandlers.ofString())
+            .statusCode()).isEqualTo(404);
+    }
+
+    @Test
     void health_reports_the_engine() throws Exception {
         Response health = get("/health");
 

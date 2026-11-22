@@ -85,6 +85,17 @@
       <artifactId>spring-boot-health</artifactId>
       <optional>true</optional>
     </dependency>
+    <!-- The dashboard (pgtasks.dashboard.enabled), in Spring MVC applications. -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-webmvc</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.servlet</groupId>
+      <artifactId>jakarta.servlet-api</artifactId>
+      <optional>true</optional>
+    </dependency>
     <!-- JSON payloads, when the app has Jackson: the codec without Jackson itself. -->
     <dependency>
       <groupId>io.github.khopland.pgtasks</groupId>
@@ -143,6 +154,12 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-webmvc</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- The dashboard's CSRF token, without Spring Boot's security auto-configuration. -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-web</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

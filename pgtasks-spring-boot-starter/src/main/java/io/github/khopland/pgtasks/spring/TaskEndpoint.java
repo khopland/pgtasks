@@ -300,6 +300,8 @@ public class TaskEndpoint {
         node.put("id", health.nodeId());
         node.put("running", health.running());
         node.put("leader", health.leader());
+        // A node whose heartbeat is older than this has stopped, or lost the database.
+        node.put("leaseTermSeconds", health.leaseTerm().toSeconds());
         node.put("processing", engine.processing().stream().sorted().toList());
         return node;
     }
