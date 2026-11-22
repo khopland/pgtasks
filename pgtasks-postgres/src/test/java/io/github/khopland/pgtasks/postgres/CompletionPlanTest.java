@@ -80,6 +80,7 @@ class CompletionPlanTest {
         round(fixture, database, topic, node, "last");
 
         assertThat(audit.audited() - before).as("statements audited with the history in place").isGreaterThanOrEqualTo(15);
+        assertThat(audit.generic()).as("APPEND pushes, explained as the generic plan made in the first round").isPositive();
         assertThat(audit.findings().subList(small, audit.findings().size()))
             .as("statements that read more than " + DrainedQueue.ALLOWED + " with " + HISTORY + " finished tasks in the same topic, " + statistics)
             .isEmpty();

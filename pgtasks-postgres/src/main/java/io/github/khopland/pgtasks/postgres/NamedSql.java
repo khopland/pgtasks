@@ -24,7 +24,8 @@ import org.postgresql.PGStatement;
  * burst drains, it keeps that shape as they grow, and nothing invalidates it until the next analyze:
  * claims were 30 times slower after a topic sat idle (Phase 2 benchmark), and a completion read its
  * topic's whole history (NOTIFY benchmark, CompletionPlanTest). A plan made per execution sees the
- * tables' current size; planning costs a fraction of a millisecond.
+ * tables' current size. Planning costs about 0.1 ms a statement, so a statement that is run very
+ * often and can't be misplanned may opt out ({@link #withGenericPlans()}).
  */
 final class NamedSql {
 
@@ -32,10 +33,21 @@ final class NamedSql {
 
     private final String sql;
     private final List<String> names;
+    private final boolean genericPlans;
 
-    private NamedSql(String sql, List<String> names) {
+    private NamedSql(String sql, List<String> names, boolean genericPlans) {
         this.sql = sql;
         this.names = names;
+        this.genericPlans = genericPlans;
+    }
+
+    /**
+     * The same statement, allowed a cached generic plan: only for one that reads no table by a
+     * condition whose selectivity the statistics could get wrong, such as an insert. PlanAudit explains
+     * such a statement's generic plan as made the first time it ran, in the TCK and CompletionPlanTest.
+     */
+    NamedSql withGenericPlans() {
+        return new NamedSql(sql, names, true);
     }
 
     static NamedSql parse(String text) {
@@ -47,7 +59,7 @@ final class NamedSql {
             matcher.appendReplacement(sql, "?");
         }
         matcher.appendTail(sql);
-        return new NamedSql(sql.toString(), List.copyOf(names));
+        return new NamedSql(sql.toString(), List.copyOf(names), false);
     }
 
     String sql() {
@@ -57,7 +69,7 @@ final class NamedSql {
     PreparedStatement prepare(Connection connection, Parameters parameters) throws SQLException {
         PreparedStatement statement = connection.prepareStatement(sql);
         try {
-            if (statement.isWrapperFor(PGStatement.class)) {
+            if (!genericPlans && statement.isWrapperFor(PGStatement.class)) {
                 statement.unwrap(PGStatement.class).setPrepareThreshold(0);
             }
             for (int index = 0; index < names.size(); index++) {

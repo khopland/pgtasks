@@ -136,9 +136,12 @@ public final class PostgresTaskStore implements TaskStore {
                 refilled_at = greatest(refilled_at, clock_timestamp())
             WHERE name = :name
             """);
+        // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
+        // most often: a producer may push one task per transaction. The others look up older tasks.
         for (Insertion insertion : Insertion.values()) {
-            pushes.put(insertion, sql(pushSql(insertion, WakeUp.AT_COMMIT)));
-            pushesWokenByCaller.put(insertion, sql(pushSql(insertion, WakeUp.BY_CALLER)));
+            NamedSql atCommit = sql(pushSql(insertion, WakeUp.AT_COMMIT)), byCaller = sql(pushSql(insertion, WakeUp.BY_CALLER));
+            pushes.put(insertion, insertion == Insertion.APPEND ? atCommit.withGenericPlans() : atCommit);
+            pushesWokenByCaller.put(insertion, insertion == Insertion.APPEND ? byCaller.withGenericPlans() : byCaller);
         }
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)));
