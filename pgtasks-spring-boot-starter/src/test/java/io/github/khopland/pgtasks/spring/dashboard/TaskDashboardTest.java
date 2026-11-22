@@ -1,16 +1,10 @@
 package io.github.khopland.pgtasks.spring.dashboard;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Decision;
@@ -50,8 +44,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TaskDashboardTest {
 
     static final TopicRef<String> WORK = TopicRef.of("work", String.class);
-    /** One route per line between the markers, as {@code name: ["METHOD", "/path/{param}"],}. */
-    private static final Pattern ROUTE = Pattern.compile("^\\s*(\\w+): \\[\"(GET|POST|DELETE)\", \"([^\"]*)\"],$");
 
     @SpringBootApplication(excludeName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
     static class App {
@@ -109,26 +101,6 @@ class TaskDashboardTest {
         return send("GET", path, null);
     }
 
-    static String script() throws IOException {
-        try (InputStream in = TaskDashboardTest.class.getClassLoader().getResourceAsStream("META-INF/pgtasks/dashboard/app.js")) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
-    }
-
-    /** The ROUTES table of app.js: name to method and path template. */
-    static Map<String, String[]> routes() throws IOException {
-        String script = script();
-        String block = script.substring(script.indexOf("// routes:begin"), script.indexOf("// routes:end"));
-        Map<String, String[]> routes = new LinkedHashMap<>();
-        for (String line : block.split("\n")) {
-            Matcher matcher = ROUTE.matcher(line);
-            if (matcher.matches()) {
-                routes.put(matcher.group(1), new String[] {matcher.group(2), matcher.group(3)});
-            }
-        }
-        return routes;
-    }
-
     @Test
     void the_page_is_served_at_the_configured_path() throws Exception {
         Response bare = get("/app/ops/tasks");
@@ -164,57 +136,27 @@ class TaskDashboardTest {
 
     @Test
     void the_script_never_writes_html_and_calls_the_endpoint_only_through_its_routes() throws Exception {
-        String script = script();
+        String script = DashboardRoutes.script();
 
         assertThat(script).doesNotContain("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
             "setHTML", "srcdoc", ".style.");
         // config.json, and the one call that every route goes through.
         assertThat(Pattern.compile("\\bfetch\\(").matcher(script).results().count()).isEqualTo(2);
         assertThat(script).contains("fetch(\"config.json\"").contains("const response = await fetch(target,");
-        assertThat(routes()).hasSizeGreaterThanOrEqualTo(10);
+        assertThat(DashboardRoutes.routes()).hasSizeGreaterThanOrEqualTo(10);
     }
 
-    /**
-     * Calls every route of the script's table the way the page does, against the endpoint, and
-     * expects success. A route added to the script without an example here fails the test.
-     */
+    /** Every route in the script's table, called against the endpoint the page is pointed at. */
     @Test
     void every_route_the_page_calls_exists() throws Exception {
         long taskId = tasks.independently().push(WORK, "a", "payload").id();
         engine.admin().createTopic("scratch");
         long version = engine.limits().find("register").orElseThrow().version();
-
-        Map<String, String[]> examples = new LinkedHashMap<>();
-        // name -> params (topic, id, limit), query, body
-        examples.put("overview", new String[] {"", null, null});
-        examples.put("topic", new String[] {"topic=work", null, null});
-        examples.put("failing", new String[] {"topic=work", null, null});
-        examples.put("deadLetters", new String[] {"topic=work", "limit=50", null});
-        examples.put("pause", new String[] {"topic=work", null, "{}"});
-        examples.put("resume", new String[] {"topic=work", null, "{}"});
-        examples.put("revive", new String[] {"topic=work", null, "{\"ids\": \"999999\"}"});
-        examples.put("discard", new String[] {"topic=work", null, "{\"error\": \"java.lang.IllegalStateException\"}"});
-        examples.put("purge", new String[] {"topic=work", null, "{\"outcome\": \"succeeded\", \"before\": \"2000-01-01T00:00:00Z\"}"});
-        examples.put("deleteTopic", new String[] {"topic=scratch", null, null});
-        examples.put("task", new String[] {"id=" + taskId, null, null});
-        examples.put("limit", new String[] {"limit=register", null, null});
-        examples.put("overrideLimit", new String[] {"limit=register", null, "{\"rate\": \"20/s\", \"until\": \"PT1H\", \"version\": " + version + "}"});
-        examples.put("resetLimit", new String[] {"limit=register", "version=" + (version + 1), null});
-
-        Map<String, String[]> routes = routes();
-        assertThat(routes.keySet()).as("every route has an example").containsExactlyInAnyOrderElementsOf(examples.keySet());
         String endpoint = json.readTree(get("/app/ops/tasks/config.json").body()).path("endpoint").asString();
-        for (Map.Entry<String, String[]> route : routes.entrySet()) {
-            String[] example = examples.get(route.getKey());
-            String path = route.getValue()[1];
-            if (!example[0].isEmpty()) {
-                String[] param = example[0].split("=", 2);
-                path = path.replace("{" + param[0] + "}", param[1]);
-            }
-            assertThat(path).as(route.getKey()).doesNotContain("{");
-            Response response = send(route.getValue()[0], endpoint + path + (example[1] == null ? "" : "?" + example[1]), example[2]);
-            assertThat(response.status()).as(route.getKey() + " " + route.getValue()[0] + " " + path + ": " + response.body())
-                .isBetween(200, 299);
-        }
+
+        DashboardRoutes.callEvery((method, path, body) -> {
+            Response response = send(method, path, body);
+            return response.status() + " " + response.body();
+        }, endpoint, taskId, version);
     }
 }

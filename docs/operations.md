@@ -163,11 +163,43 @@ SecurityFilterChain security(HttpSecurity http) throws Exception {
 }
 ```
 
-The page finds the endpoint at `<context path><management base path>/tasks`. When Actuator runs on
-its own port (`management.server.port`), or a proxy rewrites paths, set
-`pgtasks.dashboard.endpoint` to the URL the browser should call (a different origin also needs
-CORS on the management server, with credentials). If the endpoint isn't exposed, the page says so.
-WebFlux applications aren't supported.
+The page finds the endpoint at `<context path><management base path>/tasks`. If a proxy rewrites
+paths, set `pgtasks.dashboard.endpoint` to the URL the browser should call. If the endpoint isn't
+exposed, the page says so. WebFlux applications aren't supported.
+
+### When Actuator is on a port the browser can't reach
+
+In Kubernetes, Actuator often runs on its own port (`management.server.port`) that only the
+kubelet and Prometheus reach, so the page on the application's port can't call it. Then let the
+dashboard serve the same operations itself, next to the page:
+
+```yaml
+pgtasks:
+  dashboard:
+    enabled: true
+    path: /admin/pgtasks
+    api: dashboard          # the API at /admin/pgtasks/api; default: actuator
+```
+
+The page is at `/admin/pgtasks/` and its API at `/admin/pgtasks/api/...`, with the same paths,
+bodies and answers as `/actuator/tasks` (the tasks endpoint itself needn't be exposed). Values are
+still hidden as `management.endpoint.tasks.show-values` says, with `when-authorized` checking the
+roles of the request's user, and limit changes still need the current version.
+
+This puts operations that change tasks on the application's port, so the application's own
+security must protect the whole path, and it is off unless you ask for it. With Spring Security,
+one rule covers the page and its API, and CSRF works as above:
+
+```java
+.authorizeHttpRequests(auth -> auth
+    .requestMatchers("/admin/pgtasks/**").hasRole("OPS")
+    .anyRequest().authenticated())
+```
+
+Without Spring Security the dashboard logs a warning at startup. Keep the path off your public
+ingress (route it only through an internal one, or reach it with `kubectl port-forward`). Each pod
+shows the same topics, counts, dead letters, limits and nodes, since they come from the database;
+"running" and breaker state are that pod's own.
 
 ## Metrics and alerts
 

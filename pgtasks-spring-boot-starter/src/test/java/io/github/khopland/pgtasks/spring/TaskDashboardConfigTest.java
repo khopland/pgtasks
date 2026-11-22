@@ -40,10 +40,13 @@ class TaskDashboardConfigTest {
 
     @Test
     void the_path_is_normalized_and_must_be_a_path() {
-        assertThat(new TaskDashboardProperties(true, " /ops/tasks// ", " ").path()).isEqualTo("/ops/tasks");
-        assertThat(new TaskDashboardProperties(true, "/ops", " ").endpoint()).isNull();
-        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "/", null));
-        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "pgtasks", null));
-        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "/pgtasks/**", null));
+        assertThat(new TaskDashboardProperties(true, " /ops/tasks// ", " ", null).path()).isEqualTo("/ops/tasks");
+        assertThat(new TaskDashboardProperties(true, "/ops", " ", null).endpoint()).isNull();
+        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "/", null, null));
+        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "pgtasks", null, null));
+        assertThatIllegalArgumentException().isThrownBy(() -> new TaskDashboardProperties(true, "/pgtasks/**", null, null));
+        assertThat(new TaskDashboardProperties(true, "/ops", null, null).api()).isEqualTo(TaskDashboardProperties.Api.ACTUATOR);
+        assertThatIllegalArgumentException().as("an Actuator URL and the dashboard's own API exclude each other")
+            .isThrownBy(() -> new TaskDashboardProperties(true, "/ops", "https://ops/actuator/tasks", TaskDashboardProperties.Api.DASHBOARD));
     }
 }
