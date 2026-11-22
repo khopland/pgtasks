@@ -88,7 +88,7 @@ class MilestoneOneTest {
     }
 
     private long tasksIn(TopicRef<?> topic) {
-        return fixture.count("SELECT count(*) FROM tasks.task_view WHERE topic = ?", topic.name());
+        return fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = ?", topic.name());
     }
 
     @Test
@@ -107,7 +107,7 @@ class MilestoneOneTest {
             connection.rollback(); // say the feed failed after reading the page
         }
         Thread.sleep(300);
-        assertThat(fixture.count("SELECT count(*) FROM tasks.task")).isZero();
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.task")).isZero();
         assertThat(fixture.count("SELECT position FROM feed_pointer")).isZero();
         assertThat(ledger.calls).hasValue(0);
 
@@ -134,17 +134,17 @@ class MilestoneOneTest {
             Creation.of("bjorn", new Slice.Notice("bjorn", 240000))
         ));
 
-        await("the failed first attempt", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'notify' AND state = 'retrying'") == 2);
+        await("the failed first attempt", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'notify' AND state = 'retrying'") == 2);
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).as("publications").isZero();
         assertThat(tasksIn(Slice.ARCHIVE)).as("child tasks").isZero();
-        assertThat(database.rows("SELECT DISTINCT result, error->>'message' FROM tasks.attempt"))
+        assertThat(database.rows("SELECT DISTINCT result, error->>'message' FROM pgtasks.attempt"))
             .containsExactly(List.of("failed", "Simulated failure while publishing"));
 
         fixture.makeDue();
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).isEqualTo(2);
         assertThat(tasksIn(Slice.ARCHIVE)).isEqualTo(2);
-        assertThat(database.rows("SELECT state, attempt FROM tasks.task_view WHERE topic = 'notify'")).containsOnly(List.of("succeeded", 2));
+        assertThat(database.rows("SELECT state, attempt FROM pgtasks.task_view WHERE topic = 'notify'")).containsOnly(List.of("succeeded", 2));
     }
 
     @Test
@@ -170,19 +170,19 @@ class MilestoneOneTest {
         assertThat(stalled.await(10, TimeUnit.SECONDS)).isTrue();
 
         // As if node A had been paused for an hour: its heartbeat is old and its housekeeping lease ran out.
-        database.execute("UPDATE tasks.node SET heartbeat_at = now() - interval '1 hour' WHERE id = " + nodeA.nodeId());
-        database.execute("UPDATE tasks.lease SET expires_at = now() - interval '1 hour' WHERE node_id = " + nodeA.nodeId());
+        database.execute("UPDATE pgtasks.node SET heartbeat_at = now() - interval '1 hour' WHERE id = " + nodeA.nodeId());
+        database.execute("UPDATE pgtasks.lease SET expires_at = now() - interval '1 hour' WHERE node_id = " + nodeA.nodeId());
         fixture.start("node-b", slice(new AssessmentHandler(register, ledger), new FeedPublisher(), FAST),
             settings -> settings.withHeartbeat(Duration.ofMillis(100), Duration.ofMillis(500)));
         await("node B to finish the reclaimed task", Duration.ofSeconds(10), () -> fixture.count(
-            "SELECT count(*) FROM tasks.task_view WHERE topic = 'assessment' AND state = 'succeeded' AND attempt = 2") == 1);
+            "SELECT count(*) FROM pgtasks.task_view WHERE topic = 'assessment' AND state = 'succeeded' AND attempt = 2") == 1);
 
         resume.countDown();
         nodeA.stop(Duration.ofSeconds(10)); // waits for A's batch to finish its (rejected) completion
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
 
         assertThat(tasksIn(Slice.NOTIFY)).as("notices: only node B's").isEqualTo(1);
-        assertThat(database.rows("SELECT result, node_id FROM tasks.attempt WHERE result = 'expired'")).containsExactly(List.of("expired", nodeA.nodeId()));
+        assertThat(database.rows("SELECT result, node_id FROM pgtasks.attempt WHERE result = 'expired'")).containsExactly(List.of("expired", nodeA.nodeId()));
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).isEqualTo(1);
         assertThat(ledger.calls).as("both nodes made the external call").hasValue(2);
         assertThat(fixture.count("SELECT count(*) FROM assessment")).as("deduplicated by the stable idempotency key").isEqualTo(1);
@@ -246,9 +246,9 @@ class MilestoneOneTest {
             Creation.of("x", "poison"), Creation.of("x", "later-1"), Creation.of("x", "later-2"), Creation.of("y", "other")
         ));
 
-        await("the poison task to be dead-lettered", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM tasks.task_view WHERE state = 'failed'") == 1);
+        await("the poison task to be dead-lettered", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE state = 'failed'") == 1);
         if (ordering == Ordering.SINGULAR_BY_IDENTIFIER) {
-            await("the later tasks", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM tasks.queue") == 1);
+            await("the later tasks", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.queue") == 1);
             assertThat(events.subList(0, events.indexOf("later-1#1")))
                 .as("everything for x before the later tasks ran").contains("poison#1", "poison#2", "poison#3");
             assertThat(events).containsSubsequence("poison#3", "later-1#1", "later-2#1");
@@ -256,7 +256,7 @@ class MilestoneOneTest {
             await("the other identifier", Duration.ofSeconds(10), () -> events.contains("other#1"));
             Thread.sleep(500);
             assertThat(events).doesNotContain("later-1#1", "later-2#1");
-            assertThat(database.rows("SELECT payload, state FROM tasks.task_view WHERE identifier = 'x' ORDER BY id"))
+            assertThat(database.rows("SELECT payload, state FROM pgtasks.task_view WHERE identifier = 'x' ORDER BY id"))
                 .containsExactly(List.of("poison", "failed"), List.of("later-1", "ready"), List.of("later-2", "ready"));
         }
     }
@@ -364,14 +364,14 @@ class MilestoneOneTest {
 
             String vetoed = asFailure ? "retrying" : "filtered";
             await("one batch to complete", Duration.ofSeconds(10), () -> fixture.count(
-                "SELECT count(*) FROM tasks.task_view WHERE topic = ? AND state IN ('succeeded', ?)", notify.name(), vetoed) == 4);
+                "SELECT count(*) FROM pgtasks.task_view WHERE topic = ? AND state IN ('succeeded', ?)", notify.name(), vetoed) == 4);
             await("the archive children", Duration.ofSeconds(10), () -> fixture.count(
-                "SELECT count(*) FROM tasks.task_view WHERE topic = ? AND state = 'succeeded'", archive.name()) == 2);
+                "SELECT count(*) FROM pgtasks.task_view WHERE topic = ? AND state = 'succeeded'", archive.name()) == 2);
 
             assertThat(database.rows("SELECT person FROM published_feed ORDER BY person")).containsExactly(List.of("anna"), List.of("carl"));
-            assertThat(database.rows("SELECT identifier FROM tasks.task_view WHERE topic = ? ORDER BY identifier", archive.name()))
+            assertThat(database.rows("SELECT identifier FROM pgtasks.task_view WHERE topic = ? ORDER BY identifier", archive.name()))
                 .containsExactly(List.of("anna"), List.of("carl"));
-            assertThat(database.rows("SELECT identifier, state FROM tasks.task_view WHERE topic = ? ORDER BY identifier", notify.name()))
+            assertThat(database.rows("SELECT identifier, state FROM pgtasks.task_view WHERE topic = ? ORDER BY identifier", notify.name()))
                 .containsExactly(List.of("anna", "succeeded"), List.of("blocked-bo", vetoed), List.of("blocked-dag", vetoed), List.of("carl", "succeeded"));
             engine.stop(Duration.ofSeconds(5));
         }
@@ -430,14 +430,14 @@ class MilestoneOneTest {
         engine.start();
 
         await("the children to finish", Duration.ofSeconds(10), () -> fixture.count(
-            "SELECT count(*) FROM tasks.task_view WHERE topic IN ('first-target', 'second-target') AND state = 'succeeded'") == 5);
+            "SELECT count(*) FROM pgtasks.task_view WHERE topic IN ('first-target', 'second-target') AND state = 'succeeded'") == 5);
 
         assertThat(batchSizes.getFirst()).as("everything came in one batch").isEqualTo(kinds.size());
-        assertThat(database.rows("SELECT identifier FROM tasks.task_view WHERE topic = 'first-target' ORDER BY id"))
+        assertThat(database.rows("SELECT identifier FROM pgtasks.task_view WHERE topic = 'first-target' ORDER BY id"))
             .containsExactly(List.of("success-both-0"), List.of("success-first-2"), List.of("success-both-5"));
-        assertThat(database.rows("SELECT identifier FROM tasks.task_view WHERE topic = 'second-target' ORDER BY id"))
+        assertThat(database.rows("SELECT identifier FROM pgtasks.task_view WHERE topic = 'second-target' ORDER BY id"))
             .containsExactly(List.of("success-both-0"), List.of("success-both-5"));
-        assertThat(database.rows("SELECT payload, state, attempt FROM tasks.task_view WHERE topic = 'mixed' ORDER BY id")).containsExactly(
+        assertThat(database.rows("SELECT payload, state, attempt FROM pgtasks.task_view WHERE topic = 'mixed' ORDER BY id")).containsExactly(
             List.of("success-both", "succeeded", 1),
             List.of("filtered", "filtered", 1),
             List.of("success-first", "succeeded", 1),
@@ -449,7 +449,7 @@ class MilestoneOneTest {
             List.of("success-none", "succeeded", 1),
             List.of("throws", "retrying", 1)
         );
-        assertThat(database.rows("SELECT t.parent_id = p.id, t.root_id = p.id FROM tasks.task_view t JOIN tasks.task_view p ON p.id = t.parent_id WHERE t.topic = 'first-target'"))
+        assertThat(database.rows("SELECT t.parent_id = p.id, t.root_id = p.id FROM pgtasks.task_view t JOIN pgtasks.task_view p ON p.id = t.parent_id WHERE t.topic = 'first-target'"))
             .containsOnly(List.of(true, true));
     }
 }

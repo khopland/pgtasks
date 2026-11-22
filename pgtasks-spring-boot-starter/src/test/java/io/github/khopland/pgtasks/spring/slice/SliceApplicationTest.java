@@ -68,8 +68,8 @@ class SliceApplicationTest {
         DATABASE.execute("""
             TRUNCATE incoming, assessment, published_feed RESTART IDENTITY;
             UPDATE feed_pointer SET position = 0;
-            DELETE FROM tasks.attempt;
-            DELETE FROM tasks.task;
+            DELETE FROM pgtasks.attempt;
+            DELETE FROM pgtasks.task;
             """);
         register.lookups.set(0);
         ledger.calls.set(0);
@@ -85,14 +85,14 @@ class SliceApplicationTest {
         awaitQueueEmpty();
         assertThat(DATABASE.rows("SELECT person, notice FROM published_feed ORDER BY person"))
             .containsExactly(List.of("anna", "tax 180000"), List.of("bjorn", "tax 200000"));
-        assertThat(DATABASE.rows("SELECT identifier, state, output, reference FROM tasks.task_view WHERE topic = 'assessment' ORDER BY id")).containsExactly(
+        assertThat(DATABASE.rows("SELECT identifier, state, output, reference FROM pgtasks.task_view WHERE topic = 'assessment' ORDER BY id")).containsExactly(
             Arrays.asList("anna", "redundant", null, "income:1"),
             Arrays.asList("bjorn", "succeeded", null, "income:2"),
             Arrays.asList("anna", "succeeded", null, "income:3"),
             Arrays.asList("nobody", "filtered", "unknown person", "income:4")
         );
         assertThat(register.lookups).as("one batched lookup").hasValue(1);
-        assertThat(DATABASE.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
+        assertThat(DATABASE.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
     }
 
     @Test
@@ -102,7 +102,7 @@ class SliceApplicationTest {
 
         assertThatThrownBy(() -> feed.readPageThenFail(10)).hasMessage("the feed job failed after reading its page");
         Thread.sleep(300);
-        assertThat(DATABASE.count("SELECT count(*) FROM tasks.task")).isZero();
+        assertThat(DATABASE.count("SELECT count(*) FROM pgtasks.task")).isZero();
         assertThat(DATABASE.count("SELECT position FROM feed_pointer")).isZero();
         assertThat(ledger.calls).hasValue(0);
 
@@ -110,7 +110,7 @@ class SliceApplicationTest {
         assertThat(DATABASE.count("SELECT position FROM feed_pointer")).isEqualTo(2);
         awaitQueueEmpty();
         assertThat(DATABASE.count("SELECT count(*) FROM published_feed")).isEqualTo(2);
-        assertThat(DATABASE.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
+        assertThat(DATABASE.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
     }
 
     @Test
@@ -124,14 +124,14 @@ class SliceApplicationTest {
         ));
 
         awaitQueueEmpty();
-        assertThat(DATABASE.rows("SELECT DISTINCT result, error->>'message' FROM tasks.attempt"))
+        assertThat(DATABASE.rows("SELECT DISTINCT result, error->>'message' FROM pgtasks.attempt"))
             .containsExactly(List.of("failed", "Simulated failure while publishing"));
         assertThat(DATABASE.count("SELECT count(*) FROM published_feed")).isEqualTo(2);
-        assertThat(DATABASE.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
-        assertThat(DATABASE.rows("SELECT state, attempt FROM tasks.task_view WHERE topic = 'notify'")).containsOnly(List.of("succeeded", 2));
+        assertThat(DATABASE.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
+        assertThat(DATABASE.rows("SELECT state, attempt FROM pgtasks.task_view WHERE topic = 'notify'")).containsOnly(List.of("succeeded", 2));
     }
 
     private static void awaitQueueEmpty() throws InterruptedException {
-        EngineFixture.await("an empty queue", Duration.ofSeconds(10), () -> DATABASE.count("SELECT count(*) FROM tasks.queue") == 0);
+        EngineFixture.await("an empty queue", Duration.ofSeconds(10), () -> DATABASE.count("SELECT count(*) FROM pgtasks.queue") == 0);
     }
 }

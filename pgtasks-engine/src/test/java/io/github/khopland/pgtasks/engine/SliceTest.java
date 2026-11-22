@@ -85,14 +85,14 @@ class SliceTest {
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
         assertThat(database.rows("SELECT person, notice FROM published_feed ORDER BY person"))
             .containsExactly(List.of("anna", "tax 180000"), List.of("bjorn", "tax 200000"));
-        assertThat(database.rows("SELECT identifier, state, output, reference FROM tasks.task_view WHERE topic = 'assessment' ORDER BY id")).containsExactly(
+        assertThat(database.rows("SELECT identifier, state, output, reference FROM pgtasks.task_view WHERE topic = 'assessment' ORDER BY id")).containsExactly(
             Arrays.asList("anna", "redundant", null, "income:1"),
             Arrays.asList("bjorn", "succeeded", null, "income:2"),
             Arrays.asList("anna", "succeeded", null, "income:3"),
             Arrays.asList("nobody", "filtered", "unknown person", "income:4")
         );
         assertThat(register.lookups).as("one batched lookup").hasValue(1);
-        assertThat(database.rows("SELECT count(*) FROM tasks.task_view WHERE topic = 'archive' AND root_id IN (SELECT id FROM tasks.task_view WHERE topic = 'assessment')"))
+        assertThat(database.rows("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'archive' AND root_id IN (SELECT id FROM pgtasks.task_view WHERE topic = 'assessment')"))
             .as("archive tasks belong to the assessment's flow").containsExactly(List.of(2L));
     }
 
@@ -113,9 +113,9 @@ class SliceTest {
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
         assertThat(ledger.calls).hasValue(2);
         assertThat(fixture.count("SELECT count(*) FROM assessment")).isEqualTo(1);
-        assertThat(fixture.count("SELECT count(*) FROM tasks.task_view WHERE topic = 'notify'")).isEqualTo(1);
-        assertThat(database.rows("SELECT state, attempt FROM tasks.task_view WHERE topic = 'assessment'")).containsExactly(List.of("succeeded", 2));
-        assertThat(database.rows("SELECT attempt, error->>'message' FROM tasks.attempt")).containsExactly(List.of(1, "crashed after the change, before completing"));
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'notify'")).isEqualTo(1);
+        assertThat(database.rows("SELECT state, attempt FROM pgtasks.task_view WHERE topic = 'assessment'")).containsExactly(List.of("succeeded", 2));
+        assertThat(database.rows("SELECT attempt, error->>'message' FROM pgtasks.attempt")).containsExactly(List.of(1, "crashed after the change, before completing"));
     }
 
     @Test

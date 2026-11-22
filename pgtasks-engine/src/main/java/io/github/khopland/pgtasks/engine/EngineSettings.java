@@ -15,7 +15,7 @@ import org.jspecify.annotations.Nullable;
  * Node-wide settings and collaborators, as the builder resolves them from {@link TaskGlobals};
  * {@link #defaults(String)} holds the built-in defaults.
  *
- * @param nodeName           shown in tasks.node and tasks.task_view
+ * @param nodeName           shown in pgtasks.node and pgtasks.task_view
  * @param heartbeat          how often this node reports that it is alive
  * @param expiry             after how long without a heartbeat another node's tasks are requeued
  * @param promoteInterval    how often due delayed tasks and retries become ready

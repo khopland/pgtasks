@@ -48,7 +48,7 @@ class TasksTest {
     }
 
     private long stored() {
-        return fixture.count("SELECT count(*) FROM tasks.task");
+        return fixture.count("SELECT count(*) FROM pgtasks.task");
     }
 
     @Test
@@ -119,7 +119,7 @@ class TasksTest {
         assertThatThrownBy(() -> tasks.independently().push(TopicRef.of("tpoic", String.class), "x", "payload"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("Unknown topic 'tpoic'");
-        assertThat(fixture.count("SELECT count(*) FROM tasks.topic")).isEqualTo(1);
+        assertThat(fixture.count("SELECT count(*) FROM pgtasks.topic")).isEqualTo(1);
     }
 
     @Test

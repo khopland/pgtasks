@@ -224,7 +224,7 @@ class TopicDiscoveryTest {
         TaskEngine engine = new TaskEngine(new PostgresTaskStore(database.newPool("node-a", 4)),
             EngineFixture.settings("node-a").withNotifier(null), List.of(), List.of(assessments())).start();
         try {
-            database.execute("SELECT tasks.create_topic('assessment-2028')");
+            database.execute("SELECT pgtasks.create_topic('assessment-2028')");
 
             EngineFixture.await("a heartbeat (200 ms) to pick it up", SOON, () -> engine.processing().contains("assessment-2028"));
         } finally {

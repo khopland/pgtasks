@@ -3,51 +3,51 @@
 -- nodes compare all topics with what they run on any notification. Also covers topics registered
 -- or paused by hand in SQL. Other changes, such as retention, aren't broadcast. Repeatable.
 
-CREATE OR REPLACE FUNCTION tasks.notify_topic_insert()
+CREATE OR REPLACE FUNCTION ${pgtasks_schema}.notify_topic_insert()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    PERFORM pg_notify('tasks_topic', added.name)
+    PERFORM pg_notify('${pgtasks_schema}_topic', added.name)
     FROM (SELECT name FROM new_rows) AS added;
     RETURN NULL;
 END
 $$;
 
-CREATE OR REPLACE FUNCTION tasks.notify_topic_update()
+CREATE OR REPLACE FUNCTION ${pgtasks_schema}.notify_topic_update()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    PERFORM pg_notify('tasks_topic', changed.name)
+    PERFORM pg_notify('${pgtasks_schema}_topic', changed.name)
     FROM (SELECT n.name FROM new_rows n JOIN old_rows o ON o.id = n.id
           WHERE n.paused IS DISTINCT FROM o.paused) AS changed;
     RETURN NULL;
 END
 $$;
 
-CREATE OR REPLACE FUNCTION tasks.notify_topic_delete()
+CREATE OR REPLACE FUNCTION ${pgtasks_schema}.notify_topic_delete()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    PERFORM pg_notify('tasks_topic', removed.name)
+    PERFORM pg_notify('${pgtasks_schema}_topic', removed.name)
     FROM (SELECT name FROM old_rows) AS removed;
     RETURN NULL;
 END
 $$;
 
 CREATE OR REPLACE TRIGGER topic_delete_notify
-    AFTER DELETE ON tasks.topic
+    AFTER DELETE ON ${pgtasks_schema}.topic
     REFERENCING OLD TABLE AS old_rows
-    FOR EACH STATEMENT EXECUTE FUNCTION tasks.notify_topic_delete();
+    FOR EACH STATEMENT EXECUTE FUNCTION ${pgtasks_schema}.notify_topic_delete();
 
 CREATE OR REPLACE TRIGGER topic_insert_notify
-    AFTER INSERT ON tasks.topic
+    AFTER INSERT ON ${pgtasks_schema}.topic
     REFERENCING NEW TABLE AS new_rows
-    FOR EACH STATEMENT EXECUTE FUNCTION tasks.notify_topic_insert();
+    FOR EACH STATEMENT EXECUTE FUNCTION ${pgtasks_schema}.notify_topic_insert();
 
 CREATE OR REPLACE TRIGGER topic_update_notify
-    AFTER UPDATE ON tasks.topic
+    AFTER UPDATE ON ${pgtasks_schema}.topic
     REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
-    FOR EACH STATEMENT EXECUTE FUNCTION tasks.notify_topic_update();
+    FOR EACH STATEMENT EXECUTE FUNCTION ${pgtasks_schema}.notify_topic_update();

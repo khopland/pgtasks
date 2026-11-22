@@ -128,8 +128,24 @@ class TaskAutoConfigurationTest {
                 assertThat(setting(engine, "assessment", "retry").value()).startsWith("2 attempts");
                 assertThat(setting(engine, "notify", "poll-interval")).isEqualTo(new EffectiveSettings.Setting("PT5S", EffectiveSettings.Source.OVERRIDE));
                 assertThat(engine.limits().find("register")).hasValueSatisfying(limit -> assertThat(limit.configured().perSecond()).isEqualTo(40.0));
-                assertThat(database.rows("SELECT name FROM tasks.node")).containsExactly(List.of("pod-1"));
+                assertThat(database.rows("SELECT name FROM pgtasks.node")).containsExactly(List.of("pod-1"));
             });
+    }
+
+    @Test
+    void the_schema_property_names_the_schema_and_its_notifications() {
+        postgres().withUserConfiguration(Modules.class)
+            .withPropertyValues("pgtasks.schema=shop_tasks", "pgtasks.topics.notify.poll-interval=1h")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
+                EngineFixture.await("woken through shop_tasks_ready, not by polling", Duration.ofSeconds(5),
+                    () -> context.getBean(Modules.class).handled.contains("hello"));
+                assertThat(database.rows("SELECT payload FROM shop_tasks.task")).containsExactly(List.of("hello"));
+                assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'pgtasks'")).isZero();
+            });
+        postgres().withUserConfiguration(Modules.class).withPropertyValues("pgtasks.schema=Shop-Tasks").run(context ->
+            assertThat(context).hasFailed().getFailure().rootCause().hasMessageContaining("Not a valid schema name for pgtasks: 'Shop-Tasks'"));
     }
 
     @Test
@@ -161,13 +177,13 @@ class TaskAutoConfigurationTest {
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 tasks.push(NOTIFY, "anna", "rolled back");
-                assertThat(database.count("SELECT count(*) FROM tasks.task")).as("not visible before the commit").isZero();
+                assertThat(database.count("SELECT count(*) FROM pgtasks.task")).as("not visible before the commit").isZero();
                 throw new IllegalStateException("the application's work failed");
             })).hasMessage("the application's work failed");
-            assertThat(database.count("SELECT count(*) FROM tasks.task")).isZero();
+            assertThat(database.count("SELECT count(*) FROM pgtasks.task")).isZero();
 
             transaction.executeWithoutResult(status -> tasks.push(NOTIFY, "anna", "committed"));
-            assertThat(database.rows("SELECT payload FROM tasks.task")).containsExactly(List.of("committed"));
+            assertThat(database.rows("SELECT payload FROM pgtasks.task")).containsExactly(List.of("committed"));
 
             assertThatThrownBy(() -> tasks.push(NOTIFY, "anna", "no transaction")).hasMessageContaining("there is none");
         });
@@ -193,8 +209,8 @@ class TaskAutoConfigurationTest {
             transaction.executeWithoutResult(status -> context.getBean(Tasks.class).push(NOTIFY, "anna", "pushed by the producer"));
 
             Thread.sleep(300);
-            assertThat(database.count("SELECT count(*) FROM tasks.queue WHERE state = 'ready'")).as("nobody processes here").isEqualTo(1);
-            assertThat(database.count("SELECT count(*) FROM tasks.node")).as("no node row for a producer").isZero();
+            assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'ready'")).as("nobody processes here").isEqualTo(1);
+            assertThat(database.count("SELECT count(*) FROM pgtasks.node")).as("no node row for a producer").isZero();
             assertThat(new TaskHealthIndicator(engine, false).health().getStatus()).isEqualTo(org.springframework.boot.health.contributor.Status.UP);
 
             List<String> handled = new CopyOnWriteArrayList<>();
@@ -328,12 +344,12 @@ class TaskAutoConfigurationTest {
                 context.publishEvent(new Greeted("anna"));
                 throw new IllegalStateException("the publisher's work failed");
             })).hasMessage("the publisher's work failed");
-            assertThat(database.count("SELECT count(*) FROM tasks.task")).as("rolled back with the publisher").isZero();
+            assertThat(database.count("SELECT count(*) FROM pgtasks.task")).as("rolled back with the publisher").isZero();
 
             transaction.executeWithoutResult(status -> context.publishEvent(new Greeted("bob")));
             context.publishEvent(new Greeted("carl"));
             context.publishEvent(new Greeted(""));
-            assertThat(database.rows("SELECT payload FROM tasks.task ORDER BY id")).as("committed with it, or on its own without one")
+            assertThat(database.rows("SELECT payload FROM pgtasks.task ORDER BY id")).as("committed with it, or on its own without one")
                 .containsExactly(List.of("hello bob"), List.of("hello carl"));
         });
     }
@@ -344,7 +360,7 @@ class TaskAutoConfigurationTest {
             TaskEngine engine = context.getBean(TaskEngine.class);
             context.close();
             assertThat(engine.processing()).isEmpty();
-            assertThat(database.count("SELECT count(*) FROM tasks.lease")).isZero();
+            assertThat(database.count("SELECT count(*) FROM pgtasks.lease")).isZero();
         });
     }
 

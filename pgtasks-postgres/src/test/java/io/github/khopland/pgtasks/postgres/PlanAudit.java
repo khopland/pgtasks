@@ -20,7 +20,7 @@ import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
 /**
- * Measures what each of the store's statements reads of tasks.queue and tasks.task. Before a
+ * Measures what each of the store's statements reads of pgtasks.queue and pgtasks.task. Before a
  * statement runs, it runs once more as EXPLAIN (ANALYZE, BUFFERS) in a savepoint that is rolled
  * back, so its effects, locks and notifications are undone and only its plan is kept. Two counts,
  * because each misses something the other sees:

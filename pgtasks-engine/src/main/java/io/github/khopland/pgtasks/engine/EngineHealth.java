@@ -10,7 +10,7 @@ import org.jspecify.annotations.Nullable;
  * How one node is doing, for health checks.
  *
  * @param running        whether the engine is started and not stopped
- * @param node           this node's name, and its id in tasks.node (-1 if not started)
+ * @param node           this node's name, and its id in pgtasks.node (-1 if not started)
  * @param lastHeartbeat  when this node last recorded its heartbeat, or null if not started
  * @param heartbeatAge   how long ago that was
  * @param leaseTerm      after how long without a heartbeat the node loses the housekeeping lease;

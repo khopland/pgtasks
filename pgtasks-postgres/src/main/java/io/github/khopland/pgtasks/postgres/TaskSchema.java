@@ -5,41 +5,49 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
 /**
- * The {@code tasks} schema. It ships as plain SQL files under {@value #LOCATION}, so the library
- * depends on no migration tool and every consumer picks how to apply them:
+ * The pgtasks schema, named {@value #DEFAULT_SCHEMA} unless configured otherwise (see
+ * {@link #validName}). It ships as plain SQL files under {@value #LOCATION}, so the library
+ * depends on no migration tool and every consumer picks how to apply them. The files qualify every
+ * name with the placeholder {@code ${pgtasks_schema}} ({@value #PLACEHOLDER}), which each path fills in:
  *
  * <ul>
  *   <li>nothing in particular: the built-in runner applies them at startup ({@link SchemaMode#MIGRATE},
  *       the default, or {@link #migrate} directly);</li>
  *   <li>Flyway: a separate Flyway instance, so the version numbers don't clash with the
- *       application's own migrations, and {@link SchemaMode#VALIDATE}:
+ *       application's own migrations, with the name as a placeholder (also for the default name),
+ *       and {@link SchemaMode#VALIDATE}:
  *       <pre>{@code
  * Flyway.configure()
  *     .dataSource(dataSource)
  *     .locations("classpath:io/github/khopland/pgtasks/postgres/db")
- *     .schemas("tasks")
+ *     .schemas("pgtasks")
+ *     .placeholders(Map.of("pgtasks_schema", "pgtasks"))
  *     .table("flyway_task_history")
  *     .load()
  *     .migrate();
  *       }</pre></li>
  *   <li>Liquibase: include {@value #LIQUIBASE_CHANGELOG} from the application's changelog. It is a
  *       plain XML resource that wraps the same files with {@code sqlFile} ({@code runOnChange} for
- *       the repeatable ones), so it adds no dependency. Then {@link SchemaMode#VALIDATE};</li>
- *   <li>a DBA pipeline: the files in order, as the schema owner, and {@link SchemaMode#VALIDATE}.</li>
+ *       the repeatable ones), so it adds no dependency. The changelog parameter {@value #PLACEHOLDER}
+ *       names the schema and defaults to {@value #DEFAULT_SCHEMA}. Then {@link SchemaMode#VALIDATE};</li>
+ *   <li>a DBA pipeline: the files in order, with the placeholder replaced, as the schema owner, and
+ *       {@link SchemaMode#VALIDATE}.</li>
  * </ul>
  *
  * <p>Conventions every file follows, so all four paths behave the same:
  * {@code V<version>__<description>.sql} for tables, types and indexes, applied once, each ending
- * by recording its version and the lowest version it stays compatible with in {@code tasks.meta};
+ * by recording its version and the lowest version it stays compatible with in {@code pgtasks.meta};
  * {@code R__<description>.sql} for functions, views and triggers, idempotent and re-applied when
  * they change; and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
  * run outside a transaction, such as {@code CREATE INDEX CONCURRENTLY}.
@@ -50,7 +58,23 @@ import javax.sql.DataSource;
  */
 public final class TaskSchema {
 
-    public static final String SCHEMA = "tasks";
+    /** The schema's name unless configured otherwise. */
+    public static final String DEFAULT_SCHEMA = "pgtasks";
+
+    /**
+     * The placeholder the SQL files write as {@code ${pgtasks_schema}}: a Flyway placeholder and a
+     * Liquibase changelog parameter of this name fill it in.
+     */
+    public static final String PLACEHOLDER = "pgtasks_schema";
+
+    /**
+     * At most 50 characters, so the notification channels named after the schema, such as
+     * {@code <schema>_ready}, stay within Postgres' 63.
+     */
+    private static final Pattern NAME = Pattern.compile("[a-z_][a-z0-9_]{0,49}");
+
+    /** {@code pgtasks.} where it starts a qualified name in the store's SQL. */
+    private static final Pattern QUALIFIED = Pattern.compile("(?<![\\w.\"$])pgtasks\\.(?=[a-z_])");
 
     public static final String LOCATION = "io/github/khopland/pgtasks/postgres/db";
 
@@ -69,7 +93,7 @@ public final class TaskSchema {
     /** The schema version this library is built for. */
     public static final int VERSION = 1;
 
-    /** What {@code tasks.meta} records. */
+    /** What the schema's {@code meta} table records. */
     public record Meta(int version, int compatibleFrom) {
     }
 
@@ -85,26 +109,84 @@ public final class TaskSchema {
     private TaskSchema() {
     }
 
-    /** Applies whatever is missing with the built-in runner, then checks the version. */
+    /**
+     * Checks a schema name: a plain lowercase identifier ({@code [a-z_][a-z0-9_]*}) of at most 50
+     * characters that doesn't start with {@code pg_}, which Postgres reserves. It is written
+     * unquoted into every statement, so the runner also refuses an SQL reserved word, such as
+     * {@code user}, when it migrates or validates.
+     *
+     * @return the name
+     * @throws IllegalArgumentException if it isn't one
+     */
+    public static String validName(String schema) {
+        if (schema == null || !NAME.matcher(schema).matches() || schema.startsWith("pg_")) {
+            throw new IllegalArgumentException("Not a valid schema name for pgtasks: " + (schema == null ? null : "'" + schema + "'")
+                + ". Use a plain lowercase identifier ([a-z_][a-z0-9_]*) of at most 50 characters that doesn't start with pg_.");
+        }
+        return schema;
+    }
+
+    /** Applies whatever is missing to the {@value #DEFAULT_SCHEMA} schema with the built-in runner, then checks the version. */
     public static Status migrate(DataSource dataSource) throws SQLException {
+        return migrate(dataSource, DEFAULT_SCHEMA);
+    }
+
+    /** Applies whatever is missing to the given schema with the built-in runner, then checks the version. */
+    public static Status migrate(DataSource dataSource, String schema) throws SQLException {
+        validName(schema);
         try (Connection connection = dataSource.getConnection()) {
-            return new SchemaMigrator(scripts()).migrate(connection);
+            refuseKeyword(connection, schema);
+            return new SchemaMigrator(scripts(), schema).migrate(connection);
         }
     }
 
-    /** Only checks {@code tasks.meta}; for schemas that another tool applies. */
+    /** Only checks the {@value #DEFAULT_SCHEMA} schema's meta table; for schemas that another tool applies. */
     public static Status validate(DataSource dataSource) throws SQLException {
+        return validate(dataSource, DEFAULT_SCHEMA);
+    }
+
+    /** Only checks the given schema's meta table; for schemas that another tool applies. */
+    public static Status validate(DataSource dataSource, String schema) throws SQLException {
+        validName(schema);
         try (Connection connection = dataSource.getConnection()) {
-            return check(readMeta(connection), VERSION, List.of());
+            refuseKeyword(connection, schema);
+            return check(schema, readMeta(connection, schema), VERSION, List.of());
         }
     }
 
     public static Optional<Status> prepare(DataSource dataSource, SchemaMode mode) throws SQLException {
+        return prepare(dataSource, mode, DEFAULT_SCHEMA);
+    }
+
+    public static Optional<Status> prepare(DataSource dataSource, SchemaMode mode, String schema) throws SQLException {
         return switch (mode) {
-            case MIGRATE -> Optional.of(migrate(dataSource));
-            case VALIDATE -> Optional.of(validate(dataSource));
+            case MIGRATE -> Optional.of(migrate(dataSource, schema));
+            case VALIDATE -> Optional.of(validate(dataSource, schema));
             case NONE -> Optional.empty();
         };
+    }
+
+    /** A schema file's content for the given schema: what Flyway and Liquibase make of it, and what a DBA pipeline runs. */
+    static String render(String content, String schema) {
+        return content.replace("${" + PLACEHOLDER + "}", schema);
+    }
+
+    /** The store's SQL, written for the {@value #DEFAULT_SCHEMA} schema, for the given one. */
+    static String qualify(String sql, String schema) {
+        return schema.equals(DEFAULT_SCHEMA) ? sql : QUALIFIED.matcher(sql).replaceAll(schema + ".");
+    }
+
+    /** Reserved words would need quoting wherever the name appears; types and functions can't be qualified with some others. */
+    private static void refuseKeyword(Connection connection, String schema) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT catdesc FROM pg_get_keywords() WHERE word = ? AND catcode IN ('R', 'T', 'C')")) {
+            statement.setString(1, schema);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new IllegalArgumentException("'" + schema + "' can't name the pgtasks schema: it is an SQL keyword ("
+                        + resultSet.getString(1) + "). Pick another name.");
+                }
+            }
+        }
     }
 
     /** The schema files from the classpath, in order. */
@@ -124,15 +206,15 @@ public final class TaskSchema {
         return scripts;
     }
 
-    static Optional<Meta> readMeta(Connection connection) throws SQLException {
+    static Optional<Meta> readMeta(Connection connection, String schema) throws SQLException {
         try (Statement statement = connection.createStatement()) {
-            try (ResultSet exists = statement.executeQuery("SELECT to_regclass('tasks.meta') IS NOT NULL")) {
+            try (ResultSet exists = statement.executeQuery("SELECT to_regclass('" + schema + ".meta') IS NOT NULL")) {
                 exists.next();
                 if (!exists.getBoolean(1)) {
                     return Optional.empty();
                 }
             }
-            try (ResultSet resultSet = statement.executeQuery("SELECT version, compatible_from FROM tasks.meta")) {
+            try (ResultSet resultSet = statement.executeQuery("SELECT version, compatible_from FROM " + schema + ".meta")) {
                 return resultSet.next() ? Optional.of(new Meta(resultSet.getInt(1), resultSet.getInt(2))) : Optional.empty();
             }
         }
@@ -143,24 +225,24 @@ public final class TaskSchema {
      * one version ahead if it marks itself compatible, so old and new nodes can run side by side
      * during a rolling deploy.
      */
-    static Status check(Optional<Meta> found, int expected, List<String> applied) {
+    static Status check(String schema, Optional<Meta> found, int expected, List<String> applied) {
         if (found.isEmpty()) {
-            throw new TaskSchemaException("The tasks schema doesn't exist in this database yet (there is no tasks.meta). Either let the "
-                + "library create it at startup with schema mode MIGRATE, or apply the SQL files in classpath:" + LOCATION
+            throw new TaskSchemaException("The " + schema + " schema doesn't exist in this database yet (there is no " + schema + ".meta). Either "
+                + "let the library create it at startup with schema mode MIGRATE, or apply the SQL files in classpath:" + LOCATION
                 + " with Flyway, Liquibase or your DBA pipeline before starting, and keep schema mode VALIDATE.");
         }
         Meta meta = found.get();
         if (meta.version() < expected) {
-            throw new TaskSchemaException("The tasks schema is at version " + meta.version() + ", but this library needs version " + expected
+            throw new TaskSchemaException("The " + schema + " schema is at version " + meta.version() + ", but this library needs version " + expected
                 + ". Apply the newer files from classpath:" + LOCATION + ": with schema mode MIGRATE the library does it at startup; "
                 + "with Flyway, Liquibase or a DBA pipeline, run them before deploying this version.");
         }
         if (meta.version() > expected + 1) {
-            throw new TaskSchemaException("The tasks schema is at version " + meta.version() + ", more than one version ahead of this library ("
+            throw new TaskSchemaException("The " + schema + " schema is at version " + meta.version() + ", more than one version ahead of this library ("
                 + expected + "). A rolling deploy may only run one schema version ahead; upgrade this application.");
         }
         if (meta.compatibleFrom() > expected) {
-            throw new TaskSchemaException("The tasks schema is at version " + meta.version() + " and only compatible with library schema version "
+            throw new TaskSchemaException("The " + schema + " schema is at version " + meta.version() + " and only compatible with library schema version "
                 + meta.compatibleFrom() + " and later, but this library uses version " + expected
                 + ". A newer release migrated it; upgrade this application or restore the schema.");
         }

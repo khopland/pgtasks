@@ -5,7 +5,7 @@ import java.io.StringWriter;
 
 import org.jspecify.annotations.Nullable;
 
-/** The structured error stored in tasks.task.error and tasks.attempt.error. */
+/** The structured error stored in pgtasks.task.error and pgtasks.attempt.error. */
 final class ErrorJson {
 
     private static final int MAX_STACK = 4000;

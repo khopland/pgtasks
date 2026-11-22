@@ -9,7 +9,7 @@ typed `TopicRef`, defined once by the module that owns it:
 public static final TopicRef<AssessmentRequest> ASSESSMENT = TopicRef.of("assessment", AssessmentRequest.class);
 ```
 
-Names use lower-case letters, digits, `.`, `_` and `-`. A topic is a row in `tasks.topic`, so
+Names use lower-case letters, digits, `.`, `_` and `-`. A topic is a row in `pgtasks.topic`, so
 creating one needs no DDL. A topic is created when an engine that registers it starts, or that
 declares it with `pushesTo` (see [producers in another service](patterns.md#producers-and-consumers-in-separate-services)),
 or with `admin().createTopic(name)`. A push never creates one, so a misspelt topic fails at once.

@@ -56,7 +56,7 @@ class KotlinApiTest {
     fun `requirePayload fails clearly when the task has no payload`() {
         val ref = topic<String>("notify")
         val now = Instant.now()
-        val task = Task(ref, 1L, "anna", null, 1, null, null, null, now, now, null)
+        val task = Task(ref, 1L, "anna", null, 1, null, null, null, now, now, emptyMap())
         val work = object : Work<String> {
             override fun task(): Task<String> = task
 

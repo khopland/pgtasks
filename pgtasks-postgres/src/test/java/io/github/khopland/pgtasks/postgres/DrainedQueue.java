@@ -42,64 +42,77 @@ final class DrainedQueue implements AutoCloseable {
      */
     private static final List<String> READS_EVERYTHING = List.of(
         // Count snapshots: every topic's counts, once a minute on the housekeeping leader.
-        "INSERT INTO tasks.topic_count"
+        "INSERT INTO pgtasks.topic_count"
     );
 
     private final PostgresDatabase database;
+    private final String schema;
     private final PlanAudit audit;
 
-    private DrainedQueue(PostgresDatabase database) {
+    private DrainedQueue(PostgresDatabase database, String schema) {
         this.database = database;
-        this.audit = new PlanAudit(database.dataSource(), ALLOWED, READS_EVERYTHING);
+        this.schema = schema;
+        this.audit = new PlanAudit(database.dataSource(), ALLOWED, READS_EVERYTHING.stream().map(sql -> TaskSchema.qualify(sql, schema)).toList());
     }
 
     /**
-     * A database of its own with the drained queue, copied from a template built once per JVM:
-     * building the ballast takes over a second, a copy a fraction of that.
+     * A database of its own with the drained queue in the given schema, copied from a template built
+     * once per JVM and schema: building the ballast takes over a second, a copy a fraction of that.
      */
-    static DrainedQueue create() {
-        DrainedQueue drained = new DrainedQueue(TestPostgres.createDatabase("drained-queue", DrainedQueue::build));
-        assertThat(drained.database.count("SELECT reltuples::bigint FROM pg_class WHERE oid = 'tasks.queue'::regclass"))
+    static DrainedQueue create(String schema) {
+        DrainedQueue drained = new DrainedQueue(TestPostgres.createDatabase("drained-queue-" + schema, database -> build(database, schema)), schema);
+        assertThat(drained.database.count(TaskSchema.qualify("SELECT reltuples::bigint FROM pg_class WHERE oid = 'pgtasks.queue'::regclass", schema)))
             .as("the queue's statistics say it is empty").isLessThanOrEqualTo(0);
+        assertThat(drained.database.count("SELECT count(*) FROM pg_namespace WHERE nspname IN ('pgtasks', '" + schema + "')"))
+            .as("only the " + schema + " schema exists, so a statement that ignores the configured name fails").isOne();
         return drained;
     }
 
-    private static void build(PostgresDatabase database) throws SQLException {
-        TaskSchema.migrate(database.dataSource());
-        database.execute("SELECT tasks.create_topic('" + BALLAST_TOPIC + "')");
+    private static void build(PostgresDatabase database, String schema) throws SQLException {
+        TaskSchema.migrate(database.dataSource(), schema);
+        execute(database, schema, "SELECT pgtasks.create_topic('" + BALLAST_TOPIC + "')");
         // A burst that came and went: the queue keeps its pages, and the analyze finds no live row.
-        database.execute("""
+        execute(database, schema, """
             WITH t AS (
-                INSERT INTO tasks.task (topic_id, identifier, outcome, completed_at)
-                SELECT (SELECT id FROM tasks.topic WHERE name = 'ballast'), 'burst-' || g, 'succeeded', now() - interval '1 year'
+                INSERT INTO pgtasks.task (topic_id, identifier, outcome, completed_at)
+                SELECT (SELECT id FROM pgtasks.topic WHERE name = 'ballast'), 'burst-' || g, 'succeeded', now() - interval '1 year'
                 FROM generate_series(1, %d) AS g
                 RETURNING id, topic_id, identifier
             )
-            INSERT INTO tasks.queue (task_id, topic_id, identifier, state)
+            INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state)
             SELECT id, topic_id, identifier, 'ready' FROM t
             """.formatted(BURST));
-        database.execute("DELETE FROM tasks.queue");
-        database.execute("ANALYZE tasks.queue");
-        database.execute("ALTER TABLE tasks.queue SET (autovacuum_enabled = false)");
+        execute(database, schema, "DELETE FROM pgtasks.queue");
+        execute(database, schema, "ANALYZE pgtasks.queue");
+        execute(database, schema, "ALTER TABLE pgtasks.queue SET (autovacuum_enabled = false)");
         // Live ballast the statistics don't know about. None of it active: TCK tests expire other
         // nodes' claims and would requeue it.
-        database.execute("""
+        execute(database, schema, """
             WITH t AS (
-                INSERT INTO tasks.task (topic_id, identifier, payload)
-                SELECT (SELECT id FROM tasks.topic WHERE name = 'ballast'), 'ballast-' || (g %% 2000), 'x'
+                INSERT INTO pgtasks.task (topic_id, identifier, payload)
+                SELECT (SELECT id FROM pgtasks.topic WHERE name = 'ballast'), 'ballast-' || (g %% 2000), 'x'
                 FROM generate_series(1, %d) AS g
                 RETURNING id, topic_id, identifier
             )
-            INSERT INTO tasks.queue (task_id, topic_id, identifier, state, run_at)
+            INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, run_at)
             SELECT id, topic_id, identifier,
-                   (ARRAY['ready', 'ready', 'suspended', 'failed', 'scheduled', 'retrying'])[1 + id %% 6]::tasks.queue_state,
+                   (ARRAY['ready', 'ready', 'suspended', 'failed', 'scheduled', 'retrying'])[1 + id %% 6]::pgtasks.queue_state,
                    CASE WHEN id %% 6 >= 4 THEN now() + interval '100 years' END
             FROM t
             """.formatted(BALLAST));
     }
 
+    /** SQL written for the default schema, on the given one. */
+    private static void execute(PostgresDatabase database, String schema, String sql) {
+        database.execute(TaskSchema.qualify(sql, schema));
+    }
+
     PostgresDatabase database() {
         return database;
+    }
+
+    String schema() {
+        return schema;
     }
 
     PlanAudit audit() {

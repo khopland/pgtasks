@@ -60,7 +60,7 @@ class ConnectionBudgetTest {
                 Thread.sleep(10);
             }
             assertThat(fewest).as("no pool connection held while idle").isZero();
-            assertThat(database.count("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN tasks_%'")).isEqualTo(1);
+            assertThat(database.count("SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN pgtasks_%'")).isEqualTo(1);
         }
     }
 }

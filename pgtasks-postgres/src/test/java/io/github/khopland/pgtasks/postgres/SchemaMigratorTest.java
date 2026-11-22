@@ -31,8 +31,8 @@ class SchemaMigratorTest {
     private static final int NEXT = TaskSchema.VERSION + 1;
 
     private static final String DESCRIPTION = """
-        ALTER TABLE tasks.topic ADD COLUMN description text;
-        INSERT INTO tasks.meta (singleton, version, compatible_from) VALUES (true, %d, %d)
+        ALTER TABLE pgtasks.topic ADD COLUMN description text;
+        INSERT INTO pgtasks.meta (singleton, version, compatible_from) VALUES (true, %d, %d)
         ON CONFLICT (singleton) DO UPDATE SET version = excluded.version, compatible_from = excluded.compatible_from, updated_at = now();
         """;
 
@@ -61,12 +61,12 @@ class SchemaMigratorTest {
 
     private static TaskSchema.Status migrate(PostgresDatabase database, List<SchemaScript> scripts) throws SQLException {
         try (Connection connection = database.connect()) {
-            return new SchemaMigrator(scripts).migrate(connection);
+            return new SchemaMigrator(scripts, TaskSchema.DEFAULT_SCHEMA).migrate(connection);
         }
     }
 
     private static long history(PostgresDatabase database) {
-        return database.count("SELECT count(*) FROM tasks.schema_history");
+        return database.count("SELECT count(*) FROM pgtasks.schema_history");
     }
 
     @Test
@@ -78,12 +78,12 @@ class SchemaMigratorTest {
         assertThat(first.version()).isEqualTo(TaskSchema.VERSION);
         assertThat(second.applied()).isEmpty();
         assertThat(history(database)).isEqualTo(TaskSchema.FILES.size());
-        assertThat(database.rows("SELECT applied_by FROM tasks.schema_history").getFirst().getFirst()).isEqualTo(database.user());
+        assertThat(database.rows("SELECT applied_by FROM pgtasks.schema_history").getFirst().getFirst()).isEqualTo(database.user());
     }
 
     @Test
     void the_library_version_matches_its_newest_file() {
-        assertThat(new SchemaMigrator(shipped()).latest()).isEqualTo(TaskSchema.VERSION);
+        assertThat(new SchemaMigrator(shipped(), TaskSchema.DEFAULT_SCHEMA).latest()).isEqualTo(TaskSchema.VERSION);
     }
 
     @Test
@@ -96,7 +96,7 @@ class SchemaMigratorTest {
         }
         for (SchemaScript script : shipped()) {
             if (!script.repeatable()) {
-                Pattern marker = Pattern.compile("INSERT INTO tasks\\.meta \\(singleton, version, compatible_from\\) VALUES \\(true, " + script.version() + ", \\d+\\)\\s+"
+                Pattern marker = Pattern.compile("INSERT INTO \\$\\{pgtasks_schema\\}\\.meta \\(singleton, version, compatible_from\\) VALUES \\(true, " + script.version() + ", \\d+\\)\\s+"
                     + "ON CONFLICT \\(singleton\\) DO UPDATE SET [^;]+;\\s*$");
                 assertThat(marker.matcher(script.content()).find()).as(script.name() + " ends by recording its version").isTrue();
             }
@@ -107,7 +107,7 @@ class SchemaMigratorTest {
     @Test
     void the_liquibase_wrapper_lists_every_file_with_matching_flags() throws IOException {
         String changelog = Files.readString(Path.of("src/main/resources", TaskSchema.LIQUIBASE_CHANGELOG));
-        Pattern changeSet = Pattern.compile("<changeSet id=\"tasks-([^\"]+)\" author=\"pgtasks\"([^>]*)>\\s*<sqlFile path=\"([^\"]+)\"([^>]*)/>");
+        Pattern changeSet = Pattern.compile("<changeSet id=\"\\$\\{pgtasks_schema\\}-([^\"]+)\" author=\"pgtasks\"([^>]*)>\\s*<sqlFile path=\"([^\"]+)\"([^>]*)/>");
         var matcher = changeSet.matcher(changelog);
         List<String> listed = new ArrayList<>();
         while (matcher.find()) {
@@ -127,13 +127,13 @@ class SchemaMigratorTest {
         TaskSchema.Status status = migrate(database, with(description(1)));
 
         assertThat(status.applied()).containsExactly(next("topic_description"));
-        assertThat(database.rows("SELECT version, compatible_from FROM tasks.meta")).containsExactly(List.of(NEXT, 1));
+        assertThat(database.rows("SELECT version, compatible_from FROM pgtasks.meta")).containsExactly(List.of(NEXT, 1));
     }
 
     @Test
     void a_failing_file_leaves_nothing_behind(PostgresDatabase database) throws SQLException {
         TaskSchema.migrate(database.dataSource());
-        SchemaScript broken = SchemaScript.of(next("broken"), "ALTER TABLE tasks.topic ADD COLUMN half_done text;\nSELECT no_such_function();");
+        SchemaScript broken = SchemaScript.of(next("broken"), "ALTER TABLE pgtasks.topic ADD COLUMN half_done text;\nSELECT no_such_function();");
 
         assertThatThrownBy(() -> migrate(database, with(broken)))
             .isInstanceOf(TaskSchemaException.class)
@@ -147,9 +147,9 @@ class SchemaMigratorTest {
     void a_versioned_file_must_record_its_version(PostgresDatabase database) throws SQLException {
         TaskSchema.migrate(database.dataSource());
 
-        assertThatThrownBy(() -> migrate(database, with(SchemaScript.of(next("forgot_meta"), "ALTER TABLE tasks.topic ADD COLUMN x text;"))))
+        assertThatThrownBy(() -> migrate(database, with(SchemaScript.of(next("forgot_meta"), "ALTER TABLE pgtasks.topic ADD COLUMN x text;"))))
             .isInstanceOf(TaskSchemaException.class)
-            .hasMessageContaining(next("forgot_meta") + " must end by recording version " + NEXT + " in tasks.meta");
+            .hasMessageContaining(next("forgot_meta") + " must end by recording version " + NEXT + " in pgtasks.meta");
         assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_name = 'topic' AND column_name = 'x'")).isZero();
     }
 
@@ -183,8 +183,8 @@ class SchemaMigratorTest {
         SchemaScript concurrently = SchemaScript.of(next("index_concurrently"), """
             -- Builds an index without blocking writers.
             %s
-            CREATE INDEX CONCURRENTLY IF NOT EXISTS topic_created_idx ON tasks.topic (created_at);
-            INSERT INTO tasks.meta (singleton, version, compatible_from) VALUES (true, %d, 1)
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS topic_created_idx ON pgtasks.topic (created_at);
+            INSERT INTO pgtasks.meta (singleton, version, compatible_from) VALUES (true, %d, 1)
             ON CONFLICT (singleton) DO UPDATE SET version = excluded.version, compatible_from = excluded.compatible_from, updated_at = now();
             """.formatted(SchemaScript.NO_TRANSACTION, NEXT));
         assertThat(concurrently.transactional()).isFalse();
@@ -216,9 +216,9 @@ class SchemaMigratorTest {
 
     @Test
     void an_older_node_leaves_a_newer_compatible_schema_alone(PostgresDatabase database) throws SQLException {
-        String newerView = "CREATE OR REPLACE VIEW tasks.task_view AS SELECT 'newer' AS marker;";
+        String newerView = "CREATE OR REPLACE VIEW pgtasks.task_view AS SELECT 'newer' AS marker;";
         migrate(database, with(description(1)).stream()
-            .map(script -> script.name().equals("R__task_view.sql") ? SchemaScript.of(script.name(), "DROP VIEW IF EXISTS tasks.task_view;\n" + newerView) : script)
+            .map(script -> script.name().equals("R__task_view.sql") ? SchemaScript.of(script.name(), "DROP VIEW IF EXISTS pgtasks.task_view;\n" + newerView) : script)
             .toList());
 
         TaskSchema.Status status = TaskSchema.migrate(database.dataSource());
@@ -226,7 +226,7 @@ class SchemaMigratorTest {
         assertThat(status.version()).isEqualTo(NEXT);
         assertThat(status.expected()).isEqualTo(TaskSchema.VERSION);
         assertThat(status.applied()).as("nothing downgraded").isEmpty();
-        assertThat(database.rows("SELECT marker FROM tasks.task_view")).containsExactly(List.of("newer"));
+        assertThat(database.rows("SELECT marker FROM pgtasks.task_view")).containsExactly(List.of("newer"));
         assertThat(TaskSchema.validate(database.dataSource()).version()).isEqualTo(NEXT);
     }
 
@@ -245,7 +245,7 @@ class SchemaMigratorTest {
     @Test
     void more_than_one_version_ahead_is_refused(PostgresDatabase database) throws SQLException {
         TaskSchema.migrate(database.dataSource());
-        database.execute("UPDATE tasks.meta SET version = " + (NEXT + 1) + ", compatible_from = 1");
+        database.execute("UPDATE pgtasks.meta SET version = " + (NEXT + 1) + ", compatible_from = 1");
 
         assertThatThrownBy(() -> TaskSchema.validate(database.dataSource()))
             .isInstanceOf(TaskSchemaException.class)
@@ -264,7 +264,7 @@ class SchemaMigratorTest {
         assertThat(TaskSchema.validate(database.dataSource()).version()).isEqualTo(TaskSchema.VERSION);
 
         try (Connection connection = database.connect()) {
-            assertThatThrownBy(() -> TaskSchema.check(TaskSchema.readMeta(connection), NEXT, List.of()))
+            assertThatThrownBy(() -> TaskSchema.check(TaskSchema.DEFAULT_SCHEMA, TaskSchema.readMeta(connection, TaskSchema.DEFAULT_SCHEMA), NEXT, List.of()))
                 .isInstanceOf(TaskSchemaException.class)
                 .hasMessageContaining("is at version " + TaskSchema.VERSION + ", but this library needs version " + NEXT);
         }
@@ -275,7 +275,7 @@ class SchemaMigratorTest {
         // What a DBA pipeline does: run the files in order, with no runner history.
         try (Connection connection = database.connect(); var statement = connection.createStatement()) {
             for (SchemaScript script : shipped()) {
-                statement.execute(script.content());
+                statement.execute(script.content(TaskSchema.DEFAULT_SCHEMA));
             }
         }
         assertThat(TaskSchema.validate(database.dataSource()).version()).isEqualTo(TaskSchema.VERSION);
@@ -290,7 +290,7 @@ class SchemaMigratorTest {
     void the_store_prepares_the_schema_by_its_mode(PostgresDatabase database) throws SQLException {
         assertThatThrownBy(() -> new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE).prepare()).isInstanceOf(TaskSchemaException.class);
         new PostgresTaskStore(database.dataSource(), SchemaMode.NONE).prepare();
-        assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'tasks'")).isZero();
+        assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'pgtasks'")).isZero();
 
         new PostgresTaskStore(database.dataSource()).prepare();
         new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE).prepare();

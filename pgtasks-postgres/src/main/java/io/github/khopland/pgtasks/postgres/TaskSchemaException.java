@@ -1,6 +1,6 @@
 package io.github.khopland.pgtasks.postgres;
 
-/** The tasks schema is missing, too old, incompatible, or a migration failed. */
+/** The pgtasks schema is missing, too old, incompatible, or a migration failed. */
 public class TaskSchemaException extends RuntimeException {
 
     public TaskSchemaException(String message) {

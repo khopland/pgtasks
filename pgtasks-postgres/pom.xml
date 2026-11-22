@@ -9,7 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-postgres</artifactId>
-  <description>pgtasks storage on Postgres: the tasks schema as plain SQL files with a built-in runner, the task store and the LISTEN/NOTIFY notifier. No migration tool dependency.</description>
+  <description>pgtasks storage on Postgres: the pgtasks schema as plain SQL files with a built-in runner, the task store and the LISTEN/NOTIFY notifier. No migration tool dependency.</description>
 
   <properties>
     <module.name>io.github.khopland.pgtasks.postgres</module.name>

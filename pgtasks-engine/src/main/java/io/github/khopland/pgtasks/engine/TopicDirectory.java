@@ -57,7 +57,7 @@ final class TopicDirectory {
         }
         if (found.isEmpty()) {
             throw new IllegalArgumentException("Unknown topic '" + name + "'. Topics are created when the engine that "
-                + "processes them starts, or explicitly with tasks.create_topic(); a push never creates one.");
+                + "processes them starts, or explicitly with pgtasks.create_topic(); a push never creates one.");
         }
         ids.put(name, found.getAsInt());
         return found.getAsInt();

@@ -2,7 +2,7 @@
 -- otherwise its outcome. Repeatable. CREATE OR REPLACE VIEW can only add columns at the end;
 -- to drop or change one, drop the view in the versioned file that needs it.
 
-CREATE OR REPLACE VIEW tasks.task_view AS
+CREATE OR REPLACE VIEW ${pgtasks_schema}.task_view AS
 SELECT tp.name AS topic,
        t.id,
        t.identifier,
@@ -23,7 +23,7 @@ SELECT tp.name AS topic,
        t.output,
        t.error,
        t.headers
-FROM tasks.task t
-JOIN tasks.topic tp ON tp.id = t.topic_id
-LEFT JOIN tasks.queue q ON q.task_id = t.id
-LEFT JOIN tasks.node n ON n.id = q.node_id;
+FROM ${pgtasks_schema}.task t
+JOIN ${pgtasks_schema}.topic tp ON tp.id = t.topic_id
+LEFT JOIN ${pgtasks_schema}.queue q ON q.task_id = t.id
+LEFT JOIN ${pgtasks_schema}.node n ON n.id = q.node_id;

@@ -71,7 +71,7 @@ class ClaimPlanTest {
         int node = fixture.node("node-a");
         fixture.push(topic, Insertion.APPEND, StoreFixture.many("warm-up", 20_000));
         drain(fixture, topic, node, Ordering.FIFO, 20_000);
-        database.execute("ANALYZE tasks.queue");
+        database.execute("ANALYZE pgtasks.queue");
         TaskStore.NewTask[] burst = new TaskStore.NewTask[20_000];
         for (int index = 0; index < burst.length; index++) {
             burst[index] = StoreFixture.task("id-" + index % 5_000);

@@ -78,7 +78,7 @@ public final class EngineFixture implements AutoCloseable {
     }
 
     public void awaitQueueEmpty(Duration timeout) throws InterruptedException {
-        await("an empty queue", timeout, () -> database.count("SELECT count(*) FROM tasks.queue") == 0);
+        await("an empty queue", timeout, () -> database.count("SELECT count(*) FROM pgtasks.queue") == 0);
     }
 
     public long count(String sql, Object... parameters) {
@@ -98,7 +98,7 @@ public final class EngineFixture implements AutoCloseable {
 
     /** Makes every delayed task and retry due now. */
     public void makeDue() {
-        database.execute("UPDATE tasks.queue SET run_at = now() - interval '1 millisecond' WHERE run_at IS NOT NULL");
+        database.execute("UPDATE pgtasks.queue SET run_at = now() - interval '1 millisecond' WHERE run_at IS NOT NULL");
     }
 
     @Override

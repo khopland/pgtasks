@@ -152,7 +152,7 @@ public final class TaskAdmin {
         return Unchecked.call("Reading recurring tasks", () -> EngineCore.transact(store, store::schedules));
     }
 
-    /** A task, finished or not, as tasks.task_view shows it. */
+    /** A task, finished or not, as pgtasks.task_view shows it. */
     public Optional<TaskView> find(long taskId) {
         return Unchecked.call("Finding task " + taskId, () -> EngineCore.transact(store, transaction -> store.find(transaction, taskId)));
     }

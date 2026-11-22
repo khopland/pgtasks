@@ -2,20 +2,74 @@
 
 ## The schema
 
-Everything lives in the `tasks` schema, as plain SQL files under
+Everything lives in one schema, `pgtasks` unless you name another, as plain SQL files under
 `io/github/khopland/pgtasks/postgres/db`. How it gets applied is up to you (`pgtasks.schema-mode`):
 
 - `migrate` (default): the built-in runner applies the files at startup, under an advisory lock,
   so nodes starting together don't race. The application's user owns the schema.
 - `validate`: Flyway, Liquibase or a DBA pipeline applies the same files, and the engine only
-  checks the version. For Liquibase, include `io/github/khopland/pgtasks/postgres/db/changelog.xml`. For
-  Flyway, use a Flyway instance of its own with that location, schema `tasks` and a history
-  table such as `flyway_task_history`. The runtime user then needs USAGE on the schema, SELECT,
-  INSERT, UPDATE and DELETE on its tables, USAGE on `task_id_seq` and EXECUTE on
-  `create_topic`. It needs no DDL rights: a topic is a row.
+  checks the version. The runtime user then needs USAGE on the schema, SELECT, INSERT, UPDATE and
+  DELETE on its tables, USAGE on `task_id_seq` and EXECUTE on `create_topic`. It needs no DDL
+  rights: a topic is a row.
 - `none`: nothing is checked.
 
-`tasks.task_view` shows each task with its current state, for looking around in SQL.
+`pgtasks.task_view` shows each task with its current state, for looking around in SQL.
+
+### Naming the schema
+
+`pgtasks.schema` (or `TaskEngineBuilder.schema(...)`, or the `PostgresTaskStore` constructor) names
+the schema. Use it when `pgtasks` clashes with a schema of your own, or when two applications share a
+database: each needs its own schema. The name must be a plain lowercase identifier
+(`[a-z_][a-z0-9_]*`), at most 50 characters, not starting with `pg_` and not an SQL keyword. The
+notification channels follow it (`<schema>_ready`, `<schema>_limit`, `<schema>_topic`), so
+applications in one database don't wake each other's workers.
+
+The SQL files write the name as the placeholder `${pgtasks_schema}`. The built-in runner fills it
+in. With another tool, pass the same name the engine uses:
+
+- **Flyway**: a Flyway instance of its own, so its version numbers don't clash with the
+  application's migrations, with the name as a placeholder. Flyway needs the placeholder even for
+  the default name:
+
+  ```java
+  Flyway.configure()
+      .dataSource(dataSource)
+      .locations("classpath:io/github/khopland/pgtasks/postgres/db")
+      .schemas("billing_tasks")                                   // the history table goes here
+      .placeholders(Map.of("pgtasks_schema", "billing_tasks"))
+      .table("flyway_task_history")
+      .load()
+      .migrate();
+  ```
+
+- **Liquibase**: include `io/github/khopland/pgtasks/postgres/db/changelog.xml` from your changelog.
+  The changelog parameter `pgtasks_schema` names the schema and defaults to `pgtasks`. Set it before
+  the include is parsed: with `spring.liquibase.parameters.pgtasks_schema=billing_tasks`,
+  `liquibase.setChangeLogParameter("pgtasks_schema", ...)`, `-Dliquibase.parameter.pgtasks_schema=...`,
+  or a `<property name="pgtasks_schema" value="billing_tasks"/>` above the include. The changeSet
+  ids carry the name (`billing_tasks-V001`), so two schemas can share one `DATABASECHANGELOG`.
+- **A DBA pipeline**: replace the placeholder in each file, for instance with
+  `sed 's/\${pgtasks_schema}/billing_tasks/g'`, and run the files in the order of `TaskSchema.FILES`.
+
+### Changing the schema
+
+`V001__tasks_schema.sql` is frozen for 0.1.0. **Never edit a released versioned file**: databases
+that applied it would no longer match it. The built-in runner refuses to start when an applied
+file's checksum changed, and Flyway and Liquibase do the same. Add the next file instead:
+
+1. `V002__<what>.sql`: the change, written so that 0.1.0 nodes still run against it during a rolling
+   deploy, or with `compatible_from` raised if they can't. It ends by recording its version in the
+   meta table, like V001. Use `${pgtasks_schema}` for every name.
+2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
+3. Functions, views and triggers stay in the `R__` files, which may change at any time: every path
+   applies them again when their content changes. Dropping or changing a view's column needs a
+   versioned file.
+4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
+   Add the new file's checksum there when it is released. `SchemaUpgradeTest` applies the files as
+   0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
+   state, then the current files, checks the tasks are still usable and runs part of the store TCK
+   on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory
+   and a seed when a release changes the schema.
 
 ## Actuator: the tasks endpoint and health
 
@@ -119,7 +173,7 @@ downstream work a new one sets the header on the creation. With tracing, a remot
 Headers are a `jsonb` column, so support can find a flow by its correlation id:
 
 ```sql
-SELECT * FROM tasks.task_view WHERE headers->>'korrelasjonsid' = '...';
+SELECT * FROM pgtasks.task_view WHERE headers->>'korrelasjonsid' = '...';
 ```
 
 Add an index on that expression if you look them up often. The endpoint shows header names, and
