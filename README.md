@@ -156,7 +156,7 @@ engine.close();                                // drains running batches, then s
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
 - [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
 - [Migrating from 1.x](docs/migrating-from-1.x.md): mapping the concepts, and moving queued tasks with `LegacyImport`.
-- Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [NOTIFY at commit, throughput and wake-up latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
+- Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [wake-ups, throughput ceiling and latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 
 pgtasks started as a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)
 (1.x), and keeps its Apache 2.0 license. 1.x lives on in this repository's `main` branch.

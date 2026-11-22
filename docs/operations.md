@@ -354,6 +354,8 @@ database-wide lock held until the commit is flushed. A notification sent inside 
 transaction would cap a busy application's commit rate near one commit per WAL flush (measured at
 about 500 a second on a 2 ms flush, against over 4,000 without the notification), and
 show up as slow commits across the whole database, waiting in `Lock:object` on `pg_database`.
+Pushes as described next commit as fast as with no notification at all; see the
+[benchmark](benchmarks/2026-11-22-notify-and-throughput.md).
 
 So pushes the engine sees commit don't notify inside the transaction: `tasks.push(...)` in a
 bound transaction (Spring, `JdbcTransactions`), `tasks.independently()`, and downstream work
