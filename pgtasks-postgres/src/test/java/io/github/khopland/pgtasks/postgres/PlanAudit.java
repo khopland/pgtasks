@@ -11,13 +11,20 @@ import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
+
+import org.jspecify.annotations.Nullable;
+import org.postgresql.PGConnection;
+import org.postgresql.PGStatement;
 
 /**
  * Measures what each of the store's statements reads of pgtasks.queue and pgtasks.task. Before a
@@ -32,6 +39,14 @@ import javax.sql.DataSource;
  * </ul>
  * Per-node buffers leave out the catalog lookups of a new connection, which swamp a statement's
  * own reads in pg_stat_statements.
+ *
+ * <p>A statement the store plans for its actual parameters every time (prepare threshold 0) is
+ * explained as it is. Any other statement becomes a server-side prepared statement after a few
+ * executions, and then Postgres may cache one generic plan for the connection's lifetime: one made
+ * while the tables were small or their statistics empty keeps that shape as they grow (the NOTIFY
+ * benchmark: a completion walked the topic's whole history). So such a statement is prepared once
+ * per connection, the first time the audit sees it, and explained by EXECUTE under
+ * {@code force_generic_plan}: the plan Postgres would cache, made from the tables as they were then.
  *
  * <p>Statements outside a transaction aren't audited (a savepoint needs one; the store always
  * opens one), nor are the test's own statements, which don't go through {@link #dataSource()}.
@@ -80,11 +95,17 @@ final class PlanAudit {
         }
     }
 
+    private static final int TIMEOUT_SECONDS = 20;
+
     private final DataSource target;
     private final Budget allowed;
     private final List<String> exempt;
     private final List<Finding> findings = new CopyOnWriteArrayList<>();
     private final AtomicInteger audited = new AtomicInteger();
+    private final AtomicInteger generic = new AtomicInteger();
+    /** Per physical connection: each statement's prepared name, or null if it couldn't be prepared. */
+    private final Map<PGConnection, Map<String, String>> prepared = new WeakHashMap<>();
+    private final AtomicInteger names = new AtomicInteger();
 
     /**
      * @param allowed the most one statement may read of the queue and task tables
@@ -108,6 +129,11 @@ final class PlanAudit {
     /** How many statements were explained. */
     int audited() {
         return audited.get();
+    }
+
+    /** How many of them were explained as a cached generic plan. */
+    int generic() {
+        return generic.get();
     }
 
     /** One node of a text plan. Its buffers include its children's, subplans included. */
@@ -213,7 +239,7 @@ final class PlanAudit {
                 setters.add(method);
                 values.add(arguments);
             } else if (name.startsWith("execute") && (arguments == null || arguments.length == 0)) {
-                audit(connection, sql, setters, values);
+                audit(connection, sql, setters, values, statement.unwrap(PGStatement.class).getPrepareThreshold() == 0);
             }
             try {
                 return method.invoke(statement, arguments);
@@ -223,15 +249,45 @@ final class PlanAudit {
         });
     }
 
-    private void audit(Connection connection, String sql, List<Method> setters, List<Object[]> values) throws SQLException {
+    private void audit(Connection connection, String sql, List<Method> setters, List<Object[]> values, boolean custom) throws SQLException {
         String text = sql.strip();
         if (connection.getAutoCommit() || text.startsWith("SELECT set_config") || exempt.stream().anyMatch(text::startsWith)) {
             return;
         }
         Savepoint savepoint = connection.setSavepoint();
-        StringBuilder plan = new StringBuilder();
-        try (PreparedStatement explain = connection.prepareStatement("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) " + sql)) {
+        String explained = "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ";
+        if (!custom) {
+            String name = prepare(connection, sql, savepoint);
+            if (name == null) {
+                connection.rollback(savepoint);
+                return;
+            }
+            // As literals: an EXECUTE inside EXPLAIN can't take bind parameters. Each is coerced to the
+            // type PREPARE inferred.
+            Map<Integer, String> literals = new HashMap<>();
             for (int index = 0; index < setters.size(); index++) {
+                Object[] arguments = values.get(index);
+                literals.put((Integer) arguments[0], setters.get(index).getName().equals("setNull") ? "NULL" : literal(arguments[1]));
+            }
+            int parameters = literals.keySet().stream().mapToInt(Integer::intValue).max().orElse(0);
+            StringBuilder execute = new StringBuilder("EXECUTE ").append(name);
+            for (int index = 1; index <= parameters; index++) {
+                execute.append(index == 1 ? "(" : ", ").append(literals.getOrDefault(index, "NULL")).append(index == parameters ? ")" : "");
+            }
+            try (PreparedStatement mode = connection.prepareStatement("SET LOCAL plan_cache_mode = force_generic_plan")) {
+                mode.execute();
+            }
+            explained += execute;
+        } else {
+            explained += sql;
+        }
+        // A plan quadratic in the history can run for many minutes; past this it has read too much anyway.
+        try (PreparedStatement timeout = connection.prepareStatement("SET LOCAL statement_timeout = '" + TIMEOUT_SECONDS + "s'")) {
+            timeout.execute();
+        }
+        StringBuilder plan = new StringBuilder();
+        try (PreparedStatement explain = connection.prepareStatement(explained)) {
+            for (int index = 0; custom && index < setters.size(); index++) {
                 setters.get(index).invoke(explain, values.get(index));
             }
             try (ResultSet resultSet = explain.executeQuery()) {
@@ -239,19 +295,83 @@ final class PlanAudit {
                     plan.append(resultSet.getString(1)).append('\n');
                 }
             }
-        } catch (SQLException | ReflectiveOperationException e) {
-            // The statement itself will fail the same way, or a concurrent test raced it; nothing to audit.
+        } catch (SQLException e) {
+            if ("57014".equals(e.getSQLState())) {
+                // Cancelled by the timeout (the statement's own timeouts are the store's business).
+                findings.add(new Finding(new Usage(Long.MAX_VALUE, Long.MAX_VALUE), sql, "(explaining it took over " + TIMEOUT_SECONDS + " s)"));
+            }
+            // Otherwise the statement itself will fail the same way, or a concurrent test raced it; nothing to audit.
+            plan.setLength(0);
+        } catch (ReflectiveOperationException e) {
             plan.setLength(0);
         } finally {
             connection.rollback(savepoint);
         }
         if (!plan.isEmpty()) {
             audited.incrementAndGet();
+            if (!custom) {
+                generic.incrementAndGet();
+            }
             Usage usage = usage(plan.toString());
             if (allowed.exceededBy(usage)) {
                 findings.add(new Finding(usage, sql, plan.toString()));
             }
         }
+    }
+
+    /**
+     * The statement's prepared name on this physical connection, prepared on first sight, or null if
+     * it can't be prepared without the driver's parameter types. Inside the savepoint, which a failed
+     * PREPARE leaves to be rolled back; a prepared statement itself outlives the transaction.
+     */
+    private @Nullable String prepare(Connection connection, String sql, Savepoint savepoint) throws SQLException {
+        PGConnection physical = connection.unwrap(PGConnection.class);
+        Map<String, String> statements;
+        synchronized (prepared) {
+            statements = prepared.computeIfAbsent(physical, key -> new HashMap<>());
+        }
+        if (statements.containsKey(sql)) {
+            return statements.get(sql);
+        }
+        String name = "pgtasks_audit_" + names.incrementAndGet();
+        try (PreparedStatement prepare = connection.prepareStatement("PREPARE " + name + " AS " + numbered(sql))) {
+            prepare.execute();
+        } catch (SQLException e) {
+            connection.rollback(savepoint);
+            name = null;
+        }
+        statements.put(sql, name);
+        return name;
+    }
+
+    private static String literal(@Nullable Object value) throws SQLException {
+        if (value == null) {
+            return "NULL";
+        }
+        String text = value instanceof java.sql.Array array ? array.toString() : value.toString();
+        return value instanceof Number || value instanceof Boolean ? text : "'" + text.replace("'", "''") + "'";
+    }
+
+    /** JDBC's ? placeholders as $1, $2 and so on, outside quotes. */
+    static String numbered(String sql) {
+        StringBuilder result = new StringBuilder(sql.length() + 16);
+        int parameter = 0;
+        char quote = 0;
+        for (int index = 0; index < sql.length(); index++) {
+            char character = sql.charAt(index);
+            if (quote != 0) {
+                if (character == quote) {
+                    quote = 0;
+                }
+            } else if (character == '\'' || character == '"') {
+                quote = character;
+            } else if (character == '?') {
+                result.append('$').append(++parameter);
+                continue;
+            }
+            result.append(character);
+        }
+        return result.toString();
     }
 
     @FunctionalInterface

@@ -98,6 +98,17 @@ public final class PostgresTaskStore implements TaskStore {
         // commit is still found), the per-identifier check in claims is fenced (pollSql), and a
         // claim pins its plan (claimPlanning). ClaimPlanTest drains a burst on a queue analyzed
         // while empty.
+        // Task rows are found the same way whatever the topic's history: by "t.id = ANY (array)",
+        // one primary key lookup per id, with no topic condition next to it. With one, a planner
+        // without statistics walked task_completed_idx by topic and matched the ids in a filter,
+        // reading the topic's whole history on every completion (NOTIFY benchmark). A history
+        // lookup by identifier binds both columns of task_identifier_idx, and compares the outcome
+        // as text so task_completed_idx (topic_id, outcome) can't look narrower. It takes the topic
+        // from a subquery, so the planner estimates an average topic's share of the history: given
+        // the value, statistics analyzed before the topic had history say it has none, and walking
+        // task_completed_idx by topic alone looked as cheap as looking up each identifier. No statement
+        // runs on a cached generic plan (NamedSql). CompletionPlanTest finishes tasks every way
+        // next to 50,000 finished tasks of the same topic.
         createTopic = sql("SELECT pgtasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
         listTopics = sql("SELECT id, name, paused FROM pgtasks.topic ORDER BY id");
@@ -128,12 +139,15 @@ public final class PostgresTaskStore implements TaskStore {
                 refilled_at = greatest(refilled_at, clock_timestamp())
             WHERE name = :name
             """);
+        // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
+        // most often: a producer may push one task per transaction. The others look up older tasks.
         for (Insertion insertion : Insertion.values()) {
-            pushes.put(insertion, sql(pushSql(insertion, WakeUp.AT_COMMIT)));
-            pushesWokenByCaller.put(insertion, sql(pushSql(insertion, WakeUp.BY_CALLER)));
+            NamedSql atCommit = sql(pushSql(insertion, WakeUp.AT_COMMIT)), byCaller = sql(pushSql(insertion, WakeUp.BY_CALLER));
+            pushes.put(insertion, insertion == Insertion.APPEND ? atCommit.withGenericPlans() : atCommit);
+            pushesWokenByCaller.put(insertion, insertion == Insertion.APPEND ? byCaller.withGenericPlans() : byCaller);
         }
         for (Ordering ordering : Ordering.values()) {
-            polls.put(ordering, sql(pollSql(ordering)).withCustomPlans());
+            polls.put(ordering, sql(pollSql(ordering)));
         }
         // A claim has one right plan: walk queue_ready_idx in order, look up each candidate's
         // identifier, update the picked rows by ctid, read their payloads by primary key. While
@@ -169,7 +183,8 @@ public final class PostgresTaskStore implements TaskStore {
                 attempts = done.attempt,
                 completed_at = now()
             FROM done
-            WHERE t.topic_id = :topic::integer AND t.id = done.task_id
+            WHERE t.id = ANY (ARRAY(SELECT task_id FROM done))
+              AND t.id = done.task_id
             RETURNING t.id
             """);
         // Non-counted waits (suspended, later, throttled) give the attempt back. That is safe for
@@ -204,7 +219,8 @@ public final class PostgresTaskStore implements TaskStore {
                 UPDATE pgtasks.task t
                 SET error = d.error::jsonb, attempts = m.attempt
                 FROM moved m JOIN d ON d.task_id = m.task_id
-                WHERE t.topic_id = :topic::integer AND t.id = m.task_id AND d.error IS NOT NULL
+                WHERE t.id = ANY (ARRAY(SELECT task_id FROM moved))
+                  AND t.id = m.task_id AND d.error IS NOT NULL
             ),
             -- Only counted attempts are logged, so an outage of uncounted failures doesn't grow the log.
             logged AS (
@@ -274,7 +290,8 @@ public final class PostgresTaskStore implements TaskStore {
                         ELSE 'Expired: the node running it stopped' END, 'type', 'expired'),
                     attempts = r.attempt
                 FROM requeued r
-                WHERE t.id = r.task_id AND t.topic_id = r.topic_id
+                WHERE t.id = ANY (ARRAY(SELECT task_id FROM requeued))
+                  AND t.id = r.task_id
             ),
             logged AS (
                 INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
@@ -343,7 +360,8 @@ public final class PostgresTaskStore implements TaskStore {
             UPDATE pgtasks.task t
             SET outcome = 'failed', attempts = gone.attempt, completed_at = now()
             FROM gone
-            WHERE t.topic_id = :topic::integer AND t.id = gone.task_id
+            WHERE t.id = ANY (ARRAY(SELECT task_id FROM gone))
+              AND t.id = gone.task_id
             RETURNING t.id
             """);
         // The topic's rows become exactly the given ones. An unchanged cron and zone keep the next run.
@@ -449,8 +467,7 @@ public final class PostgresTaskStore implements TaskStore {
                 WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
-            USING doomed
-            WHERE t.topic_id = :topic::integer AND t.id = doomed.id
+            WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
             """);
         // One range of task_completed_idx too: every finished task of the topic. An unfinished one
         // stays, held by its queue row.
@@ -466,8 +483,7 @@ public final class PostgresTaskStore implements TaskStore {
                 WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
-            USING doomed
-            WHERE t.topic_id = :topic::integer AND t.id = doomed.id
+            WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
             """);
         // A push's foreign key check takes a share lock on the topic row, so this waits for
         // pushes in flight and makes later ones wait, then fail, once the row is gone.
@@ -625,7 +641,7 @@ public final class PostgresTaskStore implements TaskStore {
                 ),
                 superseded_tasks AS (
                     UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
-                    WHERE t.topic_id = :topic::integer AND t.id IN (SELECT task_id FROM superseded)
+                    WHERE t.id = ANY (ARRAY(SELECT task_id FROM superseded))
                 )
                 """;
             case REPLACE -> """
@@ -644,17 +660,16 @@ public final class PostgresTaskStore implements TaskStore {
                 ),
                 replaced_open AS (
                     UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
-                    WHERE t.topic_id = :topic::integer AND t.id IN (SELECT task_id FROM replaced)
+                    WHERE t.id = ANY (ARRAY(SELECT task_id FROM replaced))
                 ),
                 replaced_done AS (
                     UPDATE pgtasks.task t SET previous_outcome = t.outcome, outcome = 'redundant'
-                    WHERE t.topic_id = :topic::integer
-                      AND t.id IN (
+                    WHERE t.id = ANY (ARRAY(
                         SELECT d.id FROM pgtasks.task d
-                        WHERE d.topic_id = :topic::integer
-                          AND d.identifier IN (SELECT identifier FROM queued)
-                          AND d.outcome IN ('succeeded', 'filtered', 'failed')
-                        FOR UPDATE OF d SKIP LOCKED)
+                        WHERE d.topic_id = (SELECT :topic::integer)
+                          AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
+                          AND d.outcome::text IN ('succeeded', 'filtered', 'failed')
+                        FOR UPDATE OF d SKIP LOCKED))
                 )
                 """;
             case DELETE -> """
@@ -673,11 +688,10 @@ public final class PostgresTaskStore implements TaskStore {
                 ),
                 deleted_tasks AS (
                     DELETE FROM pgtasks.task t
-                    WHERE t.topic_id = :topic::integer
-                      AND t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
+                    WHERE t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
                           SELECT d.id FROM pgtasks.task d
-                          WHERE d.topic_id = :topic::integer
-                            AND d.identifier IN (SELECT identifier FROM queued)
+                          WHERE d.topic_id = (SELECT :topic::integer)
+                            AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                             AND d.outcome IS NOT NULL
                           FOR UPDATE OF d SKIP LOCKED))
                     RETURNING t.id
@@ -743,7 +757,7 @@ public final class PostgresTaskStore implements TaskStore {
                 """;
             case ANY -> """
                 SELECT 1 FROM pgtasks.task t
-                WHERE t.topic_id = :topic::integer AND t.identifier = g.identifier
+                WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
                   AND (t.outcome IS NULL OR t.outcome <> 'redundant')
                 """;
         };
@@ -822,7 +836,6 @@ public final class PostgresTaskStore implements TaskStore {
                    t.payload, t.payload_type, t.reference, t.parent_id, t.root_id, t.created_at, t.headers::text AS headers
             FROM claimed c
             JOIN pgtasks.task t ON t.id = c.task_id
-            WHERE t.topic_id = :topic::integer
             ORDER BY c.priority DESC, c.task_id
             """;
     }
