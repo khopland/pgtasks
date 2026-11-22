@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -29,8 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A database a released version left behind, with tasks in it, upgraded to the current files: the
- * upgrade must apply, keep every task usable, and leave a schema the store works on. With only
- * V001 there is nothing to upgrade yet; a V002 is covered as soon as it is in {@link TaskSchema#FILES}.
+ * upgrade must apply, keep every task usable, and leave a schema the store works on. Every versioned
+ * file after the release's is covered as soon as it is in {@link TaskSchema#FILES}: V002 adds the
+ * cancelled outcome, which the test uses on an upgraded task.
  *
  * <p>{@code released/<version>} in the test resources holds each release's files as it shipped them.
  * Add a directory, and a seed for it, when a release changes the schema. Refresh 0.1.0's R__ files
@@ -172,8 +174,14 @@ class SchemaUpgradeTest {
             });
             assertThat(store.schedules(transaction)).extracting(schedule -> schedule.name()).containsExactly("nightly");
             assertThat(store.promoteDue(transaction, 100).tasks()).as("the delayed task stays delayed").isZero();
+
+            List<Long> cancelled = store.cancel(transaction, topic, TaskQuery.ALL.withIdentifier("person-8"), 10);
+            assertThat(cancelled).as("V002's outcome works on a task 0.1.0 stored").hasSize(1);
+            assertThat(store.find(transaction, cancelled.getFirst())).hasValueSatisfying(view -> assertThat(view.state()).isEqualTo("cancelled"));
             transaction.commit();
         }
+        assertThat(database.rows("SELECT version, compatible_from FROM pgtasks.meta")).as("0.1.0 nodes may keep running against it")
+            .containsExactly(List.of(TaskSchema.VERSION, 1));
         assertThat(TaskSchema.migrate(database.dataSource()).applied()).as("nothing left to apply").isEmpty();
     }
 

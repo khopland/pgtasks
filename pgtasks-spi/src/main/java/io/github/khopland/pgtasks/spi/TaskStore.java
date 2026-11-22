@@ -25,6 +25,7 @@ import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 
@@ -329,6 +330,27 @@ public interface TaskStore {
     default List<Long> discard(StoreTransaction transaction, int topicId, @Nullable Collection<Long> taskIds, int limit) throws SQLException {
         return discard(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
     }
+
+    /** A topic's unfinished tasks that match the query, in any state, lowest id first. */
+    List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
+     * Takes the matching unfinished tasks out of the queue, lowest ids first: they finish as
+     * cancelled, with the attempts they took. Ready, delayed, retrying, suspended and dead-lettered
+     * tasks are cancelled; active ones are skipped, since a node runs them. Tasks they held back
+     * under an ordering run next.
+     *
+     * @return the cancelled ids
+     */
+    List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
+     * Makes the matching delayed and retrying tasks ready at once, lowest ids first, keeping their
+     * attempts and failures. Tasks in other states are skipped.
+     *
+     * @return the ids made ready
+     */
+    List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
      * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest

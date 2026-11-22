@@ -10,10 +10,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import io.github.khopland.pgtasks.BatchHandler;
+import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
+import io.github.khopland.pgtasks.admin.QueueState;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
@@ -140,6 +144,55 @@ class AdminTest {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Test
+    @DisplayName("Unfinished tasks are found, run now and cancelled; a run time waits, one in the past doesn't")
+    void unfinished_tasks_are_found_run_now_and_cancelled() throws Exception {
+        ManualClock clock = new ManualClock(Instant.parse("2026-11-21T10:00:00Z"));
+        TopicRef<String> next = TopicRef.of("next", String.class);
+        Set<String> ran = ConcurrentHashMap.newKeySet();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore(clock))
+            .configure("work", tasks -> tasks
+                .topic(WORK, batch -> batch.decide(task -> {
+                    ran.add(task.payload());
+                    if (task.payload().equals("chain")) {
+                        task.push(next, Insertion.APPEND, Creation.of("chained", "chained").withRunAt(clock.instant().plus(Duration.ofHours(2))));
+                    }
+                    return Decision.success();
+                }))
+                .topic(next, batch -> batch.decide(task -> {
+                    ran.add(task.payload());
+                    return Decision.success();
+                })))
+            .build()
+            .start();
+        TaskTester tester = TaskTester.of(engine);
+        long tomorrow = engine.tasks().independently().push(WORK, Insertion.APPEND,
+            Creation.of("a", "tomorrow").withRunAt(clock.instant().plus(Duration.ofDays(1)))).id();
+        long later = engine.tasks().independently().push(WORK, Insertion.APPEND, Creation.of("b", "later").withDelay(Duration.ofHours(1))).id();
+        engine.tasks().independently().push(WORK, Insertion.APPEND, Creation.of("c", "overdue").withRunAt(clock.instant().minusSeconds(60)));
+        engine.tasks().independently().push(WORK, "d", "chain");
+        tester.awaitIdle();
+        assertThat(ran).as("a run time in the past runs at once").containsExactlyInAnyOrder("overdue", "chain");
+        assertThat(tester.task(tomorrow).runAt()).isEqualTo(clock.instant().plus(Duration.ofDays(1)));
+
+        assertThat(engine.admin().tasks("work", TaskQuery.ALL, 10)).extracting(TaskView::id).containsExactly(tomorrow, later);
+        assertThat(engine.admin().tasks("next", TaskQuery.ALL.inStates(QueueState.SCHEDULED), 10)).singleElement()
+            .satisfies(task -> assertThat(task.runAt()).as("downstream work keeps its run time").isEqualTo(clock.instant().plus(Duration.ofHours(2))));
+
+        assertThat(engine.admin().runNow("work", List.of(later))).isOne();
+        tester.awaitIdle();
+        assertThat(ran).contains("later");
+
+        assertThat(engine.admin().cancel("work", TaskQuery.ALL.withIdentifier("a"))).isOne();
+        assertThat(engine.admin().cancel("next", TaskQuery.ALL)).isOne();
+        tester.advance(Duration.ofDays(2));
+        tester.awaitIdle();
+        assertThat(ran).doesNotContain("tomorrow", "chained");
+        assertThat(tester.task(tomorrow).state()).isEqualTo(Outcome.CANCELLED.label());
+        assertThat(engine.admin().cancel("work", TaskQuery.ALL)).as("nothing left").isZero();
     }
 
     @Test

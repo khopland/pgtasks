@@ -64,9 +64,10 @@ class SchemaTest {
     void creates_every_table_and_records_its_version(PostgresDatabase database) {
         assertThat(database.count(sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'pgtasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'attempt', 'rate_limit', 'rate_admission', 'schedule', 'topic_count', 'lease', 'meta', 'schema_history')")))
             .isEqualTo(12);
-        assertThat(database.rows(sql("SELECT version, compatible_from FROM pgtasks.meta"))).containsExactly(List.of(1, 1));
+        assertThat(database.rows(sql("SELECT version, compatible_from FROM pgtasks.meta"))).containsExactly(List.of(2, 1));
         assertThat(database.rows(sql("SELECT version, script FROM pgtasks.schema_history ORDER BY installed_rank"))).containsExactly(
             Arrays.asList(1, "V001__tasks_schema.sql"),
+            Arrays.asList(2, "V002__cancelled_outcome.sql"),
             Arrays.asList(null, "R__create_topic.sql"),
             Arrays.asList(null, "R__notify_limit.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
@@ -80,7 +81,7 @@ class SchemaTest {
         assertThat(database.rows(sql("SELECT enum_range(NULL::pgtasks.queue_state)::text")).getFirst().getFirst())
             .isEqualTo("{scheduled,retrying,ready,active,suspended,failed}");
         assertThat(database.rows(sql("SELECT enum_range(NULL::pgtasks.task_outcome)::text")).getFirst().getFirst())
-            .isEqualTo("{succeeded,filtered,failed,redundant,recreated}");
+            .isEqualTo("{succeeded,filtered,failed,redundant,recreated,cancelled}");
         assertThat(database.count(sql("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'pgtasks' AND data_type = 'timestamp without time zone'")))
             .isZero();
     }

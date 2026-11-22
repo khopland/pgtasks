@@ -18,6 +18,7 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.admin.TopicStatus;
@@ -28,8 +29,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks, dead letters
- * and retention. Everything here reads or changes the store directly, so it works on a node that
+ * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
+ * cancelled, run now), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
  * only pushes, and acts on the whole cluster: a topic paused here is paused on every node.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
@@ -239,6 +240,73 @@ public final class TaskAdmin {
         });
     }
 
+    /**
+     * A page of a topic's unfinished tasks that match, in any state, lowest id first: by identifier,
+     * reference, state, a header and when they were pushed. Page with {@link TaskQuery#after}.
+     * Without an identifier, a reference or ids, a search reads the topic's whole backlog, as
+     * counting it does.
+     */
+    public List<TaskView> tasks(String topic, TaskQuery query, int limit) {
+        return Unchecked.call("Searching the tasks of " + topic, () -> {
+            int id = topicId(topic);
+            return EngineCore.transact(store, transaction -> store.tasks(transaction, id, query, limit));
+        });
+    }
+
+    /**
+     * Cancels these unfinished tasks: see {@link #cancel(String, TaskQuery)}. Ids that aren't
+     * unfinished tasks of the topic, or are active, are skipped.
+     *
+     * @return how many were cancelled
+     */
+    public int cancel(String topic, Collection<Long> taskIds) {
+        return cancel(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
+    }
+
+    /**
+     * Takes the matching unfinished tasks out of the queue; {@link TaskQuery#ALL} for every one.
+     * They finish as {@link Outcome#CANCELLED}, with the attempts they took, kept as long as the
+     * topic's retention for cancelled tasks says, and never run. Ready, delayed, retrying,
+     * suspended and dead-lettered tasks are cancelled, and tasks they held back under an ordering
+     * run next. An active task is skipped and runs to its end: its node can't be stopped, so
+     * marking it cancelled would only make the record disagree with what its handler did.
+     *
+     * @return how many were cancelled
+     */
+    public int cancel(String topic, TaskQuery query) {
+        return Unchecked.call("Cancelling tasks of " + topic, () -> {
+            int id = topicId(topic);
+            int cancelled = inBatches(query, (transaction, batch, limit) -> store.cancel(transaction, id, batch, limit));
+            if (cancelled > 0) {
+                LOGGER.info("Cancelled {} task(s) of {}", cancelled, topic);
+                engine.wake(topic);
+            }
+            return cancelled;
+        });
+    }
+
+    /** Makes these delayed or retrying tasks ready now: see {@link #runNow(String, TaskQuery)}. */
+    public int runNow(String topic, Collection<Long> taskIds) {
+        return runNow(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
+    }
+
+    /**
+     * Makes the matching delayed and retrying tasks ready at once, keeping their attempts and
+     * failures, so a further failure backs off as it would have. Tasks in other states are skipped.
+     *
+     * @return how many were made ready
+     */
+    public int runNow(String topic, TaskQuery query) {
+        return Unchecked.call("Running tasks of " + topic + " now", () -> {
+            int id = topicId(topic);
+            int ready = inBatches(query, (transaction, batch, limit) -> store.runNow(transaction, id, batch, limit));
+            if (ready > 0) {
+                engine.wake(topic);
+            }
+            return ready;
+        });
+    }
+
     /** Deletes a topic's finished tasks with an outcome that finished before a time, as retention does. Returns how many. */
     public long purge(String topic, Outcome outcome, Instant finishedBefore) {
         return Unchecked.call("Purging " + topic, () -> {
@@ -257,6 +325,30 @@ public final class TaskAdmin {
     @FunctionalInterface
     private interface DeadLetterWork {
         List<Long> apply(StoreTransaction transaction, DeadLetterQuery query, int limit) throws Exception;
+    }
+
+    @FunctionalInterface
+    private interface TaskWork {
+        List<Long> apply(StoreTransaction transaction, TaskQuery query, int limit) throws Exception;
+    }
+
+    /** As for dead letters: given ids in one transaction, otherwise a batch per transaction. */
+    private int inBatches(TaskQuery query, TaskWork work) throws Exception {
+        Collection<Long> ids = query.taskIds();
+        if (ids != null) {
+            return ids.isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, ids.size())).size();
+        }
+        int total = 0;
+        TaskQuery next = query;
+        while (true) {
+            TaskQuery batch = next;
+            List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
+            total += done.size();
+            if (done.size() < BATCH) {
+                return total;
+            }
+            next = batch.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
+        }
     }
 
     /**
