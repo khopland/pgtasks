@@ -317,6 +317,14 @@ for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.re
 Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
 backlog after downtime can't hold up housekeeping.
 
+If retention empties `pgtasks.task` and Postgres analyzes it before vacuum gives its pages back,
+the statistics say the table has pages but no rows. Until the next analyze, the planner can then
+read every task for a claim or a completion. So the engine checks at start and with each count
+snapshot (every minute on the leader), and runs `ANALYZE pgtasks.task` when the statistics say
+empty and a row exists. The role the application connects as needs to own the table for that;
+otherwise Postgres skips it with a warning and autovacuum repairs the statistics after about 50
+new tasks.
+
 ## Connections
 
 Each node uses the application's `DataSource`:

@@ -64,7 +64,7 @@ class PlanAuditTest {
 
     @Test
     void flags_a_statement_that_reads_the_ballast() throws Exception {
-        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA);
+        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA, false);
         try (drained; Connection connection = drained.dataSource().getConnection()) {
             connection.setAutoCommit(false);
             // No index on lower(identifier): every plan reads the whole queue.
@@ -82,7 +82,7 @@ class PlanAuditTest {
      */
     @Test
     void flags_an_index_walk_over_the_ballast_before_postgres_18() throws Exception {
-        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA);
+        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA, false);
         try (drained; Connection connection = drained.dataSource().getConnection()) {
             connection.setAutoCommit(false);
             assertThat(countIdentifier(connection, "identifier")).isEqualTo(10);

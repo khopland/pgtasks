@@ -59,28 +59,40 @@ final class DrainedQueue implements AutoCloseable {
 
     private final PostgresDatabase database;
     private final String schema;
+    private final boolean tasksEmptied;
     private final PlanAudit audit;
 
-    private DrainedQueue(PostgresDatabase database, String schema) {
+    private DrainedQueue(PostgresDatabase database, String schema, boolean tasksEmptied) {
         this.database = database;
         this.schema = schema;
+        this.tasksEmptied = tasksEmptied;
         this.audit = new PlanAudit(database.dataSource(), ALLOWED, READS_EVERYTHING.stream().map(sql -> TaskSchema.qualify(sql, schema)).toList());
     }
 
     /**
      * A database of its own with the drained queue in the given schema, copied from a template built
      * once per JVM and schema: building the ballast takes over a second, a copy a fraction of that.
+     *
+     * <p>With {@code tasksEmptied}, the burst's tasks are deleted too before both tables are
+     * analyzed, so the task table's statistics also say it is empty while history and ballast sit
+     * in it: a new installation's first analyze, or one after retention purged every finished task.
      */
-    static DrainedQueue create(String schema) {
-        DrainedQueue drained = new DrainedQueue(TestPostgres.createDatabase("drained-queue-" + schema, database -> build(database, schema)), schema);
+    static DrainedQueue create(String schema, boolean tasksEmptied) {
+        String template = (tasksEmptied ? "emptied-tables-" : "drained-queue-") + schema;
+        DrainedQueue drained = new DrainedQueue(TestPostgres.createDatabase(template, database -> build(database, schema, tasksEmptied)), schema,
+            tasksEmptied);
         assertThat(drained.database.count(TaskSchema.qualify("SELECT reltuples::bigint FROM pg_class WHERE oid = 'pgtasks.queue'::regclass", schema)))
             .as("the queue's statistics say it is empty").isLessThanOrEqualTo(0);
+        if (tasksEmptied) {
+            assertThat(drained.database.count(TaskSchema.qualify("SELECT reltuples::bigint FROM pg_class WHERE oid = 'pgtasks.task'::regclass", schema)))
+                .as("the task table's statistics say it is empty").isZero();
+        }
         assertThat(drained.database.count("SELECT count(*) FROM pg_namespace WHERE nspname IN ('pgtasks', '" + schema + "')"))
             .as("only the " + schema + " schema exists, so a statement that ignores the configured name fails").isOne();
         return drained;
     }
 
-    private static void build(PostgresDatabase database, String schema) throws SQLException {
+    private static void build(PostgresDatabase database, String schema, boolean tasksEmptied) throws SQLException {
         TaskSchema.migrate(database.dataSource(), schema);
         execute(database, schema, "SELECT pgtasks.create_topic('" + BALLAST_TOPIC + "')");
         // A burst that came and went: the queue keeps its pages, and the analyze finds no live row.
@@ -97,6 +109,11 @@ final class DrainedQueue implements AutoCloseable {
         execute(database, schema, "DELETE FROM pgtasks.queue");
         execute(database, schema, "ANALYZE pgtasks.queue");
         execute(database, schema, "ALTER TABLE pgtasks.queue SET (autovacuum_enabled = false)");
+        if (tasksEmptied) {
+            execute(database, schema, "DELETE FROM pgtasks.task");
+            execute(database, schema, "ANALYZE pgtasks.task");
+            execute(database, schema, "ALTER TABLE pgtasks.task SET (autovacuum_enabled = false)");
+        }
         // Live ballast the statistics don't know about. None of it active: TCK tests expire other
         // nodes' claims and would requeue it.
         execute(database, schema, """
@@ -153,7 +170,8 @@ final class DrainedQueue implements AutoCloseable {
     void check() {
         assertThat(audit.audited()).as("statements audited").isPositive();
         assertThat(audit.findings())
-            .as("statements that read more than " + ALLOWED + " while the queue's statistics said it was empty")
+            .as("statements that read more than " + ALLOWED + " while the " + (tasksEmptied ? "queue's and task table's" : "queue's")
+                + " statistics said it was empty")
             .isEmpty();
     }
 
