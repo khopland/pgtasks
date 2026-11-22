@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p run
-JAR=target/order-service-1.0.0.jar
+JAR=${JAR:-target/order-service-1.0.0.jar}
 command=${1:?start|stop|kill|status}
 n=${2:-}
 pidfile() { echo "run/app-$1.pid"; }

@@ -61,6 +61,7 @@ class ShippingTasks {
                         if (!reservations.reserved(id)) {
                             return Decision.later(Duration.ofSeconds(5));   // the stock step hasn't run yet
                         }
+                        staged.touchesStock(work.task(), id);
                         staged.add(work.task(), RELEASE, id);
                         staged.add(work.task(), "UPDATE orders SET status = 'CANCELLED', updated_at = now() WHERE id = ?", id);
                         work.push(NOTIFY, Insertion.APPEND, Creation.of(request.customerId(), new Notice(id, request.customerId(), "declined"))

@@ -37,6 +37,7 @@ class StockTasks {
             return batch.decide(work -> {
                 OrderRef order = Objects.requireNonNull(work.payload());
                 String id = order.orderId();
+                staged.touchesStock(work.task(), id);
                 staged.add(work.task(), RESERVE, id);
                 staged.add(work.task(), "UPDATE orders SET reserved_at = now(), updated_at = now() WHERE id = ?", id);
                 work.push(SHIP, reservedMarker(id), new ShipRequest(id, order.customerId(), Step.RESERVED));
