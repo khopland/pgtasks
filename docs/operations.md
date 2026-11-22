@@ -102,6 +102,73 @@ DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVI
 and after stop. Its details show leadership, notifications, claims stuck past their deadline and
 open breakers, without changing the status.
 
+## Dashboard
+
+![The dashboard's overview](dashboard.png)
+
+A web page over the tasks endpoint, for Spring MVC applications with Actuator. It's in the starter,
+off by default:
+
+```yaml
+pgtasks:
+  dashboard:
+    enabled: true
+    path: /pgtasks          # the default
+management:
+  endpoints.web.exposure.include: health,tasks
+```
+
+Then open `http://<host>/pgtasks/`. It shows:
+
+- **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
+  task, failing tasks and dead letters, whether this node's breaker is open, and paused or running.
+  Every registered node with its heartbeat (marked late after the lease term) and what it leads,
+  and the rate limits.
+- **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
+  list of dead letters to revive or discard by id (or all of them), the topic's effective settings
+  and where each came from, its recurring tasks, pause and resume, purge and delete.
+- **Task**: look one up by id in the header, with its attempts and errors.
+- **Limits**: override a rate, a burst or both, for a while or with no end, and reset. A change
+  sends the version the page loaded; if someone else changed the limit meanwhile, the page says so
+  and shows the current values instead of overwriting them.
+
+Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
+(discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
+"Live" refreshes the page every 10 seconds.
+
+**Security.** The page holds no data and has no server logic of its own: it reads and changes
+everything through `/actuator/tasks`, so it has exactly the endpoint's security, and shows
+payloads, outputs and error messages only as far as `management.endpoint.tasks.show-values`
+allows. Secure the dashboard's path like the endpoint, since its pages show the same things. It
+renders all data as text, never as HTML, and every response carries a Content-Security-Policy that
+allows only its own scripts and styles and no framing. It works offline: no CDN, no fonts.
+
+With Spring Security, the page's changes are POST and DELETE requests to the endpoint, so they
+need a CSRF token. The page gets it from `<path>/config.json`, which reads Spring Security's token
+for the request and hands it to the page; the page sends it in the header Spring Security names
+(`X-CSRF-TOKEN` by default). This needs no configuration, as long as the dashboard's path goes
+through the same security filter chain, with CSRF on, as the endpoint. With
+`CookieCsrfTokenRepository` the page also falls back to sending the `XSRF-TOKEN` cookie as
+`X-XSRF-TOKEN`. If you turned CSRF off for `/actuator/**`, nothing is needed either. For example:
+
+```java
+@Bean
+SecurityFilterChain security(HttpSecurity http) throws Exception {
+    return http
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/pgtasks/**", "/actuator/tasks/**").hasRole("OPS")
+            .anyRequest().authenticated())
+        .formLogin(Customizer.withDefaults())
+        .build();
+}
+```
+
+The page finds the endpoint at `<context path><management base path>/tasks`. When Actuator runs on
+its own port (`management.server.port`), or a proxy rewrites paths, set
+`pgtasks.dashboard.endpoint` to the URL the browser should call (a different origin also needs
+CORS on the management server, with credentials). If the endpoint isn't exposed, the page says so.
+WebFlux applications aren't supported.
+
 ## Metrics and alerts
 
 With Micrometer (Spring Boot Actuator sets it up), the engine records:

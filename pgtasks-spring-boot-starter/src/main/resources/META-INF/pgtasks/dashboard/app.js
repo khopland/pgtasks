@@ -389,7 +389,7 @@ async function render(options) {
       return;
     }
     const scroll = window.scrollY;
-    main().replaceChildren(...[view].flat());
+    main().replaceChildren(add(document.createDocumentFragment(), [view]));
     if (quiet) {
       window.scrollTo(0, scroll);
     } else {
@@ -538,12 +538,15 @@ async function editLimit(name) {
     const burst = h("input", { name: "burst", type: "number", min: "1", step: "1", placeholder: limit.configured ? String(limit.configured.burst) : "" });
     const until = h("select", { name: "until" }, UNTIL.map(([val, text]) => h("option", { value: val }, text)));
     const current = h("p", { class: "muted" });
-    const show = () => {
+    const show = fill => {
       current.replaceChildren("Now ", rateText(limit.effective), " (configured ", rateText(limit.configured), "), version " + limit.version + ".");
+      if (!fill) {
+        return;
+      }
       rate.value = limit.override && limit.override.rate ? limit.override.rate : "";
       burst.value = limit.override && limit.override.burst !== null && limit.override.burst !== undefined ? String(limit.override.burst) : "";
     };
-    show();
+    show(true);
     const submit = h("button", { type: "submit", class: "primary" }, "Override");
     return {
       body: [h("h2", null, "Override " + limit.name), current,
@@ -570,9 +573,10 @@ async function editLimit(name) {
         } catch (e) {
           if (e.status === 409) {
             limit = await api("limit", { limit: limit.name });
-            show();
-            fail("Someone changed this limit since you opened it. These are the current values (version " + limit.version
-              + "): check them and override again.");
+            show(false);
+            fail("Someone changed this limit since you opened it: it is now " + rateText(limit.effective)
+              + (limit.override && limit.override.updatedBy ? ", by " + limit.override.updatedBy : "")
+              + ". Your values are kept; override again to replace it.");
             return undefined;
           }
           throw e;
@@ -746,7 +750,6 @@ function deadLettersPanel(topic, page, paging) {
     { label: "Identifier", value: letter => h("td", { class: "wrap mono" }, letter.identifier) },
     { label: "Attempts", num: true, value: letter => count(letter.attempt) },
     { label: "Failed first", value: letter => time(letter.firstFailedAt) },
-    { label: "Dead since", value: letter => time(letter.completedAt || letter.runAt) },
     { label: "Error", value: letter => h("td", { class: "wrap mono" }, errorSummary(letter.error)) },
   ], letters, paging.cursors.length > 1 ? "No more dead letters." : "No dead letters.");
   const pager = h("div", { class: "pager" },
