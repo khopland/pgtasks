@@ -5,10 +5,13 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 
 import org.junit.jupiter.api.Test;
 
@@ -121,5 +124,68 @@ public abstract class JunctionTck extends StoreTck {
 
         assertThat(junction(fixture, Junction.Counts.SUSPENDED, List.of(Set.of("a", "b")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
+    }
+
+    /**
+     * Two parts of one group complete at the same time, each in its own transaction, as two
+     * nodes' completions do: each pushes its part and checks the group before the other commits.
+     * One of them must see the other's part, or the group stays suspended for good.
+     */
+    @Test
+    void parts_completing_concurrently_still_release_the_group() throws Exception {
+        StoreFixture fixture = setUp();
+        long merge = parked(fixture, topic, "order");
+        Set<String> group = Set.of("order", "paid", "reserved");
+
+        Set<String> first;
+        CompletableFuture<Set<String>> second;
+        try (StoreTransaction payment = fixture.store().begin()) {
+            fixture.store().push(payment, topic, Insertion.APPEND, List.of(task("paid")));
+            first = fixture.store().junction(payment, topic, Junction.Counts.ANY, List.of(group));
+            // The other part's completion, on another connection, while this one is still open.
+            second = CompletableFuture.supplyAsync(() -> {
+                try (StoreTransaction stock = fixture.store().begin()) {
+                    fixture.store().push(stock, topic, Insertion.APPEND, List.of(task("reserved")));
+                    Set<String> released = fixture.store().junction(stock, topic, Junction.Counts.ANY, List.of(group));
+                    stock.commit();
+                    return released;
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            Thread.sleep(300);      // let the other part get as far as it can
+            payment.commit();
+        }
+
+        assertThat(first).as("the second part isn't there yet").isEmpty();
+        assertThat(second.get(10, TimeUnit.SECONDS)).as("released by the part that completed last").containsExactly("order");
+        assertThat(fixture.state(merge)).isEqualTo("ready");
+    }
+
+    @Test
+    void suspended_parts_completing_concurrently_still_release_the_group() throws Exception {
+        StoreFixture fixture = setUp();
+        Set<String> group = Set.of("left", "right");
+
+        CompletableFuture<Set<String>> second;
+        try (StoreTransaction left = fixture.store().begin()) {
+            fixture.store().push(left, topic, Insertion.APPEND, List.of(suspended("left")));
+            assertThat(fixture.store().junction(left, topic, Junction.Counts.SUSPENDED, List.of(group))).isEmpty();
+            second = CompletableFuture.supplyAsync(() -> {
+                try (StoreTransaction right = fixture.store().begin()) {
+                    fixture.store().push(right, topic, Insertion.APPEND, List.of(suspended("right")));
+                    Set<String> released = fixture.store().junction(right, topic, Junction.Counts.SUSPENDED, List.of(group));
+                    right.commit();
+                    return released;
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            Thread.sleep(300);
+            left.commit();
+        }
+
+        assertThat(second.get(10, TimeUnit.SECONDS)).containsExactlyInAnyOrder("left", "right");
+        assertThat(fixture.counts(topic).suspended()).isZero();
     }
 }
