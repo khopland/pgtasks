@@ -36,7 +36,7 @@ class PlanAuditTest {
 
     @Test
     void flags_a_statement_that_reads_the_ballast() throws Exception {
-        DrainedQueue drained = DrainedQueue.create();
+        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA);
         try (drained; Connection connection = drained.dataSource().getConnection()) {
             connection.setAutoCommit(false);
             // No topic: it can't use queue_identifier_idx to find one identifier's tasks.

@@ -49,8 +49,13 @@ record SchemaScript(String name, @Nullable Integer version, String description, 
         return version;
     }
 
-    List<String> statements() {
-        return SqlStatements.split(content);
+    /** The file's content with the schema placeholder filled in; the checksum is the file's own, whatever the name. */
+    String content(String schema) {
+        return TaskSchema.render(content, schema);
+    }
+
+    List<String> statements(String schema) {
+        return SqlStatements.split(content(schema));
     }
 
     /** The marker counts only in the leading comment lines, before the first statement. */

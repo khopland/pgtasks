@@ -79,7 +79,7 @@ public class TaskAutoConfiguration {
             if (dataSource == null) {
                 throw new IllegalStateException(NO_DATA_SOURCE);
             }
-            builder.dataSource(dataSource).schemaMode(properties.schemaMode()).transactions(new SpringTransactions(dataSource));
+            builder.dataSource(dataSource).schemaMode(properties.schemaMode()).schema(properties.schema()).transactions(new SpringTransactions(dataSource));
         }
         Map<String, TaskConfigurer> configurers = beansOfType(beans, TaskConfigurer.class);
         Map<String, String> modules = ModuleNames.of(beans, List.copyOf(configurers.keySet()));

@@ -116,6 +116,15 @@ public final class TaskEngineBuilder {
         return this;
     }
 
+    /**
+     * The Postgres schema the tasks live in, {@code tasks} by default: a plain lowercase identifier.
+     * Applications that share a database each use their own; their notifications stay apart too.
+     */
+    public TaskEngineBuilder schema(String schema) {
+        storeOptions.put("schema", Objects.requireNonNull(schema, "schema"));
+        return this;
+    }
+
     public TaskEngineBuilder configure(TaskConfigurer configurer) {
         return configure(nameOf(configurer), configurer);
     }

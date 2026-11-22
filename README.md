@@ -64,7 +64,7 @@ Import the BOM, then add modules without versions:
 ## Quick start with Spring Boot
 
 Add `pgtasks-spring-boot-starter` and use the application's Postgres `DataSource`. The `tasks`
-schema is created on startup.
+schema is created on startup; `pgtasks.schema` names another.
 
 ```java
 public final class AssessmentTopics {

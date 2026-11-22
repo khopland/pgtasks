@@ -133,6 +133,22 @@ class TaskAutoConfigurationTest {
     }
 
     @Test
+    void the_schema_property_names_the_schema_and_its_notifications() {
+        postgres().withUserConfiguration(Modules.class)
+            .withPropertyValues("pgtasks.schema=shop_tasks", "pgtasks.topics.notify.poll-interval=1h")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
+                EngineFixture.await("woken through shop_tasks_ready, not by polling", Duration.ofSeconds(5),
+                    () -> context.getBean(Modules.class).handled.contains("hello"));
+                assertThat(database.rows("SELECT payload FROM shop_tasks.task")).containsExactly(List.of("hello"));
+                assertThat(database.count("SELECT count(*) FROM pg_namespace WHERE nspname = 'tasks'")).isZero();
+            });
+        postgres().withUserConfiguration(Modules.class).withPropertyValues("pgtasks.schema=Shop-Tasks").run(context ->
+            assertThat(context).hasFailed().getFailure().rootCause().hasMessageContaining("Not a valid schema name for pgtasks: 'Shop-Tasks'"));
+    }
+
+    @Test
     void an_override_for_a_topic_no_configurer_defines_fails_startup() {
         postgres().withUserConfiguration(Modules.class).withPropertyValues("pgtasks.topics.asessment.concurrency=3").run(context ->
             assertThat(context).hasFailed().getFailure().rootCause().hasMessageContaining("topics.asessment.concurrency names an unknown topic"));

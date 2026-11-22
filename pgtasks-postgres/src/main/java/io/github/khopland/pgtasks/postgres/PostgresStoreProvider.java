@@ -25,7 +25,8 @@ public final class PostgresStoreProvider implements StoreProvider {
     @Override
     public TaskStore create(DataSource dataSource, Map<String, String> options) {
         String mode = options.getOrDefault("schema-mode", "migrate");
-        return new PostgresTaskStore(dataSource, SchemaMode.valueOf(mode.toUpperCase(Locale.ROOT).replace('-', '_')));
+        String schema = options.getOrDefault("schema", TaskSchema.DEFAULT_SCHEMA);
+        return new PostgresTaskStore(dataSource, SchemaMode.valueOf(mode.toUpperCase(Locale.ROOT).replace('-', '_')), schema);
     }
 
     @Override

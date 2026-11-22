@@ -9,33 +9,41 @@
   repeatable files run again when they change (runOnChange). A file whose header carries the
   task:no-transaction marker gets runInTransaction="false". Each file is sent whole, unsplit, the
   way psql runs it, because the repeatable files use dollar quoting.
+
+  The schema is named by the changelog parameter pgtasks_schema, tasks unless you set it. Set it
+  before this changelog is parsed: as a property in your own changelog above the include, or as
+  a changelog parameter (liquibase.parameter.pgtasks_schema, or spring.liquibase.parameters.pgtasks_schema).
+  The changeSet ids carry the name, so two schemas can share one DATABASECHANGELOG table.
 -->
 <databaseChangeLog
     xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <changeSet id="tasks-V001" author="pgtasks">
+    <!-- A default only: a value set earlier, by a parameter or an including changelog, wins. -->
+    <property name="pgtasks_schema" value="tasks"/>
+
+    <changeSet id="${pgtasks_schema}-V001" author="pgtasks">
         <sqlFile path="V001__tasks_schema.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
-    <changeSet id="tasks-R__create_topic" author="pgtasks" runOnChange="true">
+    <changeSet id="${pgtasks_schema}-R__create_topic" author="pgtasks" runOnChange="true">
         <sqlFile path="R__create_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
-    <changeSet id="tasks-R__notify_limit" author="pgtasks" runOnChange="true">
+    <changeSet id="${pgtasks_schema}-R__notify_limit" author="pgtasks" runOnChange="true">
         <sqlFile path="R__notify_limit.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
-    <changeSet id="tasks-R__notify_ready" author="pgtasks" runOnChange="true">
+    <changeSet id="${pgtasks_schema}-R__notify_ready" author="pgtasks" runOnChange="true">
         <sqlFile path="R__notify_ready.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
-    <changeSet id="tasks-R__notify_topic" author="pgtasks" runOnChange="true">
+    <changeSet id="${pgtasks_schema}-R__notify_topic" author="pgtasks" runOnChange="true">
         <sqlFile path="R__notify_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
-    <changeSet id="tasks-R__task_view" author="pgtasks" runOnChange="true">
+    <changeSet id="${pgtasks_schema}-R__task_view" author="pgtasks" runOnChange="true">
         <sqlFile path="R__task_view.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 </databaseChangeLog>

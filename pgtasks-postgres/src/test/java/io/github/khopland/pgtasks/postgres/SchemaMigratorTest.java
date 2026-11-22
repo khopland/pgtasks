@@ -61,7 +61,7 @@ class SchemaMigratorTest {
 
     private static TaskSchema.Status migrate(PostgresDatabase database, List<SchemaScript> scripts) throws SQLException {
         try (Connection connection = database.connect()) {
-            return new SchemaMigrator(scripts).migrate(connection);
+            return new SchemaMigrator(scripts, TaskSchema.DEFAULT_SCHEMA).migrate(connection);
         }
     }
 
@@ -83,7 +83,7 @@ class SchemaMigratorTest {
 
     @Test
     void the_library_version_matches_its_newest_file() {
-        assertThat(new SchemaMigrator(shipped()).latest()).isEqualTo(TaskSchema.VERSION);
+        assertThat(new SchemaMigrator(shipped(), TaskSchema.DEFAULT_SCHEMA).latest()).isEqualTo(TaskSchema.VERSION);
     }
 
     @Test
@@ -96,7 +96,7 @@ class SchemaMigratorTest {
         }
         for (SchemaScript script : shipped()) {
             if (!script.repeatable()) {
-                Pattern marker = Pattern.compile("INSERT INTO tasks\\.meta \\(singleton, version, compatible_from\\) VALUES \\(true, " + script.version() + ", \\d+\\)\\s+"
+                Pattern marker = Pattern.compile("INSERT INTO \\$\\{pgtasks_schema\\}\\.meta \\(singleton, version, compatible_from\\) VALUES \\(true, " + script.version() + ", \\d+\\)\\s+"
                     + "ON CONFLICT \\(singleton\\) DO UPDATE SET [^;]+;\\s*$");
                 assertThat(marker.matcher(script.content()).find()).as(script.name() + " ends by recording its version").isTrue();
             }
@@ -107,7 +107,7 @@ class SchemaMigratorTest {
     @Test
     void the_liquibase_wrapper_lists_every_file_with_matching_flags() throws IOException {
         String changelog = Files.readString(Path.of("src/main/resources", TaskSchema.LIQUIBASE_CHANGELOG));
-        Pattern changeSet = Pattern.compile("<changeSet id=\"tasks-([^\"]+)\" author=\"pgtasks\"([^>]*)>\\s*<sqlFile path=\"([^\"]+)\"([^>]*)/>");
+        Pattern changeSet = Pattern.compile("<changeSet id=\"\\$\\{pgtasks_schema\\}-([^\"]+)\" author=\"pgtasks\"([^>]*)>\\s*<sqlFile path=\"([^\"]+)\"([^>]*)/>");
         var matcher = changeSet.matcher(changelog);
         List<String> listed = new ArrayList<>();
         while (matcher.find()) {
@@ -264,7 +264,7 @@ class SchemaMigratorTest {
         assertThat(TaskSchema.validate(database.dataSource()).version()).isEqualTo(TaskSchema.VERSION);
 
         try (Connection connection = database.connect()) {
-            assertThatThrownBy(() -> TaskSchema.check(TaskSchema.readMeta(connection), NEXT, List.of()))
+            assertThatThrownBy(() -> TaskSchema.check(TaskSchema.DEFAULT_SCHEMA, TaskSchema.readMeta(connection, TaskSchema.DEFAULT_SCHEMA), NEXT, List.of()))
                 .isInstanceOf(TaskSchemaException.class)
                 .hasMessageContaining("is at version " + TaskSchema.VERSION + ", but this library needs version " + NEXT);
         }
@@ -275,7 +275,7 @@ class SchemaMigratorTest {
         // What a DBA pipeline does: run the files in order, with no runner history.
         try (Connection connection = database.connect(); var statement = connection.createStatement()) {
             for (SchemaScript script : shipped()) {
-                statement.execute(script.content());
+                statement.execute(script.content(TaskSchema.DEFAULT_SCHEMA));
             }
         }
         assertThat(TaskSchema.validate(database.dataSource()).version()).isEqualTo(TaskSchema.VERSION);

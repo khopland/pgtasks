@@ -33,6 +33,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param schemaMode      how the Postgres store treats the tasks schema at startup: {@code migrate}
  *                        (the built-in runner), {@code validate} (Flyway, Liquibase or a DBA
  *                        pipeline applies it) or {@code none}, which leaves it to the application
+ * @param schema          the Postgres schema the tasks live in, {@code tasks} by default: a plain
+ *                        lowercase identifier. Applications sharing a database each need their own.
+ *                        With Flyway or Liquibase, pass the same name to them (docs/operations.md)
  * @param node            this node's name in tasks.node; by default {@code spring.application.name}
  * @param notifications   wake workers through LISTEN/NOTIFY; off relies on polling alone
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
@@ -58,6 +61,7 @@ public record TaskProperties(
     @DefaultValue("true") boolean enabled,
     @DefaultValue("postgres") Store store,
     @DefaultValue("migrate") String schemaMode,
+    @DefaultValue("tasks") String schema,
     String node,
     @DefaultValue("true") boolean notifications,
     @DefaultValue("30s") Duration shutdownTimeout,

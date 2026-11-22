@@ -31,17 +31,27 @@ public final class PostgresNotifier implements Notifier {
         Connection open() throws SQLException;
     }
 
-    private static final String READY = "tasks_ready";
-    private static final String LIMIT = "tasks_limit";
-    private static final String TOPIC = "tasks_topic";
-
     private final ConnectionFactory connections;
+    // The schema's channels, so two schemas in one database don't wake each other's nodes.
+    private final String ready;
+    private final String limit;
+    private final String topic;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile @Nullable Thread thread;
     private volatile boolean connected;
 
+    /** Listens to the {@value TaskSchema#DEFAULT_SCHEMA} schema's channels. */
     public PostgresNotifier(ConnectionFactory connections) {
+        this(connections, TaskSchema.DEFAULT_SCHEMA);
+    }
+
+    /** Listens to the given schema's channels: {@code <schema>_ready}, {@code <schema>_limit} and {@code <schema>_topic}. */
+    public PostgresNotifier(ConnectionFactory connections, String schema) {
         this.connections = Objects.requireNonNull(connections);
+        TaskSchema.validName(schema);
+        this.ready = schema + "_ready";
+        this.limit = schema + "_limit";
+        this.topic = schema + "_topic";
     }
 
     @Override
@@ -58,9 +68,9 @@ public final class PostgresNotifier implements Notifier {
         while (running.get()) {
             try (Connection connection = connections.open()) {
                 try (Statement statement = connection.createStatement()) {
-                    statement.execute("LISTEN " + READY);
-                    statement.execute("LISTEN " + LIMIT);
-                    statement.execute("LISTEN " + TOPIC);
+                    statement.execute("LISTEN " + ready);
+                    statement.execute("LISTEN " + limit);
+                    statement.execute("LISTEN " + topic);
                 }
                 connected = true;
                 if (!first) {
@@ -75,11 +85,11 @@ public final class PostgresNotifier implements Notifier {
                         continue;
                     }
                     for (PGNotification notification : notifications) {
-                        if (LIMIT.equals(notification.getName())) {
+                        if (limit.equals(notification.getName())) {
                             listener.limitChanged(notification.getParameter());
                             continue;
                         }
-                        if (TOPIC.equals(notification.getName())) {
+                        if (topic.equals(notification.getName())) {
                             listener.topicChanged(notification.getParameter());
                             continue;
                         }

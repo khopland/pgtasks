@@ -43,7 +43,8 @@ Behaviour that changes:
 
 1. Stop every 1.x node, so nothing claims or completes while you copy.
 2. Apply the `tasks` schema: start a 2.0 engine once with `schema-mode=migrate`, or run
-   `TaskSchema.migrate(dataSource)`, or your Flyway or Liquibase setup.
+   `TaskSchema.migrate(dataSource)`, or your Flyway or Liquibase setup. If the engine uses another
+   schema name (`pgtasks.schema`), pass the same name to `LegacyImport.Options.withSchema(...)`.
 3. Run the import:
 
    ```java

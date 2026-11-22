@@ -45,7 +45,8 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The task store on the {@code tasks} schema (see {@link TaskSchema}). Every operation is one
+ * The task store on the pgtasks schema, {@value TaskSchema#DEFAULT_SCHEMA} unless named otherwise
+ * (see {@link TaskSchema}). Every operation is one
  * statement, except a claim: it first pins its plan with transaction-local planner settings, and
  * under a strict rate limit also reads and charges the limit's token bucket in the same
  * transaction. When an engine starts, the store migrates or
@@ -55,6 +56,7 @@ public final class PostgresTaskStore implements TaskStore {
 
     private final DataSource dataSource;
     private final SchemaMode mode;
+    private final String schema;
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
@@ -70,8 +72,19 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     public PostgresTaskStore(DataSource dataSource, SchemaMode mode) {
+        this(dataSource, mode, TaskSchema.DEFAULT_SCHEMA);
+    }
+
+    /**
+     * @param schema the schema's name, {@value TaskSchema#DEFAULT_SCHEMA} by default; see
+     *               {@link TaskSchema#validName}. Applications that share a database each use their own
+     * @throws IllegalArgumentException if the name isn't a plain lowercase identifier
+     */
+    public PostgresTaskStore(DataSource dataSource, SchemaMode mode, String schema) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.mode = Objects.requireNonNull(mode, "mode");
+        this.schema = TaskSchema.validName(schema);
+        // The SQL below is written for the default schema; sql() qualifies it with this one.
         // The queue's statistics are often those of an empty table: autovacuum tends to analyze
         // it right after a burst drained, and until the next analyze the planner expects no rows
         // at all. Every plan then looks free, and the cheapest-looking one can compare each queued
@@ -394,7 +407,7 @@ public final class PostgresTaskStore implements TaskStore {
             LIMIT :limit::integer
             """);
         // A discarded dead letter may have held back later tasks; no trigger sees a delete.
-        notifyReady = sql("SELECT pg_notify('tasks_ready', :topic::text)");
+        notifyReady = sql("SELECT pg_notify('" + schema + "_ready', :topic::text)");
         countQueue = sql("""
             SELECT count(*) FILTER (WHERE state = 'scheduled'),
                    count(*) FILTER (WHERE state = 'retrying'),
@@ -550,7 +563,7 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public void prepare() throws SQLException {
-        TaskSchema.prepare(dataSource, mode);
+        TaskSchema.prepare(dataSource, mode, schema);
     }
 
     @Override
@@ -568,8 +581,8 @@ public final class PostgresTaskStore implements TaskStore {
         return PostgresTransaction.join(connection);
     }
 
-    private static NamedSql sql(String text) {
-        return NamedSql.parse(text);
+    private NamedSql sql(String text) {
+        return NamedSql.parse(TaskSchema.qualify(text, schema));
     }
 
     private static String pushSql(Insertion insertion) {
@@ -1590,11 +1603,11 @@ public final class PostgresTaskStore implements TaskStore {
     /** LISTEN/NOTIFY on a connection outside the pool when the pool says how; see {@link NotifierConnections}. */
     @Override
     public Notifier notifier() {
-        return new PostgresNotifier(NotifierConnections.of(dataSource));
+        return new PostgresNotifier(NotifierConnections.of(dataSource), schema);
     }
 
     @Override
     public String toString() {
-        return "PostgresTaskStore[" + dataSource + ", " + mode + "]";
+        return "PostgresTaskStore[" + dataSource + ", " + mode + ", " + schema + "]";
     }
 }

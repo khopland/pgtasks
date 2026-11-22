@@ -104,6 +104,21 @@ class LegacyImportTest {
     }
 
     @Test
+    void imports_into_a_schema_named_otherwise(PostgresDatabase database) throws Exception {
+        legacyTable(database);
+        TaskSchema.migrate(database.dataSource(), "billing_tasks");
+
+        LegacyImport.Report report = LegacyImport.run(database.dataSource(), LegacyImport.Options.defaults().withHistory().withSchema("billing_tasks"));
+
+        assertThat(report.total()).isEqualTo(8);
+        assertThat(database.count("SELECT count(*) FROM billing_tasks.task")).isEqualTo(8);
+        assertThat(database.count("SELECT count(*) FROM billing_tasks.queue")).isEqualTo(7);
+        assertThat(database.count("SELECT count(*) FROM tasks.task")).as("the default schema is left alone").isZero();
+        assertThat(LegacyImport.run(database.dataSource(), LegacyImport.Options.defaults().withSchema("billing_tasks")).skipped())
+            .containsExactly("assessment", "notify");
+    }
+
+    @Test
     void topic_names_that_would_clash_stop_the_import_before_anything_is_copied(PostgresDatabase database) throws Exception {
         legacyTable(database);
 

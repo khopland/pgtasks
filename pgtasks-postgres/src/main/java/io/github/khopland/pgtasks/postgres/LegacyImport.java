@@ -17,9 +17,10 @@ import javax.sql.DataSource;
 import io.github.khopland.pgtasks.TopicRef;
 
 /**
- * Copies the tasks of a Task 1.x {@code TASK} table, in the same database, into the tasks
+ * Copies the tasks of a Task 1.x {@code TASK} table, in the same database, into the pgtasks
  * schema: the move from 1.x without losing what is queued. Stop every 1.x node first, apply the
- * tasks schema (start a 2.0 engine once, or {@link TaskSchema#migrate}), then run it once.
+ * schema (start a 2.0 engine once, or {@link TaskSchema#migrate}), then run it once. It imports into
+ * {@value TaskSchema#DEFAULT_SCHEMA} unless {@link Options#withSchema} names another.
  *
  * <pre>{@code
  * LegacyImport.Report report = LegacyImport.run(dataSource, LegacyImport.Options.defaults());
@@ -40,7 +41,7 @@ import io.github.khopland.pgtasks.TopicRef;
  *       {@code OUTPUT}, {@code REFERENCE} and {@code CREATED} come along.</li>
  * </ul>
  *
- * Each topic is copied in one transaction. A topic that already has tasks in the tasks schema is
+ * Each topic is copied in one transaction. A topic that already has tasks in the pgtasks schema is
  * skipped and reported, so running it again does no harm. The 1.x table is only read.
  */
 public final class LegacyImport {
@@ -89,8 +90,9 @@ public final class LegacyImport {
      * @param table       the 1.x table, {@code task} by default, schema-qualified if it isn't on the search path
      * @param history     whether finished tasks are copied too
      * @param topicNames  the topic name for each 1.x topic
+     * @param schema      the pgtasks schema to import into, {@value TaskSchema#DEFAULT_SCHEMA} by default
      */
-    public record Options(String table, boolean history, Function<String, String> topicNames) {
+    public record Options(String table, boolean history, Function<String, String> topicNames, String schema) {
 
         public Options {
             Objects.requireNonNull(table, "table");
@@ -98,24 +100,30 @@ public final class LegacyImport {
             if (!TABLE.matcher(table).matches()) {
                 throw new IllegalArgumentException("Not a table name: '" + table + "'");
             }
+            TaskSchema.validName(schema);
         }
 
-        /** The {@code task} table, unfinished tasks only, topic names lower-cased. */
+        /** The {@code task} table, unfinished tasks only, topic names lower-cased, into the {@value TaskSchema#DEFAULT_SCHEMA} schema. */
         public static Options defaults() {
-            return new Options("task", false, LegacyImport::topicName);
+            return new Options("task", false, LegacyImport::topicName, TaskSchema.DEFAULT_SCHEMA);
         }
 
         public Options withTable(String table) {
-            return new Options(table, history, topicNames);
+            return new Options(table, history, topicNames, schema);
         }
 
         /** Copies finished tasks too, as history. */
         public Options withHistory() {
-            return new Options(table, true, topicNames);
+            return new Options(table, true, topicNames, schema);
         }
 
         public Options withTopicNames(Function<String, String> topicNames) {
-            return new Options(table, history, topicNames);
+            return new Options(table, history, topicNames, schema);
+        }
+
+        /** The pgtasks schema to import into, as the engine's store names it. */
+        public Options withSchema(String schema) {
+            return new Options(table, history, topicNames, schema);
         }
     }
 
@@ -143,13 +151,13 @@ public final class LegacyImport {
         Map<String, String> topics = topics(dataSource, options);
         Map<String, Long> unfinished = new LinkedHashMap<>(), finished = new LinkedHashMap<>();
         List<String> skipped = new ArrayList<>();
-        NamedSql copy = NamedSql.parse(COPY.formatted(options.table()));
+        NamedSql copy = NamedSql.parse(TaskSchema.qualify(COPY, options.schema()).formatted(options.table()));
         for (Map.Entry<String, String> topic : topics.entrySet()) {
             try (Connection connection = dataSource.getConnection()) {
                 connection.setAutoCommit(false);
                 try {
-                    int id = topicId(connection, topic.getValue());
-                    if (hasTasks(connection, id)) {
+                    int id = topicId(connection, options.schema(), topic.getValue());
+                    if (hasTasks(connection, options.schema(), id)) {
                         skipped.add(topic.getValue());
                         connection.rollback();
                         continue;
@@ -202,8 +210,8 @@ public final class LegacyImport {
         return topics;
     }
 
-    private static int topicId(Connection connection, String name) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("SELECT tasks.create_topic(?)")) {
+    private static int topicId(Connection connection, String schema, String name) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT " + schema + ".create_topic(?)")) {
             statement.setString(1, name);
             try (ResultSet result = statement.executeQuery()) {
                 result.next();
@@ -212,8 +220,8 @@ public final class LegacyImport {
         }
     }
 
-    private static boolean hasTasks(Connection connection, int topicId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("SELECT EXISTS (SELECT 1 FROM tasks.task WHERE topic_id = ?)")) {
+    private static boolean hasTasks(Connection connection, String schema, int topicId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT EXISTS (SELECT 1 FROM " + schema + ".task WHERE topic_id = ?)")) {
             statement.setInt(1, topicId);
             try (ResultSet result = statement.executeQuery()) {
                 result.next();
