@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.JdbcTransactions;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
 
@@ -37,40 +38,45 @@ import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 
 /**
- * Does the NOTIFY that a push sends at commit limit how fast the application can commit? Postgres
- * serializes the commits of all transactions that called pg_notify behind one database-wide lock
- * (taken in PreCommit_Notify, held until the commit is flushed), and pgtasks notifies from a
- * trigger inside the application's own transaction. With durability on, that could turn every
- * push into a commit that can't share a WAL flush with others. This benchmark measures it with the
- * real engine and schema, fsync and synchronous commit on, and writes target/notify-results.md.
+ * Does waking workers limit how fast the application can commit, and how fast can pgtasks go?
+ * Postgres serializes the commits of all transactions that called pg_notify behind one
+ * database-wide lock (taken in PreCommit_Notify, held until the commit is flushed). A push the
+ * engine sees commit ({@code tasks.push} in a bound transaction) notifies after the commit, from a
+ * short debounced transaction of the engine's own; a push on an explicit connection
+ * ({@code tasks.on(connection)}) still notifies from the queue's insert trigger, inside the
+ * application's transaction. This benchmark measures both with the real engine and schema, fsync
+ * and synchronous commit on, and writes target/notify-results.md.
  *
- * <p>Three parts, chosen with {@code benchmark.notify} (comma-separated, or {@code all}):
+ * <p>Four parts, chosen with {@code benchmark.notify} (comma-separated, or {@code all}):
  * <ul>
  *   <li>{@code contention}: N producers, each committing transactions that insert one row into an
- *       application table and push one task with {@code tasks.on(connection)}, while one engine
- *       node consumes. Commits/s, commit latency, how many commits shared a WAL flush, and what the
- *       producers' backends waited on, for each {@link Variant} of the wake-up.</li>
+ *       application table and push one task, while one engine node consumes. Commits/s, commit
+ *       latency, how many commits shared a WAL flush, and what the producers' backends waited on,
+ *       for each {@link Variant}.</li>
  *   <li>{@code ceiling}: producers flat out against 1 or 3 engine nodes (separate engines with
- *       separate pools in this JVM), pushing one task or 100 per transaction: what completes per
- *       second, and which side is the limit.</li>
+ *       separate pools in this JVM), pushing one task or 100 per transaction, then paced at 90 % of
+ *       that: what completes per second, and which side is the limit.</li>
+ *   <li>{@code search}: the same shapes, with the offered rate raised step by step until the
+ *       backlog grows; reports the last rate sustained.</li>
  *   <li>{@code latency}: a steady push rate, and the time from a push's commit to its handler
- *       starting, with LISTEN on, with LISTEN off (polling at the default interval), and with the
- *       mitigations.</li>
+ *       starting, pushed on the consuming node or on another one, with LISTEN on and off.</li>
  * </ul>
  *
  * <pre>
- * mvn -Pbenchmark -pl pgtasks-benchmark test -Dtest=NotifyBenchmark -Dbenchmark.notify=all
+ * mvn -Pbenchmark -pl pgtasks-benchmark -am test -Dtest=NotifyBenchmark -Dsurefire.failIfNoSpecifiedTests=false -Dbenchmark.notify=all
  * </pre>
  * Other system properties: {@code benchmark.producers} (default 1,8,32,64,128),
- * {@code benchmark.variants} (default trigger,none,conditional,debounced), {@code benchmark.seconds}
- * (measured seconds per contention and ceiling run, default 15) after {@code benchmark.warmup}
- * (default 3), {@code benchmark.repeats} (contention rounds, default 1), {@code benchmark.consumer} (default true; false runs the producers alone),
- * {@code benchmark.debounce} (the debounced variant's interval, default 10ms),
+ * {@code benchmark.variants} (contention, default after-commit,trigger,none),
+ * {@code benchmark.ceiling-variants} (default after-commit,trigger), {@code benchmark.search-variants}
+ * (default after-commit), {@code benchmark.batches} (batches per node in ceiling and search runs,
+ * default 2,8), {@code benchmark.seconds} (measured seconds per contention, ceiling and search run,
+ * default 15) after {@code benchmark.warmup} (default 3), {@code benchmark.repeats} (contention
+ * rounds, default 1), {@code benchmark.consumer} (default true; false runs the producers alone),
  * {@code benchmark.history} (finished tasks in the topic before each run, default 200000),
  * {@code benchmark.nodes} (default 1,3), {@code benchmark.rates} (latency runs' tasks/s, default
- * 100,1000), {@code benchmark.latency-seconds} (default 30; LISTEN off runs four times as long),
+ * 100,1000), {@code benchmark.latency-seconds} (default 30; poll-only runs four times as long),
  * {@code benchmark.postgres.config} (extra server settings, {@code k=v;k=v}, such as
- * {@code wal_sync_method=fsync_writethrough} for a real flush on macOS) and
+ * {@code wal_sync_method=fsync_writethrough} for a real flush on macOS),
  * {@code benchmark.schema} (default the library's, {@code pgtasks}) and {@code benchmark.data-directory}.
  */
 @EnabledIfSystemProperty(named = "benchmark.notify", matches = ".+")
@@ -81,39 +87,41 @@ class NotifyBenchmark {
     /** The schema the tasks live in, the library's default unless {@code benchmark.schema} says otherwise. */
     private static final String SCHEMA = TaskSchema.validName(System.getProperty("benchmark.schema", TaskSchema.DEFAULT_SCHEMA));
     private static final String PRODUCER = "pgtasks-bench-producer";
+    private static final String INSERT_EVENT = "INSERT INTO app.event (body) VALUES (?)";
 
     private static final List<String> PARTS = list("benchmark.notify", "all");
-    private static final List<Integer> PRODUCERS = list("benchmark.producers", "1,8,32,64,128").stream().map(Integer::parseInt).toList();
-    private static final List<Variant> VARIANTS = list("benchmark.variants", "trigger,none,conditional,debounced").stream()
-        .map(name -> Variant.valueOf(name.toUpperCase(Locale.ROOT))).toList();
+    private static final List<Integer> PRODUCERS = integers("benchmark.producers", "1,8,32,64,128");
+    private static final List<Variant> VARIANTS = variants("benchmark.variants", "after-commit,trigger,none");
+    private static final List<Variant> CEILING_VARIANTS = variants("benchmark.ceiling-variants", "after-commit,trigger");
+    private static final List<Variant> SEARCH_VARIANTS = variants("benchmark.search-variants", "after-commit");
+    private static final List<Integer> BATCHES = integers("benchmark.batches", "2,8");
     private static final Duration WARMUP = Duration.ofSeconds(Long.getLong("benchmark.warmup", 3));
     private static final Duration MEASURE = Duration.ofSeconds(Long.getLong("benchmark.seconds", 15));
     private static final boolean CONSUMER = Boolean.parseBoolean(System.getProperty("benchmark.consumer", "true"));
-    private static final Duration DEBOUNCE = Duration.ofMillis(Long.parseLong(System.getProperty("benchmark.debounce", "10ms").replace("ms", "")));
-    private static final List<Integer> NODES = list("benchmark.nodes", "1,3").stream().map(Integer::parseInt).toList();
-    private static final List<Integer> RATES = list("benchmark.rates", "100,1000").stream().map(Integer::parseInt).toList();
+    private static final List<Integer> NODES = integers("benchmark.nodes", "1,3");
+    private static final List<Integer> RATES = integers("benchmark.rates", "100,1000");
     private static final int REPEATS = Integer.getInteger("benchmark.repeats", 1);
     private static final long HISTORY = Long.getLong("benchmark.history", 200_000);
     private static final Duration LATENCY = Duration.ofSeconds(Long.getLong("benchmark.latency-seconds", 30));
     /** The contention runs' consumer polls this often, so the baseline without wake-ups still drains. */
     private static final Duration CONTENTION_POLL = Duration.ofSeconds(1);
 
-    /** How workers learn about new tasks. */
+    /** How a push wakes workers. */
     enum Variant {
-        /** R__notify_ready.sql as shipped: every push notifies, inside the application's transaction. */
-        TRIGGER("trigger as it is"),
-        /** The insert trigger dropped, nothing notifies: the baseline. */
-        NONE("no notify (baseline)"),
         /**
-         * The insert trigger notifies only when the topic had no ready task before this statement.
-         * A busy topic's workers are claiming anyway; an idle topic's wake up as before.
+         * As shipped for a push the engine sees commit: {@code tasks.push} inside
+         * {@link JdbcTransactions#inTransaction}. The insert trigger skips it; after the commit the
+         * engine wakes its own workers and sends a debounced pg_notify from its own transaction.
          */
-        CONDITIONAL("notify only into an idle topic"),
+        AFTER_COMMIT("notify after commit (shipped)"),
         /**
-         * The insert trigger dropped; after each commit the producer tells a per-node debouncer,
-         * which sends one pg_notify on its own connection at once, then at most one per interval.
+         * {@code tasks.on(connection)}: the insert trigger notifies inside the application's
+         * transaction. What every push did before the notify moved after the commit, and what
+         * pushes on an explicit connection still do.
          */
-        DEBOUNCED("debounced notify after commit");
+        TRIGGER("notify at commit (trigger)"),
+        /** {@code tasks.on(connection)} with the insert trigger dropped: nothing notifies. The baseline. */
+        NONE("no notify (baseline)");
 
         final String label;
 
@@ -122,35 +130,9 @@ class NotifyBenchmark {
         }
 
         void apply(Connection connection) throws SQLException {
-            try (Statement statement = connection.createStatement()) {
-                switch (this) {
-                    case TRIGGER -> { }
-                    case NONE, DEBOUNCED -> statement.execute(sql("DROP TRIGGER queue_insert_notify ON ${schema}.queue"));
-                    case CONDITIONAL -> {
-                        // The statement's own rows are visible to an AFTER trigger, so they are
-                        // excluded. Rows other transactions haven't committed aren't, so two pushes
-                        // into an idle topic at once may both notify, which is harmless.
-                        statement.execute(sql("""
-                            CREATE OR REPLACE FUNCTION ${schema}.notify_ready_if_idle()
-                            RETURNS trigger
-                            LANGUAGE plpgsql
-                            AS $$
-                            BEGIN
-                                PERFORM pg_notify('${schema}_ready', ready.topic_id::text)
-                                FROM (SELECT DISTINCT topic_id FROM changed_rows WHERE state = 'ready') AS ready
-                                WHERE NOT EXISTS (
-                                    SELECT 1 FROM ${schema}.queue q
-                                    WHERE q.topic_id = ready.topic_id AND q.state = 'ready'
-                                      AND q.task_id <> ALL (ARRAY(SELECT task_id FROM changed_rows)));
-                                RETURN NULL;
-                            END
-                            $$"""));
-                        statement.execute(sql("""
-                            CREATE OR REPLACE TRIGGER queue_insert_notify
-                                AFTER INSERT ON ${schema}.queue
-                                REFERENCING NEW TABLE AS changed_rows
-                                FOR EACH STATEMENT EXECUTE FUNCTION ${schema}.notify_ready_if_idle()"""));
-                    }
+            if (this == NONE) {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute(sql("DROP TRIGGER queue_insert_notify ON ${schema}.queue"));
                 }
             }
         }
@@ -182,6 +164,19 @@ class NotifyBenchmark {
 
         double commitsPerFlush() {
             return walFlushes == 0 ? Double.NaN : commits / (double) walFlushes;
+        }
+
+        double pushedPerSecond(Shape shape) {
+            return commits * shape.perTransaction() / seconds;
+        }
+
+        double completedPerSecond() {
+            return completed / seconds;
+        }
+
+        /** Whether a run paced at {@code rate} sustained it: the producers kept up, and the backlog grew by less than {@code growth}. */
+        boolean held(Shape shape, int rate, long growth) {
+            return pushedPerSecond(shape) >= 0.97 * rate && backlog - backlogStart < growth;
         }
     }
 
@@ -232,6 +227,9 @@ class NotifyBenchmark {
             if (all || PARTS.contains("ceiling")) {
                 ceiling();
             }
+            if (all || PARTS.contains("search")) {
+                search();
+            }
             if (all || PARTS.contains("latency")) {
                 latency();
             }
@@ -253,8 +251,8 @@ class NotifyBenchmark {
             while (resultSet.next()) {
                 report.append(' ').append(resultSet.getString(1)).append('=').append(resultSet.getString(2)).append(';');
             }
-            report.append(String.format(Locale.ROOT, "%nWarm-up %d s, measured %d s per run; debounce %d ms.%n",
-                WARMUP.toSeconds(), MEASURE.toSeconds(), DEBOUNCE.toMillis()));
+            report.append(String.format(Locale.ROOT, "%nWarm-up %d s, measured %d s per run; %,d finished tasks in the topic.%n",
+                WARMUP.toSeconds(), MEASURE.toSeconds(), HISTORY));
         }
     }
 
@@ -271,9 +269,6 @@ class NotifyBenchmark {
                     CREATE TABLE app.event (id bigserial PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now(), body text NOT NULL)
                     """);
                 // Finished tasks in the topic, analyzed, as in a database that has run for a while.
-                // Without statistics, the planner completes a batch by walking every task of the
-                // topic in task_completed_idx, which gets slower with every task completed (see the
-                // write-up), and the consumer, not the producers, would set the pace.
                 statement.execute(sql("""
                     INSERT INTO ${schema}.task (topic_id, id, identifier, payload, created_at, outcome, attempts, completed_at)
                     SELECT ${schema}.create_topic('%s'), nextval('${schema}.task_id_seq'), 'h' || g, 'payload',
@@ -337,7 +332,7 @@ class NotifyBenchmark {
 
     private Load contention(Variant variant, int producers) throws Exception {
         String database = fresh(variant);
-        try (Run run = new Run(database, variant, CONSUMER ? 1 : 0, 2, CONTENTION_POLL, true)) {
+        try (Run run = new Run(database, variant, CONSUMER ? 1 : 0, 2, CONTENTION_POLL, true, false)) {
             return run.load(producers, 1, 0, WARMUP, MEASURE, true);
         } finally {
             drop(database);
@@ -353,6 +348,16 @@ class NotifyBenchmark {
     // ---------------------------------------------------------------------------------------------
     // Part 2: throughput ceiling
 
+    /** Producers and tasks per transaction. */
+    record Shape(int producers, int perTransaction) {
+
+        static final List<Shape> ALL = List.of(new Shape(64, 1), new Shape(8, 100));
+
+        String label() {
+            return producers + " × " + perTransaction;
+        }
+    }
+
     private void ceiling() throws Exception {
         report.append("""
 
@@ -360,35 +365,29 @@ class NotifyBenchmark {
 
             First the producers push as fast as they can while engine nodes claim and complete (no-op handler, batches \
             of 100); then, on a fresh database, they push at 90 % of the lower of what was pushed and completed, to \
-            see whether that rate is sustained: it held if the backlog grew by less than a second's worth. Nodes are \
-            separate engines in this JVM, each with its own pool, all on this machine with Postgres.
+            see whether that rate is sustained: it held if the producers pushed at least 97 % of it and the backlog \
+            grew by less than a second's worth. Nodes are separate engines in this JVM, each with its own pool, all on \
+            this machine with Postgres; the producers push through node 1.
 
             | Variant | Nodes | Batches per node | Producers × tasks per transaction | Flat out: pushed/s | completed/s | \
-            Paced at /s | completed/s | Backlog at start / end | Held | Commit p50 / p99 ms | Waits (paced) | \
+            Paced at /s | pushed/s | completed/s | Backlog at start / end | Held | Commit p50 / p99 ms | Waits (paced) | \
             Consumer waits (paced) |
-            |---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|
+            |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|
             """);
-        record Shape(int producers, int perTransaction) {
-        }
-        List<Shape> shapes = List.of(new Shape(64, 1), new Shape(8, 100));
-        // As shipped, and with the debounced notify, the mitigation that keeps wake-ups for every push.
-        List<Variant> variants = VARIANTS.stream().filter(variant -> variant == Variant.TRIGGER || variant == Variant.DEBOUNCED).toList();
-        for (Shape shape : shapes) {
+        for (Shape shape : Shape.ALL) {
             for (int nodes : NODES) {
-                for (int concurrency : List.of(2, 8)) {
-                    for (Variant variant : variants) {
+                for (int batches : BATCHES) {
+                    for (Variant variant : CEILING_VARIANTS) {
                         long before = System.nanoTime();
-                        Load flat = ceiling(variant, nodes, concurrency, shape.producers(), shape.perTransaction(), 0);
-                        double pushed = flat.commits() * shape.perTransaction() / flat.seconds(), completed = flat.completed() / flat.seconds();
-                        int target = (int) (0.9 * Math.min(pushed, completed));
-                        Load paced = ceiling(variant, nodes, concurrency, shape.producers(), shape.perTransaction(), target);
-                        boolean held = paced.backlog() - paced.backlogStart() < target;
+                        Load flat = ceiling(variant, nodes, batches, shape, 0);
+                        int target = (int) (0.9 * Math.min(flat.pushedPerSecond(shape), flat.completedPerSecond()));
+                        Load paced = ceiling(variant, nodes, batches, shape, target);
                         String row = String.format(Locale.ROOT,
-                            "| %s | %d | %d | %d × %d | %,.0f | %,.0f | %,d | %,.0f | %,d / %,d | %s | %.2f / %.2f | %s | %s |",
-                            variant.label, nodes, concurrency, shape.producers(), shape.perTransaction(), pushed, completed,
-                            target, paced.completed() / paced.seconds(), paced.backlogStart(), paced.backlog(), held ? "yes" : "no",
-                            paced.commit().p50(), paced.commit().p99(), String.join("; ", paced.waits()),
-                            String.join("; ", paced.consumerWaits()));
+                            "| %s | %d | %d | %s | %,.0f | %,.0f | %,d | %,.0f | %,.0f | %,d / %,d | %s | %.2f / %.2f | %s | %s |",
+                            variant.label, nodes, batches, shape.label(), flat.pushedPerSecond(shape), flat.completedPerSecond(),
+                            target, paced.pushedPerSecond(shape), paced.completedPerSecond(), paced.backlogStart(), paced.backlog(),
+                            paced.held(shape, target, target) ? "yes" : "no", paced.commit().p50(), paced.commit().p99(),
+                            String.join("; ", paced.waits()), String.join("; ", paced.consumerWaits()));
                         report.append(row).append('\n');
                         log("%s (%.0f s)", row, (System.nanoTime() - before) / 1e9);
                     }
@@ -397,54 +396,146 @@ class NotifyBenchmark {
         }
     }
 
-    private Load ceiling(Variant variant, int nodes, int concurrency, int producers, int perTransaction, int rate) throws Exception {
+    private Load ceiling(Variant variant, int nodes, int batches, Shape shape, int rate) throws Exception {
         String database = fresh(variant);
-        try (Run run = new Run(database, variant, nodes, concurrency, null, true)) {
-            return run.load(producers, perTransaction, rate, WARMUP, MEASURE, true);
+        try (Run run = new Run(database, variant, nodes, batches, null, true, false)) {
+            return run.load(shape.producers(), shape.perTransaction(), rate, WARMUP, MEASURE, true);
         } finally {
             drop(database);
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Part 3: end-to-end latency
+    // Part 3: stepped ceiling search
+
+    private void search() throws Exception {
+        report.append("""
+
+            ## Stepped ceiling search
+
+            A flat-out run gives a first guess. Then each step pushes at a fixed rate on a fresh database: from 60 % of \
+            the lower of the flat-out pushed and completed rates, up by half while it holds, then halving the gap \
+            between the last rate held and the first that didn't, three times. A step held if the producers pushed at \
+            least 97 % of the rate and the backlog grew by less than a quarter of a second's worth, or than the tasks \
+            the nodes can hold claimed at once (nodes × batches × 100), whichever is more. The search stops early if the \
+            producers can't push the next step's rate (the producers are then the limit, marked "producers"). \
+            Steps: rate, then ✓ held or ✗ not, with the backlog's growth (and what was pushed, if short of the rate).
+
+            | Variant | Nodes | Batches per node | Producers × tasks per transaction | Flat out: pushed/s | completed/s | \
+            Sustained /s | First not sustained /s | Steps |
+            |---|---:|---:|---:|---:|---:|---:|---:|---|
+            """);
+        for (Shape shape : Shape.ALL) {
+            for (int nodes : NODES) {
+                for (int batches : BATCHES) {
+                    for (Variant variant : SEARCH_VARIANTS) {
+                        long before = System.nanoTime();
+                        Load flat = ceiling(variant, nodes, batches, shape, 0);
+                        double pushable = flat.pushedPerSecond(shape);
+                        List<String> steps = new ArrayList<>();
+                        int held = 0, failed = 0;
+                        int rate = (int) (0.6 * Math.min(pushable, flat.completedPerSecond()));
+                        String limit = "";
+                        while (true) {
+                            Load step = ceiling(variant, nodes, batches, shape, rate);
+                            boolean ok = step.held(shape, rate, Math.max(rate / 4, nodes * batches * 100L));
+                            boolean pushedShort = step.pushedPerSecond(shape) < 0.97 * rate;
+                            steps.add(String.format(Locale.ROOT, "%,d %s (%+,d%s)", rate, ok ? "✓" : "✗", step.backlog() - step.backlogStart(),
+                                pushedShort ? String.format(Locale.ROOT, ", pushed %,.0f/s", step.pushedPerSecond(shape)) : ""));
+                            log("  search %s, %d node(s) × %d, %s: %s", variant.label, nodes, batches, shape.label(), steps.getLast());
+                            if (ok) {
+                                held = rate;
+                            } else {
+                                failed = rate;
+                            }
+                            int next;
+                            if (failed == 0) {
+                                next = (int) (rate * 1.5);
+                                if (next > pushable * 1.05) {
+                                    limit = " (producers)";
+                                    break;
+                                }
+                            } else if (held == 0) {
+                                next = rate / 2;
+                                if (next < 10) {
+                                    break;
+                                }
+                            } else if (steps.size() < bisected(steps)) {
+                                next = (held + failed) / 2;
+                            } else {
+                                break;
+                            }
+                            rate = round(next);
+                        }
+                        String row = String.format(Locale.ROOT, "| %s | %d | %d | %s | %,.0f | %,.0f | %,d%s | %s | %s |",
+                            variant.label, nodes, batches, shape.label(), pushable, flat.completedPerSecond(), held, limit,
+                            failed == 0 ? "–" : String.format(Locale.ROOT, "%,d", failed), String.join(", ", steps));
+                        report.append(row).append('\n');
+                        log("%s (%.0f s)", row, (System.nanoTime() - before) / 1e9);
+                    }
+                }
+            }
+        }
+    }
+
+    /** The number of steps after which to stop: three halvings after the first step that didn't hold. */
+    private static int bisected(List<String> steps) {
+        for (int index = 0; index < steps.size(); index++) {
+            if (steps.get(index).contains("✗")) {
+                return index + 1 + 3;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    /** Two significant digits, so the steps read as round numbers. */
+    private static int round(int rate) {
+        int unit = (int) Math.pow(10, Math.max(0, (int) Math.log10(Math.max(rate, 1)) - 1));
+        return Math.max(1, rate / unit * unit);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Part 4: end-to-end latency
 
     private void latency() throws Exception {
         report.append("""
 
             ## End-to-end latency
 
-            8 producers at a steady total rate, one task per transaction; one engine node, default settings (2 batches \
-            of 100, 30 s poll). Latency is from the producer's commit returning to the handler starting, in ms.
+            8 producers at a steady total rate, one task per transaction; one engine node consumes, with default \
+            settings (2 batches of 100, 30 s poll). The producers push through that node (its workers are woken \
+            directly after the commit) or through a second engine that only pushes (the consumer learns of the \
+            task from the notification or its poll). Latency is from the push's commit returning to the handler \
+            starting, in ms.
 
-            | Wake-up | Rate/s | Seconds | Tasks | p50 | p99 | p99.9 | max | Over 1 s |
-            |---|---:|---:|---:|---:|---:|---:|---:|---:|
+            | Wake-up | Pushed on | LISTEN | Rate/s | Seconds | Tasks | p50 | p99 | p99.9 | max | Over 1 s |
+            |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
             """);
-        record Case(Variant variant, boolean listen) {
-            String label() {
-                return listen ? variant.label + ", LISTEN on" : "LISTEN off (poll only)";
-            }
+        record Case(Variant variant, boolean listen, boolean separatePusher) {
         }
-        List<Case> cases = new ArrayList<>();
-        cases.add(new Case(Variant.TRIGGER, true));
-        cases.add(new Case(Variant.TRIGGER, false));
-        VARIANTS.stream().filter(variant -> variant == Variant.CONDITIONAL || variant == Variant.DEBOUNCED)
-            .forEach(variant -> cases.add(new Case(variant, true)));
+        List<Case> cases = List.of(
+            new Case(Variant.AFTER_COMMIT, true, false),
+            new Case(Variant.AFTER_COMMIT, true, true),
+            new Case(Variant.AFTER_COMMIT, false, false),
+            new Case(Variant.AFTER_COMMIT, false, true),
+            new Case(Variant.TRIGGER, true, true));
         for (int rate : RATES) {
             for (Case each : cases) {
-                Duration length = each.listen() ? LATENCY : LATENCY.multipliedBy(4);
+                // Without LISTEN, a push from another node waits for the poll: run longer for a fair spread.
+                Duration length = each.listen() || !each.separatePusher() ? LATENCY : LATENCY.multipliedBy(4);
                 String database = fresh(each.variant());
-                try (Run run = new Run(database, each.variant(), 1, 2, null, each.listen())) {
-                    run.load(8, 1, rate, Duration.ZERO, length, false);
+                try (Run run = new Run(database, each.variant(), 1, 2, null, each.listen(), each.separatePusher())) {
+                    Load load = run.load(8, 1, rate, Duration.ZERO, length, false);
                     // Let the last ones be handled, up to one poll interval.
                     run.awaitHandled(Duration.ofSeconds(35));
                     List<Double> latencies = run.latencies();
                     Latency latency = Latency.of(latencies);
                     long slow = latencies.stream().filter(value -> value > 1_000).count();
-                    String row = String.format(Locale.ROOT, "| %s | %,d | %d | %,d | %.1f | %.1f | %.1f | %,.0f | %,d |",
-                        each.label(), rate, length.toSeconds(), latencies.size(), latency.p50(), latency.p99(), latency.p999(), latency.max(), slow);
+                    String row = String.format(Locale.ROOT, "| %s | %s | %s | %,d | %d | %,d | %.1f | %.1f | %.1f | %,.0f | %,d |",
+                        each.variant().label, each.separatePusher() ? "another node" : "the consuming node", each.listen() ? "on" : "off",
+                        rate, length.toSeconds(), latencies.size(), latency.p50(), latency.p99(), latency.p999(), latency.max(), slow);
                     report.append(row).append('\n');
-                    log("%s", row);
+                    log("%s (pushed %,.0f/s)", row, load.commits() / load.seconds());
                 }
                 drop(database);
             }
@@ -453,7 +544,7 @@ class NotifyBenchmark {
 
     // ---------------------------------------------------------------------------------------------
 
-    /** One database with engine nodes consuming from it, producers pushing into it and a debouncer if the variant has one. */
+    /** One database with engine nodes consuming from it and producers pushing into it. */
     private final class Run implements AutoCloseable {
 
         private final String database;
@@ -461,40 +552,55 @@ class NotifyBenchmark {
         private final List<HikariDataSource> pools = new ArrayList<>();
         private final List<TaskEngine> engines = new ArrayList<>();
         private final HikariDataSource producers;
-        private final Debouncer debouncer;
+        private final JdbcTransactions transactions;
         private final AtomicLong completed = new AtomicLong();
         private final Map<String, Long> committedAt = new ConcurrentHashMap<>();
         private final Map<String, Long> startedAt = new ConcurrentHashMap<>();
         private final TaskEngine pusher;
         private long backlogAtStart;
 
-        Run(String database, Variant variant, int nodes, int concurrency, Duration poll, boolean listen) throws Exception {
+        /**
+         * {@code nodes} engines consume (0: one engine is prepared to push, never started); the
+         * producers push through the first, or with {@code separatePusher} through one more engine
+         * that is only prepared.
+         */
+        Run(String database, Variant variant, int nodes, int concurrency, Duration poll, boolean listen, boolean separatePusher)
+            throws Exception {
             this.database = database;
             this.variant = variant;
+            producers = pool(database, PRODUCER, 160, variant == Variant.AFTER_COMMIT);
+            transactions = new JdbcTransactions(producers);
             for (int node = 1; node <= Math.max(nodes, 1); node++) {
-                HikariDataSource pool = pool(database, "pgtasks-bench-node-" + node, 2 * concurrency + 6, true);
-                pools.add(pool);
-                TaskEngine engine = TaskEngine.builder()
-                    .dataSource(pool)
-                    .node("bench-" + node)
-                    .schema(SCHEMA)
-                    .notifications(listen)
-                    .configure("bench", tasks -> tasks.eachTask(TOPIC, work -> {
-                        startedAt.putIfAbsent(work.identifier(), System.nanoTime());
-                        completed.incrementAndGet();
-                    }, topic -> {
-                        topic.concurrency(concurrency);
-                        if (poll != null) {
-                            topic.pollInterval(poll);
-                        }
-                    }))
-                    .build();
-                // With no consumer, one engine is still needed to push; it is prepared, never started.
-                engines.add(nodes == 0 ? engine.prepare() : engine.start());
+                engines.add(engine(node, concurrency, poll, listen, nodes > 0));
             }
-            pusher = engines.getFirst();
-            producers = pool(database, PRODUCER, 160, false);
-            debouncer = variant == Variant.DEBOUNCED ? new Debouncer(url(database), topicId(pools.getFirst())) : null;
+            if (separatePusher) {
+                engines.add(engine(0, concurrency, poll, listen, false));
+                pusher = engines.getLast();
+            } else {
+                pusher = engines.getFirst();
+            }
+        }
+
+        private TaskEngine engine(int node, int concurrency, Duration poll, boolean listen, boolean start) {
+            HikariDataSource pool = pool(database, "pgtasks-bench-node-" + node, 2 * concurrency + 6, true);
+            pools.add(pool);
+            TaskEngine engine = TaskEngine.builder()
+                .dataSource(pool)
+                .transactions(transactions)
+                .node("bench-" + node)
+                .schema(SCHEMA)
+                .notifications(listen)
+                .configure("bench", tasks -> tasks.eachTask(TOPIC, work -> {
+                    startedAt.putIfAbsent(work.identifier(), System.nanoTime());
+                    completed.incrementAndGet();
+                }, topic -> {
+                    topic.concurrency(concurrency);
+                    if (poll != null) {
+                        topic.pollInterval(poll);
+                    }
+                }))
+                .build();
+            return start ? engine.start() : engine.prepare();
         }
 
         /**
@@ -506,19 +612,18 @@ class NotifyBenchmark {
             AtomicBoolean measuring = new AtomicBoolean(warmup.isZero());
             AtomicBoolean stop = new AtomicBoolean();
             AtomicInteger sequence = new AtomicInteger();
-            List<List<Double>> commits = new ArrayList<>(), transactions = new ArrayList<>();
+            List<List<Double>> commits = new ArrayList<>(), transactionTimes = new ArrayList<>();
             List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
             CountDownLatch done = new CountDownLatch(threads);
             List<Thread> running = new ArrayList<>();
             for (int thread = 0; thread < threads; thread++) {
-                List<Double> commitTimes = new ArrayList<>(), transactionTimes = new ArrayList<>();
+                List<Double> commitTimes = new ArrayList<>(), times = new ArrayList<>();
                 commits.add(commitTimes);
-                transactions.add(transactionTimes);
+                transactionTimes.add(times);
                 long every = rate == 0 ? 0 : 1_000_000_000L * threads * perTransaction / rate;
                 long offset = every == 0 ? 0 : every * thread / threads;
                 running.add(Thread.ofPlatform().name("producer-" + thread).start(() -> {
-                    try (Connection connection = producers.getConnection();
-                         PreparedStatement insert = connection.prepareStatement("INSERT INTO app.event (body) VALUES (?)")) {
+                    try {
                         long next = System.nanoTime() + offset;
                         while (!stop.get()) {
                             if (every > 0) {
@@ -533,19 +638,12 @@ class NotifyBenchmark {
                                 creations.add(Creation.of("t" + sequence.incrementAndGet(), "payload"));
                             }
                             long begin = System.nanoTime();
-                            insert.setString(1, "event");
-                            insert.executeUpdate();
-                            pusher.tasks().on(connection).push(TOPIC, Insertion.APPEND, creations);
-                            long committing = System.nanoTime();
-                            connection.commit();
+                            long committing = variant == Variant.AFTER_COMMIT ? pushAfterCommit(creations) : pushOnConnection(creations);
                             long end = System.nanoTime();
                             creations.forEach(creation -> committedAt.put(creation.identifier(), end));
-                            if (debouncer != null) {
-                                debouncer.pushed();
-                            }
                             if (measuring.get()) {
                                 commitTimes.add((end - committing) / 1e6);
-                                transactionTimes.add((end - begin) / 1e6);
+                                times.add((end - begin) / 1e6);
                             }
                         }
                     } catch (InterruptedException e) {
@@ -591,8 +689,39 @@ class NotifyBenchmark {
                 throw new IllegalStateException("A producer failed", failures.getFirst());
             }
             List<Double> commitTimes = commits.stream().flatMap(List::stream).toList();
-            return new Load(commitTimes.size(), seconds, Latency.of(commitTimes), Latency.of(transactions.stream().flatMap(List::stream).toList()),
+            return new Load(commitTimes.size(), seconds, Latency.of(commitTimes), Latency.of(transactionTimes.stream().flatMap(List::stream).toList()),
                 flushes, notifications, finished, backlogAtStart, backlog(), waits, consumerWaits);
+        }
+
+        /**
+         * As an application would with plain JDBC: a bound transaction, so the push joins it and the
+         * engine notifies after the commit. Returns when the callback returned, so the commit time
+         * covers the commit and the engine's after-commit work.
+         */
+        private long pushAfterCommit(List<Creation<String>> creations) throws Exception {
+            long[] committing = new long[1];
+            transactions.inTransaction(connection -> {
+                try (PreparedStatement insert = connection.prepareStatement(INSERT_EVENT)) {
+                    insert.setString(1, "event");
+                    insert.executeUpdate();
+                }
+                pusher.tasks().push(TOPIC, Insertion.APPEND, creations);
+                committing[0] = System.nanoTime();
+                return null;
+            });
+            return committing[0];
+        }
+
+        /** A push on an explicit connection: the insert trigger (if there is one) notifies inside the transaction. */
+        private long pushOnConnection(List<Creation<String>> creations) throws SQLException {
+            try (Connection connection = producers.getConnection(); PreparedStatement insert = connection.prepareStatement(INSERT_EVENT)) {
+                insert.setString(1, "event");
+                insert.executeUpdate();
+                pusher.tasks().on(connection).push(TOPIC, Insertion.APPEND, creations);
+                long committing = System.nanoTime();
+                connection.commit();
+                return committing;
+            }
         }
 
         void awaitHandled(Duration timeout) throws InterruptedException {
@@ -638,9 +767,6 @@ class NotifyBenchmark {
 
         @Override
         public void close() throws Exception {
-            if (debouncer != null) {
-                debouncer.close();
-            }
             producers.close();
             for (TaskEngine engine : engines.reversed()) {
                 engine.close();
@@ -704,68 +830,6 @@ class NotifyBenchmark {
         }
     }
 
-    /**
-     * The debounced variant's notifier, one per node: the first push after a quiet spell notifies at
-     * once, later ones within the interval share one notification at its end. It notifies in its
-     * own autocommit transaction, so only its commits queue for the notify lock.
-     */
-    private static final class Debouncer implements AutoCloseable {
-
-        private final Connection connection;
-        private final int topicId;
-        private final Thread thread;
-        private boolean pending;
-        private boolean running = true;
-
-        Debouncer(String url, int topicId) throws SQLException {
-            this.connection = DriverManager.getConnection(url, "postgres", null);
-            this.topicId = topicId;
-            this.thread = Thread.ofPlatform().name("debouncer").daemon().start(this::run);
-        }
-
-        synchronized void pushed() {
-            if (!pending) {
-                pending = true;
-                notifyAll();
-            }
-        }
-
-        private void run() {
-            try (PreparedStatement notify = connection.prepareStatement(sql("SELECT pg_notify('${schema}_ready', ?)"))) {
-                notify.setString(1, Integer.toString(topicId));
-                while (true) {
-                    synchronized (this) {
-                        while (!pending && running) {
-                            wait();
-                        }
-                        if (!running) {
-                            return;
-                        }
-                        pending = false;
-                    }
-                    long sent = System.nanoTime();
-                    notify.execute();
-                    long rest = DEBOUNCE.toNanos() - (System.nanoTime() - sent);
-                    if (rest > 0) {
-                        Thread.sleep(Duration.ofNanos(rest));
-                    }
-                }
-            } catch (SQLException | InterruptedException e) {
-                log("debouncer stopped: %s", e);
-            }
-        }
-
-        @Override
-        public void close() throws Exception {
-            synchronized (this) {
-                running = false;
-                notifyAll();
-            }
-            thread.join(2_000);
-            connection.close();
-        }
-    }
-
     // ---------------------------------------------------------------------------------------------
 
     private String fresh(Variant variant) throws SQLException {
@@ -789,17 +853,6 @@ class NotifyBenchmark {
         }
     }
 
-    private static int topicId(HikariDataSource pool) throws SQLException {
-        try (Connection connection = pool.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql("SELECT id FROM ${schema}.topic WHERE name = ?"))) {
-            statement.setString(1, TOPIC.name());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                resultSet.next();
-                return resultSet.getInt(1);
-            }
-        }
-    }
-
     private Connection admin() throws SQLException {
         return postgres.getPostgresDatabase().getConnection();
     }
@@ -816,6 +869,14 @@ class NotifyBenchmark {
         config.setAutoCommit(autoCommit);
         config.addDataSourceProperty("ApplicationName", application);
         return new HikariDataSource(config);
+    }
+
+    private static List<Integer> integers(String property, String fallback) {
+        return list(property, fallback).stream().map(Integer::parseInt).toList();
+    }
+
+    private static List<Variant> variants(String property, String fallback) {
+        return list(property, fallback).stream().map(name -> Variant.valueOf(name.replace('-', '_').toUpperCase(Locale.ROOT))).toList();
     }
 
     private static List<String> list(String property, String fallback) {
