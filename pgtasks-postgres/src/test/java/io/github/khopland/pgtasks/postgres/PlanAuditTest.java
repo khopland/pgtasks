@@ -7,6 +7,7 @@ import java.sql.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 /** The drained-queue pass would catch a statement that reads the ballast. */
 class PlanAuditTest {
@@ -35,21 +36,74 @@ class PlanAuditTest {
     }
 
     @Test
+    void reads_the_average_rows_per_loop_that_postgres_18_shows_with_decimals() {
+        String plan = """
+            Nested Loop (actual rows=3.00 loops=1)
+              Buffers: shared hit=40
+              ->  Index Scan using queue_ready_idx on queue q (actual rows=0.50 loops=10)
+                    Index Cond: (topic_id = 1)
+                    Index Searches: 10
+                    Rows Removed by Filter: 2
+                    Buffers: shared hit=30
+              ->  Index Scan using task_pkey on task t (actual rows=1.00 loops=5)
+                    Buffers: shared hit=10
+            """;
+
+        assertThat(PlanAudit.usage(plan)).as("rows (0.5 + 2) * 10 + 1 * 5, buffers 30 + 10").isEqualTo(new PlanAudit.Usage(30, 40));
+    }
+
+    @Test
+    void fails_on_a_scan_of_the_queue_it_cannot_read() {
+        String plan = """
+            Seq Scan on queue (actual rows=1,000 loops=1)
+              Buffers: shared hit=30
+            """;
+
+        assertThatIllegalStateException().isThrownBy(() -> PlanAudit.usage(plan)).withMessageContaining("Seq Scan on queue");
+    }
+
+    @Test
     void flags_a_statement_that_reads_the_ballast() throws Exception {
         DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA);
         try (drained; Connection connection = drained.dataSource().getConnection()) {
             connection.setAutoCommit(false);
-            // No topic: it can't use queue_identifier_idx to find one identifier's tasks.
-            try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM pgtasks.queue WHERE identifier = ?")) {
-                statement.setString(1, "ballast-7");
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    resultSet.next();
-                    assertThat(resultSet.getLong(1)).isEqualTo(10);
-                }
-            }
+            // No index on lower(identifier): every plan reads the whole queue.
+            assertThat(countIdentifier(connection, "lower(identifier)")).isEqualTo(10);
             connection.commit();
             assertThat(drained.audit().findings()).singleElement()
-                .satisfies(finding -> assertThat(finding.usage().buffers()).as("walked queue_identifier_idx over the ballast").isGreaterThan(300));
+                .satisfies(finding -> assertThat(finding.usage().rows()).as("examined the ballast").isGreaterThan(DrainedQueue.ALLOWED.rows()));
+        }
+    }
+
+    /**
+     * Up to 17, an identifier without its topic can only walk all of queue_identifier_idx, which
+     * reports a handful of rows and hundreds of buffers. 18's skip scan descends the index once per
+     * topic instead (Index Searches: 3, about 20 buffers), so there it is cheap and not flagged.
+     */
+    @Test
+    void flags_an_index_walk_over_the_ballast_before_postgres_18() throws Exception {
+        DrainedQueue drained = DrainedQueue.create(TaskSchema.DEFAULT_SCHEMA);
+        try (drained; Connection connection = drained.dataSource().getConnection()) {
+            connection.setAutoCommit(false);
+            assertThat(countIdentifier(connection, "identifier")).isEqualTo(10);
+            connection.commit();
+            if (drained.database().count("SELECT current_setting('server_version_num')::integer / 10000") < 18) {
+                assertThat(drained.audit().findings()).singleElement()
+                    .satisfies(finding -> assertThat(finding.usage().buffers()).as("walked queue_identifier_idx over the ballast").isGreaterThan(300));
+            } else {
+                assertThat(drained.audit().audited()).isOne();
+                assertThat(drained.audit().findings()).as("a skip scan").isEmpty();
+            }
+        }
+    }
+
+    private static long countIdentifier(Connection connection, String column) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM pgtasks.queue WHERE " + column + " = ?")) {
+            statement.setString(1, "ballast-7");
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getLong(1);
+            }
         }
     }
 }

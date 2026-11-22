@@ -71,6 +71,27 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory
    and a seed when a release changes the schema.
 
+## Postgres versions
+
+pgtasks supports PostgreSQL 15 to 19, the major versions the PostgreSQL project still supports.
+CI runs the full build on 17 and the store TCK (plan audit included), the engine's Postgres tests and
+the starter's tests on 15, 16, 18 and 19. 14 passes the same tests today but has been end-of-life
+since November 2026 and isn't tested in CI. The hard floor is 14: the `R__` files use
+`CREATE OR REPLACE TRIGGER`.
+
+To run the tests on another version, name its major version. Maven picks the matching embedded
+binaries, and the tests check that the server they reach runs that version:
+
+```
+mvn verify -pl pgtasks-postgres -am -Dpgtasks.test.postgres.version=18
+```
+
+The same property checks an external server given with `pgtasks.test.postgres.url`.
+
+Plans differ between versions. From 18 on, an index whose leading column isn't constrained can be
+used with a skip scan, so some statements that walk a whole index on 17 descend it once per value
+of the leading column instead. The store's statements don't rely on that.
+
 ## Actuator: the tasks endpoint and health
 
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.

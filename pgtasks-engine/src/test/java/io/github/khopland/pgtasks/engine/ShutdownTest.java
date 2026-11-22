@@ -130,9 +130,12 @@ class ShutdownTest {
 
         assertThat(threadsLeft()).as("pgtasks threads left after stop").isEmpty();
         assertThat(stopping).isLessThan(Duration.ofSeconds(2));
-        assertThat(database.rows("SELECT state::text, attempt FROM pgtasks.queue ORDER BY task_id"))
+        // Handed back as retrying and due now; a promotion that was already running can make them
+        // ready before the stop returns, which is the same thing a moment later.
+        assertThat(database.rows("SELECT CASE WHEN state = 'retrying' AND run_at <= now() THEN 'ready' ELSE state::text END, attempt "
+            + "FROM pgtasks.queue ORDER BY task_id"))
             .as("handed back, due at once and keeping its place in line, the cancelled attempt not counted")
-            .containsExactly(List.of("retrying", 0), List.of("retrying", 0), List.of("retrying", 0));
+            .containsExactly(List.of("ready", 0), List.of("ready", 0), List.of("ready", 0));
     }
 
     @Test

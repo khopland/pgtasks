@@ -12,7 +12,9 @@ class PostgresExtensionTest {
 
     @Test
     void runs_a_real_postgres(PostgresDatabase database) {
-        assertThat((String) database.rows("SELECT version()").getFirst().getFirst()).startsWith("PostgreSQL 17");
+        // The major version is whatever the run asked for (pgtasks.test.postgres.version), checked when the server starts.
+        assertThat((String) database.rows("SELECT version()").getFirst().getFirst()).startsWith("PostgreSQL "
+            + System.getProperty("pgtasks.test.postgres.version", ""));
         assertThat(database.count("SELECT count(*) FROM marker")).isZero();
     }
 

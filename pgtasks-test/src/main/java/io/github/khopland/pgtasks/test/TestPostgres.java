@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
@@ -24,6 +25,10 @@ import org.jspecify.annotations.Nullable;
  * <p>{@code pgtasks.test.postgres.config} adds settings to the embedded server, as
  * {@code key=value} pairs separated by semicolons, for instance to log slow plans:
  * {@code -Dpgtasks.test.postgres.config="shared_preload_libraries=auto_explain;auto_explain.log_min_duration=10ms"}.
+ *
+ * <p>{@code pgtasks.test.postgres.version} names the major version the run is meant for. In the
+ * Maven build it also picks the embedded binaries; here the server is checked against it, so a
+ * run that asked for 15 can't pass on 17.
  */
 public final class TestPostgres {
 
@@ -97,7 +102,9 @@ public final class TestPostgres {
             synchronized (TestPostgres.class) {
                 current = server;
                 if (current == null) {
-                    current = server = startServer();
+                    current = startServer();
+                    checkVersion(current);
+                    server = current;
                 }
             }
         }
@@ -136,6 +143,24 @@ public final class TestPostgres {
             return new Server("jdbc:postgresql://localhost:" + embedded.getPort() + "/postgres", "postgres", "");
         } catch (IOException e) {
             throw new UncheckedIOException("Could not start embedded Postgres", e);
+        }
+    }
+
+    private static void checkVersion(Server server) {
+        String expected = System.getProperty("pgtasks.test.postgres.version", "").strip();
+        if (expected.isEmpty()) {
+            return;
+        }
+        try (Connection connection = server.admin(); Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SHOW server_version_num")) {
+            resultSet.next();
+            int major = Integer.parseInt(resultSet.getString(1)) / 10000;
+            if (!expected.equals(Integer.toString(major))) {
+                throw new IllegalStateException("pgtasks.test.postgres.version is " + expected + ", but the test server runs Postgres "
+                    + major + " (" + server.adminUrl() + ")");
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not read the test server's version", e);
         }
     }
 
