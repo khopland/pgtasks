@@ -76,7 +76,7 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.
 
 ```
-GET    /actuator/tasks                                   topics by module, limits, this node
+GET    /actuator/tasks                                   topics by module, limits, this node and every node
 GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
@@ -84,7 +84,7 @@ POST   /actuator/tasks/topics/{topic}/pause | resume | create
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
-GET    /actuator/tasks/tasks/{id}
+GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
 GET    /actuator/tasks/limits/{limit}
 POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
 DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values

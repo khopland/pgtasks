@@ -11,6 +11,7 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
@@ -171,6 +172,32 @@ public abstract class HousekeepingTck extends StoreTck {
         int again = fixture.inTransaction(transaction -> fixture.store().deleteDeadNodes(transaction, Duration.ofDays(3)));
         assertThat(again).isZero();
         assertThat(idle).isNotEqualTo(alive);
+    }
+
+    @Test
+    void nodes_are_listed_with_the_leases_they_hold() throws Exception {
+        StoreFixture fixture = fixture();
+        int nodeA = fixture.node("node-a"), nodeB = fixture.node("node-b");
+        assertThat(lead(fixture, "housekeeping", nodeA)).isTrue();
+        assertThat(lead(fixture, "schedules", nodeA)).isTrue();
+        fixture.advance(Duration.ofSeconds(5));
+        fixture.heartbeat(nodeB);
+
+        List<NodeView> nodes = fixture.inTransaction(transaction -> fixture.store().nodes(transaction))
+            .stream().filter(node -> node.id() == nodeA || node.id() == nodeB).toList();
+
+        assertThat(nodes).extracting(NodeView::id).containsExactly(Math.min(nodeA, nodeB), Math.max(nodeA, nodeB));
+        NodeView a = nodes.stream().filter(node -> node.id() == nodeA).findFirst().orElseThrow();
+        NodeView b = nodes.stream().filter(node -> node.id() == nodeB).findFirst().orElseThrow();
+        assertThat(a.name()).isEqualTo("node-a");
+        assertThat(a.leases()).containsExactly("housekeeping", "schedules");
+        assertThat(b.leases()).isEmpty();
+        assertThat(b.heartbeatAt()).as("B's heartbeat is later").isAfter(a.heartbeatAt());
+
+        fixture.advance(TERM);
+        List<NodeView> later = fixture.inTransaction(transaction -> fixture.store().nodes(transaction));
+        assertThat(later.stream().filter(node -> node.id() == nodeA).findFirst().orElseThrow().leases())
+            .as("a lease whose term ran out isn't held").isEmpty();
     }
 
     @Test

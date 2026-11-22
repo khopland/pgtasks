@@ -67,11 +67,16 @@ class TaskEndpointMaskingTest {
         Map<String, Object> task = (Map<String, Object>) hidden.read("tasks", "1", SecurityContext.NONE).getBody();
         assertThat(task.get("payload")).isEqualTo("******");
         assertThat(task.get("headers")).as("names are shown, values hidden").isEqualTo(Map.of("korrelasjonsid", "******"));
+        Map<String, Object> attempt = first(task, "attempts");
+        assertThat((String) attempt.get("error")).as("an attempt's error keeps its type only")
+            .contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
 
         TaskEndpoint shown = new TaskEndpoint(engine, Show.ALWAYS, Set.of());
         Map<String, Object> visible = first(shown.readPart("topics", "work", "dead-letters", null, null, SecurityContext.NONE).getBody(), "deadLetters");
         assertThat(visible.get("payload")).isEqualTo("type: fnr 12345678901");
         assertThat((String) visible.get("error")).contains("person 12345678901 is unknown");
         assertThat(visible.get("headers")).isEqualTo(Map.of("korrelasjonsid", "k-12345678901"));
+        assertThat((String) first(shown.read("tasks", "1", SecurityContext.NONE).getBody(), "attempts").get("error"))
+            .contains("person 12345678901 is unknown");
     }
 }

@@ -19,6 +19,7 @@ import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.AttemptView;
+import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
@@ -230,6 +231,9 @@ public interface TaskStore {
      * forever. Returns how many.
      */
     int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException;
+
+    /** Every registered node, by id, with the leases whose term hasn't run out. */
+    List<NodeView> nodes(StoreTransaction transaction) throws SQLException;
 
     /** Makes sure the admission state for a strict rate limit exists. */
     void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException;

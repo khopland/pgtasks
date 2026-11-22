@@ -116,6 +116,11 @@ class TaskEndpointTest {
         assertThat(overview.body().path("topics").get(0).path("processing").asBoolean()).isTrue();
         assertThat(overview.body().path("limits").get(0).path("name").asString()).isEqualTo("register");
         assertThat(overview.body().path("node").path("running").asBoolean()).isTrue();
+        long self = overview.body().path("node").path("id").asLong();
+        JsonNode nodes = overview.body().path("nodes");
+        assertThat(nodes.isArray()).isTrue();
+        assertThat(nodes.valueStream().filter(node -> node.path("id").asLong() == self).findFirst()).as("this node is listed")
+            .hasValueSatisfying(node -> assertThat(node.path("heartbeatAt").asString()).isNotEmpty());
     }
 
     @Test
@@ -140,6 +145,9 @@ class TaskEndpointTest {
         assertThat(dead.status()).isEqualTo(200);
         assertThat(dead.body().path("deadLetters").get(0).path("id").asLong()).isEqualTo(id);
         assertThat(dead.body().path("deadLetters").get(0).path("error").asString()).contains("not yet");
+        JsonNode attempts = get("/tasks/tasks/" + id).body().path("attempts");
+        assertThat(attempts.get(0).path("attempt").asInt()).isEqualTo(1);
+        assertThat(attempts.get(0).path("error").asString()).contains("not yet");
         Response failing = get("/tasks/topics/work/failing");
         assertThat(failing.body().path("failing").get(0).path("error").asString()).isEqualTo("not yet");
         assertThat(failing.body().path("failing").get(0).path("tasks").asLong()).isEqualTo(1);
