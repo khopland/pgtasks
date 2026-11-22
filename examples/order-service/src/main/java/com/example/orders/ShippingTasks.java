@@ -6,9 +6,11 @@ import java.util.Objects;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 
 import com.example.orders.Partners.Declined;
+import com.example.orders.Partners.Rejected;
 import com.example.orders.Partners.Throttled;
 import com.example.orders.Partners.Unavailable;
 import com.example.orders.Topics.Notice;
@@ -32,8 +34,20 @@ class ShippingTasks {
         FROM order_line l JOIN moved ON moved.order_id = l.order_id
         WHERE s.sku = l.sku""";
 
+    /** Whether the stock step has reserved an order's stock. */
+    @FunctionalInterface
+    interface Reservations {
+        boolean reserved(String orderId);
+    }
+
     @Bean
-    TaskConfigurer shipping(Partners partners, StagedWrites writes, JdbcTemplate jdbc) {
+    Reservations reservations(JdbcTemplate jdbc) {
+        return orderId -> Boolean.TRUE.equals(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM stock_movement WHERE order_id = ? AND kind = 'reserve')", Boolean.class, orderId));
+    }
+
+    @Bean
+    TaskConfigurer shipping(Partners partners, StagedWrites writes, Reservations reservations) {
         return tasks -> tasks.topic(SHIP, batch -> {
             StagedWrites.Staged staged = batch.resource(writes);
             return batch.decideConcurrently(16, work -> {
@@ -44,9 +58,7 @@ class ShippingTasks {
                         return Decision.filtered("fan-in marker");
                     }
                     case CANCEL -> {
-                        Boolean reserved = jdbc.queryForObject(
-                            "SELECT EXISTS (SELECT 1 FROM stock_movement WHERE order_id = ? AND kind = 'reserve')", Boolean.class, id);
-                        if (!Boolean.TRUE.equals(reserved)) {
+                        if (!reservations.reserved(id)) {
                             return Decision.later(Duration.ofSeconds(5));   // the stock step hasn't run yet
                         }
                         staged.add(work.task(), RELEASE, id);
@@ -70,8 +82,8 @@ class ShippingTasks {
                             return Decision.throttled(throttled.retryAfter());
                         } catch (Unavailable unavailable) {
                             return Decision.unavailable(unavailable);
-                        } catch (Declined declined) {
-                            return Decision.failed(declined);
+                        } catch (Declined | Rejected refused) {
+                            return Decision.failed(refused);
                         }
                     }
                     default -> throw new IllegalStateException("unknown step " + request.step());
@@ -80,6 +92,7 @@ class ShippingTasks {
         }, options -> options
             .resources(writes)
             .limit("carrier")
+            .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)))
             .concurrency(2)
             .batchSize(32));
     }

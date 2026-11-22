@@ -7,6 +7,7 @@ import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 
 import com.example.orders.Partners.Declined;
+import com.example.orders.Partners.Rejected;
 import com.example.orders.Partners.Throttled;
 import com.example.orders.Partners.Unavailable;
 import com.example.orders.Topics.Notice;
@@ -31,8 +32,8 @@ class NotificationTasks {
                     return Decision.throttled(throttled.retryAfter());
                 } catch (Unavailable unavailable) {
                     return Decision.unavailable(unavailable);
-                } catch (Declined declined) {
-                    return Decision.failed(declined);
+                } catch (Declined | Rejected refused) {
+                    return Decision.failed(refused);
                 }
                 staged.add(work.task(), """
                     INSERT INTO notification_log (order_id, kind) VALUES (?, ?)

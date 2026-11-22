@@ -33,6 +33,10 @@ public class StagedWrites implements BatchResource<StagedWrites.Staged> {
         public void add(Task<?> task, String sql, Object... parameters) {
             byTask.computeIfAbsent(task.id(), ignored -> new ArrayList<>()).add(new Statement(sql, parameters));
         }
+
+        public List<Statement> statements(Task<?> task) {
+            return byTask.getOrDefault(task.id(), List.of());
+        }
     }
 
     @Override
@@ -43,7 +47,7 @@ public class StagedWrites implements BatchResource<StagedWrites.Staged> {
     @Override
     public void beforeCommit(Staged staged, Decisions finalDecisions, Connection connection) throws SQLException {
         for (Task<?> task : finalDecisions.continuing()) {
-            for (Statement statement : staged.byTask.getOrDefault(task.id(), List.of())) {
+            for (Statement statement : staged.statements(task)) {
                 try (PreparedStatement prepared = connection.prepareStatement(statement.sql())) {
                     for (int i = 0; i < statement.parameters().length; i++) {
                         prepared.setObject(i + 1, statement.parameters()[i]);

@@ -46,6 +46,7 @@ public class Stub {
     static final Map<Key, Calls> CALLS = new ConcurrentHashMap<>();
     static final Map<String, AtomicLong> STATUS = new ConcurrentHashMap<>();
     static final Pattern ORDER = Pattern.compile("\"orderId\"\\s*:\\s*\"([^\"]+)\"");
+    static final Pattern KIND = Pattern.compile("\"kind\"\\s*:\\s*\"([^\"]+)\"");
     static final AtomicLong SEQUENCE = new AtomicLong();
 
     static volatile double fail = 0.02;      // 500 without effect
@@ -54,6 +55,7 @@ public class Stub {
     static volatile double slow = 0.01;      // a 3 s answer
     static volatile int latency = 40;        // mean latency in ms
     static volatile int decline = 3;         // per cent of orders a payment declines, by order id
+    static volatile int reject = 1;          // per cent of orders the carrier rejects (422, bad address), by order id
 
     static volatile HttpServer server;
     static int port;
@@ -104,7 +106,9 @@ public class Stub {
             send(exchange, 400, "{\"error\":\"Idempotency-Key and orderId required\"}");
             return;
         }
-        String orderId = matcher.group(1);
+        Matcher kind = KIND.matcher(body);
+        // A notification's effect is per order and kind: "o-1/shipped".
+        String orderId = matcher.group(1) + (kind.find() ? "/" + kind.group(1) : "");
         Calls calls = CALLS.computeIfAbsent(new Key(endpoint, orderId, key), ignored -> new Calls());
         calls.calls.incrementAndGet();
         ThreadLocalRandom random = ThreadLocalRandom.current();
@@ -121,9 +125,14 @@ public class Stub {
             send(exchange, 500, "{\"error\":\"internal error\"}");
             return;
         }
-        if (endpoint.equals("payments") && Math.floorMod(orderId.hashCode(), 100) < decline) {
+        if (endpoint.equals("payments") && Math.floorMod(matcher.group(1).hashCode(), 100) < decline) {
             count(endpoint, 402);
             send(exchange, 402, "{\"error\":\"declined\"}");
+            return;
+        }
+        if (endpoint.equals("shipments") && Math.floorMod(matcher.group(1).hashCode() / 100, 100) < reject) {
+            count(endpoint, 422);
+            send(exchange, 422, "{\"error\":\"address rejected\"}");
             return;
         }
         String result;
@@ -160,6 +169,7 @@ public class Stub {
                     case "slow" -> slow = Double.parseDouble(value);
                     case "latency" -> latency = Integer.parseInt(value);
                     case "decline" -> decline = Integer.parseInt(value);
+                    case "reject" -> reject = Integer.parseInt(value);
                     case "down" -> {
                         if (Boolean.parseBoolean(value)) {
                             stop();
@@ -180,7 +190,7 @@ public class Stub {
 
     static String settings() {
         return "fail=" + fail + " lost=" + lost + " throttle=" + throttle + " slow=" + slow + " latency=" + latency + "ms decline=" + decline
-            + "% down=" + (server == null);
+            + "% reject=" + reject + "% down=" + (server == null);
     }
 
     static String stats() {

@@ -1,6 +1,7 @@
 package com.example.orders;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.UUID;
 
 import jakarta.servlet.FilterChain;
@@ -13,8 +14,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -26,7 +28,7 @@ class WebConfig {
     SecurityFilterChain security(HttpSecurity http) throws Exception {
         return http
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/actuator/health/**", "/actuator/prometheus").permitAll()
+                .requestMatchers("/actuator/health/**", "/actuator/prometheus", "/error").permitAll()
                 .requestMatchers("/pgtasks/**", "/actuator/**").hasRole("OPS")
                 .requestMatchers("/orders/**").hasRole("API")
                 .anyRequest().denyAll())
@@ -36,11 +38,22 @@ class WebConfig {
             .build();
     }
 
+    /**
+     * Demo users. Not an InMemoryUserDetailsManager: that one upgrades {noop} passwords to bcrypt
+     * after the first login, so every basic-auth request from the load generator would hash.
+     */
     @Bean
     UserDetailsService users() {
-        return new InMemoryUserDetailsManager(
-            User.withUsername("api").password("{noop}api").roles("API").build(),
-            User.withUsername("ops").password("{noop}ops").roles("OPS").build());
+        Map<String, UserDetails> users = Map.of(
+            "api", User.withUsername("api").password("{noop}api").roles("API").build(),
+            "ops", User.withUsername("ops").password("{noop}ops").roles("OPS").build());
+        return name -> {
+            UserDetails user = users.get(name);
+            if (user == null) {
+                throw new UsernameNotFoundException(name);
+            }
+            return User.withUserDetails(user).build();
+        };
     }
 
     /** The request id the client sent, or a new one; pgtasks carries it to every task (pgtasks.mdc-headers). */

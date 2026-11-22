@@ -12,6 +12,7 @@ import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 
 import com.example.orders.Partners.Declined;
+import com.example.orders.Partners.Rejected;
 import com.example.orders.Partners.Throttled;
 import com.example.orders.Partners.Unavailable;
 import com.example.orders.Topics.OrderRef;
@@ -51,6 +52,8 @@ class PaymentTasks {
                     // Replaces the suspended ship task: it will never be released now.
                     work.push(SHIP, Insertion.REPLACE, Creation.of(id, new ShipRequest(id, order.customerId(), Step.CANCEL)));
                     return Decision.success("declined");
+                } catch (Rejected rejected) {
+                    return Decision.failed(rejected);
                 } catch (Throttled throttled) {
                     return Decision.throttled(throttled.retryAfter());
                 } catch (Unavailable unavailable) {

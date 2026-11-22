@@ -44,6 +44,13 @@ public class Partners {
         }
     }
 
+    /** The partner refused the request as it is, such as a bad address: retrying won't help until someone fixes it. */
+    public static final class Rejected extends Exception {
+        public Rejected(String message) {
+            super(message);
+        }
+    }
+
     private static final Pattern REF = Pattern.compile("\"ref\"\\s*:\\s*\"([^\"]+)\"");
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build();
@@ -56,19 +63,19 @@ public class Partners {
         this.timeout = timeout;
     }
 
-    public String pay(String orderId, long amountCents, String idempotencyKey) throws Unavailable, Throttled, Declined {
+    public String pay(String orderId, long amountCents, String idempotencyKey) throws Unavailable, Throttled, Declined, Rejected {
         return call("/payments", orderId, "\"amountCents\":" + amountCents, idempotencyKey);
     }
 
-    public String ship(String orderId, String idempotencyKey) throws Unavailable, Throttled, Declined {
+    public String ship(String orderId, String idempotencyKey) throws Unavailable, Throttled, Declined, Rejected {
         return call("/shipments", orderId, "\"service\":\"standard\"", idempotencyKey);
     }
 
-    public String notify(String orderId, String customerId, String kind, String idempotencyKey) throws Unavailable, Throttled, Declined {
+    public String notify(String orderId, String customerId, String kind, String idempotencyKey) throws Unavailable, Throttled, Declined, Rejected {
         return call("/notifications", orderId, "\"customerId\":\"" + customerId + "\",\"kind\":\"" + kind + "\"", idempotencyKey);
     }
 
-    private String call(String path, String orderId, String fields, String idempotencyKey) throws Unavailable, Throttled, Declined {
+    private String call(String path, String orderId, String fields, String idempotencyKey) throws Unavailable, Throttled, Declined, Rejected {
         HttpRequest request = HttpRequest.newBuilder(base.resolve(path))
             .timeout(timeout)
             .header("Content-Type", "application/json")
@@ -90,6 +97,7 @@ public class Partners {
                 yield matcher.find() ? matcher.group(1) : "?";
             }
             case 402 -> throw new Declined(orderId);
+            case 400, 409, 422 -> throw new Rejected(path + " rejected " + orderId + ": " + response.body());
             case 429 -> throw new Throttled(Duration.ofSeconds(response.headers().firstValueAsLong("Retry-After").orElse(1)));
             default -> throw new Unavailable(path + " answered " + response.statusCode() + ": " + response.body(), null);
         };
