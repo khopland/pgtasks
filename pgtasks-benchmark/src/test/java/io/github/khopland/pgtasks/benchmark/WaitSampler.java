@@ -37,19 +37,27 @@ final class WaitSampler implements AutoCloseable {
     private volatile boolean running = true;
     private int samples;
 
-    private WaitSampler(String url) throws SQLException {
+    private final String query;
+
+    private WaitSampler(String url, String query) throws SQLException {
+        this.query = query;
         connection = DriverManager.getConnection(url, "postgres", null);
         thread = Thread.ofPlatform().name("wait-sampler").daemon().start(this::run);
     }
 
     static WaitSampler start(String url) throws SQLException {
-        return new WaitSampler(url);
+        return new WaitSampler(url, SAMPLE);
+    }
+
+    /** Samples with a query of one's own, which returns one row per backend: the state to count it under. */
+    static WaitSampler start(String url, String query) throws SQLException {
+        return new WaitSampler(url, query);
     }
 
     private void run() {
         try (Statement statement = connection.createStatement()) {
             while (running) {
-                try (ResultSet resultSet = statement.executeQuery(SAMPLE)) {
+                try (ResultSet resultSet = statement.executeQuery(query)) {
                     synchronized (counts) {
                         samples++;
                         while (resultSet.next()) {
