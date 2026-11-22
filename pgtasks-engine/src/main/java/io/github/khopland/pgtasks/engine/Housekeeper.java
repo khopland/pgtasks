@@ -262,7 +262,11 @@ final class Housekeeper {
                 for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
                     Instant next;
                     try {
-                        next = Cron.parse(schedule.cron(), ZoneId.of(schedule.zone())).following(now);
+                        // The store decides what is due by its own clock (the database server's), this
+                        // node by the JVM's. From whichever is later, so a node a few milliseconds behind
+                        // the server can't give back the slot it just fired and fire it again.
+                        Instant from = now.isAfter(schedule.nextRunAt()) ? now : schedule.nextRunAt();
+                        next = Cron.parse(schedule.cron(), ZoneId.of(schedule.zone())).following(from);
                     } catch (RuntimeException e) {
                         // Written by a node with another idea of cron; try again in an hour rather than every second.
                         LOGGER.warn("Recurring task {} of {} has a schedule this node can't read, '{}' in {}; skipped for an hour",
