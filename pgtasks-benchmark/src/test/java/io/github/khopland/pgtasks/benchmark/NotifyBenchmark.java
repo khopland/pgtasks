@@ -174,7 +174,7 @@ class NotifyBenchmark {
 
     /** What the producers of one run did in the measured window. */
     record Load(long commits, double seconds, Latency commit, Latency transaction, long walFlushes, long notifications, long completed,
-                long backlogStart, long backlog, List<String> waits) {
+                long backlogStart, long backlog, List<String> waits, List<String> consumerWaits) {
 
         double commitsPerSecond() {
             return commits / seconds;
@@ -295,11 +295,13 @@ class NotifyBenchmark {
 
             Each transaction inserts one row into app.event and pushes one task. Consumer: %s. \
             Commit is the time in commit(); transaction is begin to commit returned. Commits per flush is commits \
-            divided by WAL flushes (pg_stat_wal.wal_sync, or wal_write with an open_*sync method). Waits: average number of producer backends in each state, \
-            sampled every 5 ms (CPU means active and not waiting).
+            divided by WAL flushes (pg_stat_wal.wal_sync, or wal_write with an open_*sync method). Waits: average \
+            number of producer backends in each state, sampled every 5 ms (CPU means active and not waiting); \
+            consumer waits likewise for the engine node's backends, by statement.
 
-            | Variant | Producers | Commits/s | Commit p50 / p99 ms | Transaction p50 / p99 ms | Commits per flush | Notifications/s | Completed/s | Backlog at end | Waits |
-            |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+            | Variant | Producers | Commits/s | Commit p50 / p99 ms | Transaction p50 / p99 ms | Commits per flush | \
+            Notifications/s | Completed/s | Backlog at end | Waits | Consumer waits |
+            |---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
             """, CONSUMER ? "1 engine node, LISTEN on, default batches, poll every " + CONTENTION_POLL.toSeconds() + " s" : "none"));
         // Variants interleaved, so drift over the run (checkpoints, the machine warming) spreads over all of them.
         Map<String, List<Load>> loads = new LinkedHashMap<>();
@@ -308,10 +310,11 @@ class NotifyBenchmark {
                 for (Variant variant : VARIANTS) {
                     Load load = contention(variant, producers);
                     loads.computeIfAbsent(variant.label + "|" + producers, ignored -> new ArrayList<>()).add(load);
-                    String row = String.format(Locale.ROOT, "| %s | %d | %,.0f | %.2f / %.2f | %.2f / %.2f | %.1f | %,.0f | %,.0f | %,d | %s |",
+                    String row = String.format(Locale.ROOT, "| %s | %d | %,.0f | %.2f / %.2f | %.2f / %.2f | %.1f | %,.0f | %,.0f | %,d | %s | %s |",
                         variant.label, producers, load.commitsPerSecond(), load.commit().p50(), load.commit().p99(),
                         load.transaction().p50(), load.transaction().p99(), load.commitsPerFlush(), load.notifications() / load.seconds(),
-                        load.completed() / load.seconds(), load.backlog(), String.join("; ", load.waits()));
+                        load.completed() / load.seconds(), load.backlog(), String.join("; ", load.waits()),
+                        String.join("; ", load.consumerWaits()));
                     report.append(row).append('\n');
                     log("%s", row);
                 }
@@ -361,8 +364,9 @@ class NotifyBenchmark {
             separate engines in this JVM, each with its own pool, all on this machine with Postgres.
 
             | Variant | Nodes | Batches per node | Producers × tasks per transaction | Flat out: pushed/s | completed/s | \
-            Paced at /s | completed/s | Backlog at start / end | Held | Commit p50 / p99 ms | Waits (paced) |
-            |---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|
+            Paced at /s | completed/s | Backlog at start / end | Held | Commit p50 / p99 ms | Waits (paced) | \
+            Consumer waits (paced) |
+            |---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|
             """);
         record Shape(int producers, int perTransaction) {
         }
@@ -380,10 +384,11 @@ class NotifyBenchmark {
                         Load paced = ceiling(variant, nodes, concurrency, shape.producers(), shape.perTransaction(), target);
                         boolean held = paced.backlog() - paced.backlogStart() < target;
                         String row = String.format(Locale.ROOT,
-                            "| %s | %d | %d | %d × %d | %,.0f | %,.0f | %,d | %,.0f | %,d / %,d | %s | %.2f / %.2f | %s |",
+                            "| %s | %d | %d | %d × %d | %,.0f | %,.0f | %,d | %,.0f | %,d / %,d | %s | %.2f / %.2f | %s | %s |",
                             variant.label, nodes, concurrency, shape.producers(), shape.perTransaction(), pushed, completed,
                             target, paced.completed() / paced.seconds(), paced.backlogStart(), paced.backlog(), held ? "yes" : "no",
-                            paced.commit().p50(), paced.commit().p99(), String.join("; ", paced.waits()));
+                            paced.commit().p50(), paced.commit().p99(), String.join("; ", paced.waits()),
+                            String.join("; ", paced.consumerWaits()));
                         report.append(row).append('\n');
                         log("%s (%.0f s)", row, (System.nanoTime() - before) / 1e9);
                     }
@@ -495,8 +500,9 @@ class NotifyBenchmark {
         /**
          * Runs {@code threads} producers, each committing transactions that insert one app row and push
          * {@code perTransaction} tasks, flat out or at {@code rate} tasks/s in all, and measures after the warm-up.
+         * {@code sampleWaits} is off for latency runs, where the samplers' queries every 5 ms would add to what is measured.
          */
-        Load load(int threads, int perTransaction, int rate, Duration warmup, Duration measure, boolean sample) throws Exception {
+        Load load(int threads, int perTransaction, int rate, Duration warmup, Duration measure, boolean sampleWaits) throws Exception {
             AtomicBoolean measuring = new AtomicBoolean(warmup.isZero());
             AtomicBoolean stop = new AtomicBoolean();
             AtomicInteger sequence = new AtomicInteger();
@@ -554,8 +560,8 @@ class NotifyBenchmark {
             Thread.sleep(warmup);
             backlogAtStart = backlog();
             measuring.set(true);
-            WaitSampler sampler = sample ? WaitSampler.start(url(database), WAITS) : null;
-            WaitSampler consumers = sample ? WaitSampler.start(url(database), CONSUMER_WAITS) : null;
+            WaitSampler sampler = sampleWaits ? WaitSampler.start(url(database), WAITS) : null;
+            WaitSampler consumers = sampleWaits ? WaitSampler.start(url(database), CONSUMER_WAITS) : null;
             Listener listener = new Listener(url(database));
             long flushesBefore = walFlushes(), completedBefore = completed.get(), start = System.nanoTime();
             Thread.sleep(measure);
@@ -563,13 +569,13 @@ class NotifyBenchmark {
             double seconds = (System.nanoTime() - start) / 1e9;
             long flushes = walFlushes() - flushesBefore, finished = completed.get() - completedBefore;
             long notifications = listener.close();
-            List<String> waits = List.of();
+            List<String> waits = List.of(), consumerWaits = List.of();
             if (sampler != null) {
                 waits = sampler.summary().stream().limit(4).map(String::strip).toList();
                 sampler.close();
             }
             if (consumers != null) {
-                log("  consumers: %s", String.join("; ", consumers.summary().stream().limit(5).map(String::strip).toList()));
+                consumerWaits = consumers.summary().stream().limit(3).map(String::strip).toList();
                 consumers.close();
             }
             stop.set(true);
@@ -586,7 +592,7 @@ class NotifyBenchmark {
             }
             List<Double> commitTimes = commits.stream().flatMap(List::stream).toList();
             return new Load(commitTimes.size(), seconds, Latency.of(commitTimes), Latency.of(transactions.stream().flatMap(List::stream).toList()),
-                flushes, notifications, finished, backlogAtStart, backlog(), waits);
+                flushes, notifications, finished, backlogAtStart, backlog(), waits, consumerWaits);
         }
 
         void awaitHandled(Duration timeout) throws InterruptedException {
