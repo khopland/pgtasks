@@ -13,7 +13,6 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
-import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;

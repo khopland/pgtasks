@@ -13,7 +13,6 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
-import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 
