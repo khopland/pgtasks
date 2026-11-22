@@ -228,6 +228,8 @@ Each node uses the application's `DataSource`:
 - Housekeeping uses up to 4: the heartbeat, the regular jobs, retention and reloads.
 - Notifications listen on a long-lived connection. With HikariCP it is opened outside the pool;
   with other pools it takes one of the pool's.
+- Wake-ups for pushes the engine sees commit take a short transaction of their own, at most one
+  every 10 ms per node, whatever the push rate (see below).
 
 A heartbeat that can't get a connection for long enough (10 minutes by default) lets other nodes
 requeue this node's tasks while it still runs them. The engine warns at startup if
@@ -237,6 +239,26 @@ LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
 `pgtasks.notifications=false`; polling still finds the work, within the poll interval. Use
 `validate` there too, since the built-in runner's advisory lock is per session.
+
+### Wake-ups and the notify lock
+
+Postgres serializes the commits of all transactions that sent a `NOTIFY`, behind one
+database-wide lock held until the commit is flushed. A notification sent inside every pushing
+transaction would cap a busy application's commit rate near one commit per WAL flush (measured at
+about 500 a second on a 2 ms flush, against over 4,000 without the notification), and
+show up as slow commits across the whole database, waiting in `Lock:object` on `pg_database`.
+
+So pushes the engine sees commit don't notify inside the transaction: `tasks.push(...)` in a
+bound transaction (Spring, `JdbcTransactions`), `tasks.independently()`, and downstream work
+staged with `task.push(...)`. After the commit the engine wakes its own workers and sends the
+notification from a short transaction of its own: at once after a quiet spell, then at most once
+every 10 ms per node, covering every topic pushed to meanwhile. A node that stops between the
+commit and the notification loses that wake-up; other nodes find the task at their next poll.
+
+Pushes the engine doesn't see commit still notify at their commit, through the queue's insert
+trigger: `tasks.on(connection)` and rows inserted with plain SQL. They never lose a wake-up, but
+they queue for the lock. If an application pushes that way from many concurrent transactions,
+push with `tasks.push(...)` in a bound transaction instead.
 
 ## Deploys and shutdown
 

@@ -18,6 +18,11 @@ public interface Tasks extends TaskWriter {
     /**
      * A writer on an explicit JDBC connection, for example a feed that advances its pointer in
      * the same commit. The connection must not be in auto-commit mode.
+     *
+     * <p>The engine doesn't see this transaction commit, so the push wakes workers from inside it,
+     * as a {@code NOTIFY} at its commit. Postgres serializes the commits of every transaction that
+     * notifies, so with many such transactions at once, prefer {@link #push} in a bound
+     * transaction: the engine then notifies after the commit, outside it.
      */
     TaskWriter on(Connection connection);
 

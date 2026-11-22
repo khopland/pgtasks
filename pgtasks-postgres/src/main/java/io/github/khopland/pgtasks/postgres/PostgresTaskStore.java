@@ -64,6 +64,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
+    private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
 
     /** A store that migrates the schema with the built-in runner when an engine starts. */
@@ -127,7 +128,8 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE name = :name
             """);
         for (Insertion insertion : Insertion.values()) {
-            pushes.put(insertion, sql(pushSql(insertion)));
+            pushes.put(insertion, sql(pushSql(insertion, WakeUp.AT_COMMIT)));
+            pushesWokenByCaller.put(insertion, sql(pushSql(insertion, WakeUp.BY_CALLER)));
         }
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)).withCustomPlans());
@@ -407,7 +409,7 @@ public final class PostgresTaskStore implements TaskStore {
             LIMIT :limit::integer
             """);
         // A discarded dead letter may have held back later tasks; no trigger sees a delete.
-        notifyReady = sql("SELECT pg_notify('" + schema + "_ready', :topic::text)");
+        notifyReady = sql("SELECT pg_notify('" + schema + "_ready', t::text) FROM unnest(:topics::integer[]) AS t");
         countQueue = sql("""
             SELECT count(*) FILTER (WHERE state = 'scheduled'),
                    count(*) FILTER (WHERE state = 'retrying'),
@@ -585,7 +587,7 @@ public final class PostgresTaskStore implements TaskStore {
         return NamedSql.parse(TaskSchema.qualify(text, schema));
     }
 
-    private static String pushSql(Insertion insertion) {
+    private static String pushSql(Insertion insertion, WakeUp wakeUp) {
         // One statement: ids are drawn in input order, queue rows are inserted first so a dedup
         // conflict also skips the task row, then older rows are handled for the identifiers
         // that were actually queued. Every CTE sees the snapshot from before the statement, so
@@ -678,6 +680,13 @@ public final class PostgresTaskStore implements TaskStore {
                 )
                 """;
         };
+        // Woken by the caller: the flag tells the queue's insert trigger, which runs at the end of
+        // this statement, to skip its notification; the trigger clears it, so it covers this
+        // statement only (R__notify_ready.sql).
+        String quiet = switch (wakeUp) {
+            case AT_COMMIT -> "";
+            case BY_CALLER -> "\n    CROSS JOIN (SELECT set_config('pgtasks.notify_after_commit', 'on', true)) AS quiet";
+        };
         return """
             WITH input AS MATERIALIZED (
                 SELECT nextval('pgtasks.task_id_seq') AS id, i.*
@@ -685,7 +694,8 @@ public final class PostgresTaskStore implements TaskStore {
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
                             :priorities::integer[], :dedup::text[], :headers::text[])
                     WITH ORDINALITY AS i(identifier, payload, payload_type, reference, parent_id, root_id,
-                                         state, delay_ms, priority, dedup_key, headers, ord)
+                                         state, delay_ms, priority, dedup_key, headers, ord)""" + quiet + """
+
             ),
             queued AS (
                 INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
@@ -850,6 +860,12 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks) throws SQLException {
+        return push(transaction, topicId, insertion, tasks, WakeUp.AT_COMMIT);
+    }
+
+    /** {@link WakeUp#BY_CALLER} leaves the notification to {@link #notifyReady}, so the push's commit doesn't queue for the notify lock. */
+    @Override
+    public List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks, WakeUp wakeUp) throws SQLException {
         Connection connection = transaction.connection();
         if (tasks.isEmpty()) {
             return List.of();
@@ -904,7 +920,7 @@ public final class PostgresTaskStore implements TaskStore {
             .array("dedup", "text", dedup)
             .array("headers", "text", headers);
         List<Pushed> results = new ArrayList<>(tasks.size());
-        try (PreparedStatement statement = Objects.requireNonNull(pushes.get(insertion)).prepare(connection, parameters);
+        try (PreparedStatement statement = Objects.requireNonNull((wakeUp == WakeUp.BY_CALLER ? pushesWokenByCaller : pushes).get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             for (int index = 0; index < tasks.size(); index++) {
                 String identifier = tasks.get(index).identifier();
@@ -1396,11 +1412,20 @@ public final class PostgresTaskStore implements TaskStore {
     public List<Long> discard(StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
         List<Long> discarded = deadLetterIds(discard, transaction, topicId, query, limit);
         if (!discarded.isEmpty()) {
-            try (PreparedStatement statement = notifyReady.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId))) {
-                statement.execute();
-            }
+            notifyReady(transaction, List.of(topicId));
         }
         return discarded;
+    }
+
+    @Override
+    public void notifyReady(StoreTransaction transaction, Collection<Integer> topicIds) throws SQLException {
+        if (topicIds.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement statement = notifyReady.prepare(transaction.connection(),
+            NamedSql.parameters().array("topics", "integer", topicIds.toArray()))) {
+            statement.execute();
+        }
     }
 
     private static NamedSql.Parameters query(DeadLetterQuery query, int topicId, int limit) {

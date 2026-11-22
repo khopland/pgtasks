@@ -305,13 +305,15 @@ final class BatchRun<T> {
         decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
+        Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
         try {
             core.transactRetrying("The completion of a batch in " + topic.ref(), transaction -> {
                 observations.clear();
                 targets.clear();
+                ready.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
-                targets.addAll(pushDownstream(transaction, decisions, observations));
+                targets.addAll(pushDownstream(transaction, decisions, observations, ready));
                 targets.addAll(applyJunctions(transaction, decisions));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
@@ -352,10 +354,11 @@ final class BatchRun<T> {
             }
         }
         targets.forEach(core.wake());
+        core.tasks().committed(ready);
     }
 
     /** Pushes the downstream work of continuing tasks, one statement per target topic and insertion. */
-    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations) {
+    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready) {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
         Map<Target, List<Push<?>>> pushes = new LinkedHashMap<>();
@@ -372,16 +375,17 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : pushes.entrySet()) {
-            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey()))));
+            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
     }
 
     @SuppressWarnings("unchecked")
-    private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) {
+    private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents,
+                               Set<Integer> ready) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open());
+        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready);
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 

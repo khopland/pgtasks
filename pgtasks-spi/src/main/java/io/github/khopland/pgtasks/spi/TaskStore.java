@@ -89,8 +89,40 @@ public interface TaskStore {
      */
     boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException;
 
-    /** Pushes all tasks in one step, in order, applying the insertion policy. */
+    /**
+     * Pushes all tasks in one step, in order, applying the insertion policy. Other nodes are woken
+     * when the transaction commits, whoever commits it.
+     */
     List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks) throws SQLException;
+
+    /** Who tells the other nodes about tasks a push made ready. */
+    enum WakeUp {
+        /** The store, when the transaction commits; see {@link #push(StoreTransaction, int, Insertion, List)}. */
+        AT_COMMIT,
+        /**
+         * The caller, who sees the transaction commit and then calls {@link #notifyReady}. A store
+         * that can't leave it to the caller wakes at commit, as with {@link #AT_COMMIT}.
+         */
+        BY_CALLER
+    }
+
+    /**
+     * Pushes like {@link #push(StoreTransaction, int, Insertion, List)}, leaving the wake-up to the
+     * caller if asked. Postgres serializes the commits of all transactions that notify, so a
+     * wake-up sent inside a busy application's transactions caps its commit rate; the engine
+     * sends its own after the commit instead.
+     */
+    default List<Pushed> push(StoreTransaction transaction, int topicId, Insertion insertion, List<NewTask> tasks, WakeUp wakeUp) throws SQLException {
+        return push(transaction, topicId, insertion, tasks);
+    }
+
+    /**
+     * Tells every node that these topics got ready work, in a transaction of the caller's own
+     * that holds nothing else, for pushes made with {@link WakeUp#BY_CALLER} once they have
+     * committed. A hint like any wake-up. Does nothing in a store that wakes at commit anyway.
+     */
+    default void notifyReady(StoreTransaction transaction, Collection<Integer> topicIds) throws SQLException {
+    }
 
     /**
      * For each group of identifiers: if every identifier has a task in the topic that counts for
