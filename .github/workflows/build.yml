@@ -1,5 +1,7 @@
 # Builds and tests every module on Linux, including the store TCK and the engine's Postgres
-# tests on an embedded Postgres (no Docker needed).
+# tests on an embedded Postgres (no Docker needed). The build job runs on the default Postgres
+# (embedded-postgres-binaries.version in pgtasks-parent); the postgres job repeats the
+# Postgres-dependent modules on every other supported major version.
 name: build
 
 on:
@@ -33,5 +35,34 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
+          path: '**/target/surefire-reports/'
+          retention-days: 7
+
+  postgres:
+    name: postgres ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported upstream and tested; 17 is the default the build job runs on.
+        postgres: ['15', '16', '18', '19']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Test on Postgres ${{ matrix.postgres }}
+        run: >-
+          mvn -B -ntp verify
+          -pl pgtasks-postgres,pgtasks-engine,pgtasks-spring-boot-starter -am
+          -Dpgtasks.test.postgres.version=${{ matrix.postgres }}
+      - name: Keep test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-postgres-${{ matrix.postgres }}
           path: '**/target/surefire-reports/'
           retention-days: 7

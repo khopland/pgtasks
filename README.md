@@ -27,7 +27,7 @@ dead letters, where an operator can revive or discard it. Nothing else needs con
 ## Requirements
 
 - Java 25. The engine uses scoped values and virtual threads.
-- PostgreSQL. The tests run on 17, and the SQL avoids features that only 18 has.
+- PostgreSQL 15 to 19, the versions the PostgreSQL project still supports. CI runs the Postgres tests on each of them. See [Postgres versions](docs/operations.md#postgres-versions).
 - Spring Boot 4.1 for the starter, which is optional. The engine itself depends on no framework.
 
 ## Modules
@@ -153,7 +153,7 @@ engine.close();                                // drains running batches, then s
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
 - [Operations](docs/operations.md): schema, endpoint, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
 - [Migrating from 1.x](docs/migrating-from-1.x.md): mapping the concepts, and moving queued tasks with `LegacyImport`.
-- [Benchmarks](docs/benchmarks/2026-11-20-schema.md).
+- Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [NOTIFY at commit, throughput and wake-up latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 
 pgtasks started as a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)
 (1.x), and keeps its Apache 2.0 license. 1.x lives on in this repository's `main` branch.

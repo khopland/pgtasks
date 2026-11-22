@@ -45,6 +45,11 @@
     </dependency>
     <dependency>
       <groupId>io.github.khopland.pgtasks</groupId>
+      <artifactId>pgtasks-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.khopland.pgtasks</groupId>
       <artifactId>pgtasks-test</artifactId>
       <scope>test</scope>
     </dependency>
