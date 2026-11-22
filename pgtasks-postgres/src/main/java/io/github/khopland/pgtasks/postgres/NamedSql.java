@@ -14,28 +14,28 @@ import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.postgresql.PGStatement;
 
-/** SQL with {@code :name} parameters, so one value can be bound in several places. */
+/**
+ * SQL with {@code :name} parameters, so one value can be bound in several places.
+ *
+ * <p>Every statement is planned for its actual parameters on every execution, never from a cached
+ * generic plan. The driver prepares a statement on the server after a few executions, and Postgres
+ * may then keep one generic plan for the connection's lifetime. Made while the tables were small or
+ * their statistics said empty, which is how every install starts and how the queue looks after each
+ * burst drains, it keeps that shape as they grow, and nothing invalidates it until the next analyze:
+ * claims were 30 times slower after a topic sat idle (Phase 2 benchmark), and a completion read its
+ * topic's whole history (NOTIFY benchmark, CompletionPlanTest). A plan made per execution sees the
+ * tables' current size; planning costs a fraction of a millisecond.
+ */
 final class NamedSql {
 
     private static final Pattern PARAMETER = Pattern.compile("(?<![:\\w]):([a-z_]+)");
 
     private final String sql;
     private final List<String> names;
-    private final boolean customPlans;
 
-    private NamedSql(String sql, List<String> names, boolean customPlans) {
+    private NamedSql(String sql, List<String> names) {
         this.sql = sql;
         this.names = names;
-        this.customPlans = customPlans;
-    }
-
-    /**
-     * The same statement, planned for its actual parameters on every execution. For claims: a
-     * cached generic plan, made while a topic sat idle and empty, keeps its empty-table shape
-     * when work arrives, and was 30 times slower in the Phase 2 benchmark.
-     */
-    NamedSql withCustomPlans() {
-        return new NamedSql(sql, names, true);
     }
 
     static NamedSql parse(String text) {
@@ -47,7 +47,7 @@ final class NamedSql {
             matcher.appendReplacement(sql, "?");
         }
         matcher.appendTail(sql);
-        return new NamedSql(sql.toString(), List.copyOf(names), false);
+        return new NamedSql(sql.toString(), List.copyOf(names));
     }
 
     String sql() {
@@ -57,7 +57,7 @@ final class NamedSql {
     PreparedStatement prepare(Connection connection, Parameters parameters) throws SQLException {
         PreparedStatement statement = connection.prepareStatement(sql);
         try {
-            if (customPlans && statement.isWrapperFor(PGStatement.class)) {
+            if (statement.isWrapperFor(PGStatement.class)) {
                 statement.unwrap(PGStatement.class).setPrepareThreshold(0);
             }
             for (int index = 0; index < names.size(); index++) {
