@@ -17,9 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Set up before a test: a burst is pushed and drained, the queue is analyzed and its autovacuum
  * turned off, so the statistics stay "empty"; then live ballast goes in, in a topic of its own, in
- * every waiting state, next to the burst's finished history. A statement that reads only what it
- * needs never touches the ballast. Every statement the store runs is audited ({@link PlanAudit}),
- * and {@link #check()} fails if one read more than {@link #ALLOWED} of the queue and task tables.
+ * every waiting state, next to the burst's finished history. And the topics the TCK uses already
+ * have finished tasks of their own, so a statement that finds a topic's tasks by topic alone reads
+ * them too (on a table that was never analyzed, the completion update did: the NOTIFY benchmark).
+ * A statement that reads only what it needs never touches the ballast. Every statement the store
+ * runs is audited ({@link PlanAudit}), and {@link #check()} fails if one read more than
+ * {@link #ALLOWED} of the queue and task tables.
  */
 final class DrainedQueue implements AutoCloseable {
 
@@ -44,6 +47,15 @@ final class DrainedQueue implements AutoCloseable {
         // Count snapshots: every topic's counts, once a minute on the housekeeping leader.
         "INSERT INTO pgtasks.topic_count"
     );
+
+    /**
+     * The topics TCK tests and the Postgres tests run on, each with {@link #TOPIC_HISTORY} finished
+     * tasks before the test starts. Not "retired" and "busy": their tests check that purging and
+     * deleting a topic see exactly the topic's own tasks.
+     */
+    private static final List<String> HISTORY_TOPICS = List.of("topic", "other", "first", "second", "reports", "merge", "idle", "empty", "unset");
+    /** Enough that reading one topic's history takes more than {@link #ALLOWED}. */
+    private static final int TOPIC_HISTORY = 2_000;
 
     private final PostgresDatabase database;
     private final String schema;
@@ -100,6 +112,19 @@ final class DrainedQueue implements AutoCloseable {
                    CASE WHEN id %% 6 >= 4 THEN now() + interval '100 years' END
             FROM t
             """.formatted(BALLAST));
+        // History in the tests' own topics, finished in a hundred years: retention, whose cutoffs are
+        // near now, never purges it. Every outcome, under identifiers no test uses.
+        for (String topic : HISTORY_TOPICS) {
+            execute(database, schema, "SELECT pgtasks.create_topic('" + topic + "')");
+        }
+        execute(database, schema, """
+            INSERT INTO pgtasks.task (topic_id, identifier, payload, outcome, completed_at)
+            SELECT tp.id, 'history-' || (g %% 500), 'x',
+                   (ARRAY['succeeded', 'succeeded', 'filtered', 'failed', 'redundant'])[1 + g %% 5]::pgtasks.task_outcome,
+                   now() + interval '100 years'
+            FROM pgtasks.topic tp, generate_series(1, %d) AS g
+            WHERE tp.name = ANY ('%s'::text[])
+            """.formatted(TOPIC_HISTORY, "{" + String.join(",", HISTORY_TOPICS) + "}"));
     }
 
     /** SQL written for the default schema, on the given one. */
