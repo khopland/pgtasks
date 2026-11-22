@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.test.tck;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.IntStream;
@@ -75,23 +76,23 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     public static NewTask task(String identifier) {
-        return new NewTask(identifier, "payload-" + identifier, null, null, null, false, 0, null, null, null, null);
+        return new NewTask(identifier, "payload-" + identifier, null, null, null, false, 0, null, null, null, Map.of());
     }
 
     public static NewTask delayed(String identifier, Duration delay) {
-        return new NewTask(identifier, null, null, null, delay, false, 0, null, null, null, null);
+        return new NewTask(identifier, null, null, null, delay, false, 0, null, null, null, Map.of());
     }
 
     public static NewTask suspended(String identifier) {
-        return new NewTask(identifier, null, null, null, null, true, 0, null, null, null, null);
+        return new NewTask(identifier, null, null, null, null, true, 0, null, null, null, Map.of());
     }
 
     public static NewTask prioritized(String identifier, int priority) {
-        return new NewTask(identifier, null, null, null, null, false, priority, null, null, null, null);
+        return new NewTask(identifier, null, null, null, null, false, priority, null, null, null, Map.of());
     }
 
     public static NewTask deduplicated(String identifier, String key) {
-        return new NewTask(identifier, null, null, null, null, false, 0, key, null, null, null);
+        return new NewTask(identifier, null, null, null, null, false, 0, key, null, null, Map.of());
     }
 
     public static NewTask[] many(String prefix, int count) {

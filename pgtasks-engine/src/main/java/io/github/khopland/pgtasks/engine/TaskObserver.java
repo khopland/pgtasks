@@ -1,14 +1,14 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
+import io.github.khopland.pgtasks.Batch;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
-
-import org.jspecify.annotations.Nullable;
 
 /**
  * Sees what the engine does, for metrics, tracing and logging context, without the engine
@@ -26,7 +26,8 @@ public interface TaskObserver {
 
     /**
      * Every one of these observers, in order: each sees everything, and one that throws doesn't
-     * stop the others. A push stores the first trace context any of them gives.
+     * stop the others. A push stores the headers of all of them; for a name two of them give,
+     * the first one's value.
      */
     static TaskObserver composite(List<? extends TaskObserver> observers) {
         List<TaskObserver> all = observers.stream().filter(observer -> observer != NONE).<TaskObserver>map(observer -> observer).toList();
@@ -34,9 +35,22 @@ public interface TaskObserver {
     }
 
     /**
-     * Tasks are about to be written to a topic, inside the pushing transaction. The returned
-     * observation's {@link PushObservation#traceContext()} is stored with each task, and is closed
-     * once the write is done, whether the transaction commits or not.
+     * Carries these MDC keys from the code that pushes a task to the code that handles it, for a
+     * correlation id that follows the work through every topic, with or without tracing. Each
+     * key the MDC has when a task is pushed is stored as a header of the same name, and is put
+     * back in the MDC while a handler works on the task. Downstream work, pushed from there,
+     * picks it up again.
+     */
+    static TaskObserver mdc(Collection<String> keys) {
+        return new MdcHeaders(keys);
+    }
+
+    /**
+     * Tasks are about to be written to a topic, inside the pushing transaction, on the pushing
+     * thread: for downstream work of a batch, with the task that staged it opened
+     * ({@link BatchObservation#task}). The returned observation's
+     * {@link PushObservation#headers()} are stored with each task, and it is closed once the write
+     * is done, whether the transaction commits or not.
      */
     default PushObservation pushing(TopicRef<?> topic, int tasks) {
         return PushObservation.NONE;
@@ -48,8 +62,8 @@ public interface TaskObserver {
 
     /**
      * A claimed batch is about to run. The engine opens the observation on the thread running the
-     * handler and again on the thread completing the batch, so downstream pushes see it as the
-     * current trace, and closes it once the batch is done.
+     * handler and again on the thread completing the batch, and closes it once the batch is done.
+     * Each task of the batch can have its own observation as well ({@link BatchObservation#task}).
      */
     default BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
         return BatchObservation.NONE;
@@ -88,17 +102,17 @@ public interface TaskObserver {
 
         PushObservation NONE = new PushObservation() {
             @Override
-            public @Nullable String traceContext() {
-                return null;
-            }
-
-            @Override
             public void close() {
             }
         };
 
-        /** The pushing code's trace as a W3C {@code traceparent}, or null. */
-        @Nullable String traceContext();
+        /**
+         * Headers to store with each task of the push, such as the current trace's propagation
+         * headers. A creation's own headers win over these.
+         */
+        default Map<String, String> headers() {
+            return Map.of();
+        }
 
         @Override
         void close();
@@ -112,6 +126,29 @@ public interface TaskObserver {
         /** Makes the batch current on this thread until the scope is closed. */
         default Scope open() {
             return Scope.NONE;
+        }
+
+        /**
+         * One task of the batch, for an observer that follows each task on its own, such as a
+         * tracer continuing the trace each task was pushed from. The engine asks for it once per
+         * task, at most: when {@link Batch#decide} or
+         * {@code decideConcurrently} is about to run the task's decider, or else when the
+         * completion writes the task's downstream work. It opens the observation around the
+         * decider, on the decider's thread, and closes it when the decider returns; then opens it
+         * again, inside the batch's {@link #open()}, while the completion writes the task's
+         * downstream work, so that work is pushed from the task. Every task observation is closed
+         * before the batch's.
+         *
+         * <p>By default the task has no observation of its own and is seen as part of the batch.
+         */
+        default TaskObservation task(Task<?> task) {
+            BatchObservation batch = this;
+            return new TaskObservation() {
+                @Override
+                public Scope open() {
+                    return batch.open();
+                }
+            };
         }
 
         /**
@@ -130,6 +167,29 @@ public interface TaskObserver {
         }
 
         /** The batch is done. Called last, exactly once. */
+        default void close() {
+        }
+    }
+
+    /** One task of a batch: see {@link BatchObservation#task}. */
+    interface TaskObservation {
+
+        TaskObservation NONE = new TaskObservation() {
+        };
+
+        /**
+         * Makes the task current on this thread until the scope is closed. Called again after
+         * {@link #close()}, for the task's downstream work.
+         */
+        default Scope open() {
+            return Scope.NONE;
+        }
+
+        /** The task's decider threw. Called at most once, before {@link #close()}. */
+        default void error(Throwable error) {
+        }
+
+        /** The engine is done handling the task. Called exactly once. */
         default void close() {
         }
     }

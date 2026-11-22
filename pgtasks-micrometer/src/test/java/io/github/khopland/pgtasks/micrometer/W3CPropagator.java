@@ -10,6 +10,8 @@ import io.micrometer.tracing.propagation.Propagator;
 /** Just enough of W3C trace context for {@code SimpleTracer}, which comes without a propagator. */
 final class W3CPropagator implements Propagator {
 
+    static final String TRACEPARENT = "traceparent";
+
     private final Tracer tracer;
 
     W3CPropagator(Tracer tracer) {
@@ -18,17 +20,17 @@ final class W3CPropagator implements Propagator {
 
     @Override
     public List<String> fields() {
-        return List.of(TaskObservations.TRACEPARENT);
+        return List.of(TRACEPARENT);
     }
 
     @Override
     public <C> void inject(TraceContext context, C carrier, Setter<C> setter) {
-        setter.set(carrier, TaskObservations.TRACEPARENT, "00-" + context.traceId() + "-" + context.spanId() + "-01");
+        setter.set(carrier, TRACEPARENT, "00-" + context.traceId() + "-" + context.spanId() + "-01");
     }
 
     @Override
     public <C> Span.Builder extract(C carrier, Getter<C> getter) {
-        String traceparent = getter.get(carrier, TaskObservations.TRACEPARENT);
+        String traceparent = getter.get(carrier, TRACEPARENT);
         if (traceparent == null) {
             return tracer.spanBuilder();
         }

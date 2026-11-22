@@ -13,7 +13,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Creation;
@@ -73,6 +75,9 @@ final class BatchRun<T> {
      * downstream system is down.
      */
     private final Set<Long> taskFaults = new HashSet<>();
+    private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
+    /** Each task's own observation, by task id, created the first time the engine needs it. */
+    private final Map<Long, TaskObserver.TaskObservation> taskObservations = new ConcurrentHashMap<>();
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
         this(worker, core, claimed, false);
@@ -114,6 +119,7 @@ final class BatchRun<T> {
         }
         Map<BatchResource<?>, Object> opened = new LinkedHashMap<>();
         TaskObserver.BatchObservation observation = core.observer().batch(topic.ref(), all);
+        this.batchObservation = observation;
         try {
             runBatch(topic, claims, runnable, early.build(), opened, observation);
         } finally {
@@ -122,6 +128,7 @@ final class BatchRun<T> {
                 // Abandoned claims stay held, or the stop's orphan release would hand them back.
                 claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
             }
+            taskObservations.values().forEach(TaskObserver.TaskObservation::close);
             observation.close();
         }
         if (fatal != null) {
@@ -161,7 +168,40 @@ final class BatchRun<T> {
 
     private Task<T> task(ClaimedTask claim, @Nullable T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
-            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.traceContext());
+            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.headers());
+    }
+
+    /** The task's own observation, asked for once; see {@link TaskObserver.BatchObservation#task}. */
+    private TaskObserver.TaskObservation observe(Task<?> task) {
+        return taskObservations.computeIfAbsent(task.id(), id -> new ClosedOnce(batchObservation.task(task)));
+    }
+
+    /** Lets the engine close a task observation where it's done with it, and again at the end of the batch. */
+    private static final class ClosedOnce implements TaskObserver.TaskObservation {
+
+        private final TaskObserver.TaskObservation observation;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        ClosedOnce(TaskObserver.TaskObservation observation) {
+            this.observation = observation;
+        }
+
+        @Override
+        public TaskObserver.Scope open() {
+            return observation.open();
+        }
+
+        @Override
+        public void error(Throwable error) {
+            observation.error(error);
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) {
+                observation.close();
+            }
+        }
     }
 
     /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop. */
@@ -171,7 +211,7 @@ final class BatchRun<T> {
             for (BatchResource<?> resource : topic.resources()) {
                 opened.put(resource, resource.open(topic.ref(), tasks));
             }
-            DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened, core.tasks()::checkTarget);
+            DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened, core.tasks()::checkTarget, this::observe);
             Decisions handled = covering(scope.call(() -> {
                 try (TaskObserver.Scope ignored = observation.open()) {
                     return HandlerThread.run(topic.ref().name(), () -> topic.handler().handle(batch));
@@ -341,7 +381,7 @@ final class BatchRun<T> {
     @SuppressWarnings("unchecked")
     private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents);
+        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open());
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 

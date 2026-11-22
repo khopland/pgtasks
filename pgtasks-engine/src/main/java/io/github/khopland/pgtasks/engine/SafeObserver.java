@@ -34,8 +34,8 @@ final class SafeObserver implements TaskObserver {
         PushObservation observation = call(() -> observer.pushing(topic, tasks), PushObservation.NONE);
         return new PushObservation() {
             @Override
-            public @Nullable String traceContext() {
-                return call(observation::traceContext, null);
+            public Map<String, String> headers() {
+                return call(observation::headers, Map.of());
             }
 
             @Override
@@ -68,6 +68,28 @@ final class SafeObserver implements TaskObserver {
             public Scope open() {
                 Scope scope = call(observation::open, Scope.NONE);
                 return () -> run(scope::close);
+            }
+
+            @Override
+            public TaskObservation task(Task<?> task) {
+                TaskObservation each = call(() -> observation.task(task), TaskObservation.NONE);
+                return new TaskObservation() {
+                    @Override
+                    public Scope open() {
+                        Scope scope = call(each::open, Scope.NONE);
+                        return () -> run(scope::close);
+                    }
+
+                    @Override
+                    public void error(Throwable error) {
+                        run(() -> each.error(error));
+                    }
+
+                    @Override
+                    public void close() {
+                        run(each::close);
+                    }
+                };
             }
 
             @Override

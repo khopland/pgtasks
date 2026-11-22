@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -21,8 +22,10 @@ import org.jspecify.annotations.Nullable;
  * @param rootId    the first task of the flow this one belongs to, if it has a parent
  * @param createdAt when the task was pushed
  * @param claimedAt when this attempt was claimed
- * @param traceContext the trace of the code that pushed the task, as a W3C {@code traceparent},
- *                  or {@code null} if none was recorded
+ * @param headers   names and values stored with the task when it was pushed: the creation's
+ *                  own, and what the engine's observers added, such as the pushing code's
+ *                  trace propagation headers ({@code traceparent}, {@code tracestate},
+ *                  {@code baggage}, {@code b3}) or MDC values
  */
 public record Task<T>(
     TopicRef<T> topic,
@@ -35,12 +38,13 @@ public record Task<T>(
     @Nullable Long rootId,
     Instant createdAt,
     Instant claimedAt,
-    @Nullable String traceContext
+    Map<String, String> headers
 ) {
 
     public Task {
         Objects.requireNonNull(topic, "topic");
         Objects.requireNonNull(identifier, "identifier");
+        headers = Headers.copy(headers);
     }
 
     /**
@@ -55,8 +59,9 @@ public record Task<T>(
         return Optional.ofNullable(reference);
     }
 
-    public Optional<String> findTraceContext() {
-        return Optional.ofNullable(traceContext);
+    /** The value of a header the task was pushed with. */
+    public Optional<String> header(String name) {
+        return Optional.ofNullable(headers.get(name));
     }
 
     public OptionalLong findParentId() {

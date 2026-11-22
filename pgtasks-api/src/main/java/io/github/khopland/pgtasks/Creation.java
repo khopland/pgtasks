@@ -1,6 +1,8 @@
 package io.github.khopland.pgtasks;
 
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
@@ -16,6 +18,9 @@ import org.jspecify.annotations.Nullable;
  * @param priority   higher runs first; 0 by default, which keeps plain FIFO order
  * @param dedupKey   if set, at most one unfinished task per key and topic exists; a push with a
  *                   key that is already queued is reported as a duplicate and not stored
+ * @param headers    names and values stored with the task, such as a correlation id. The
+ *                   engine's observers add their own when the task is pushed, such as the
+ *                   current trace's propagation headers; these win over theirs
  */
 public record Creation<T>(
     String identifier,
@@ -24,7 +29,8 @@ public record Creation<T>(
     @Nullable Duration delay,
     boolean suspended,
     int priority,
-    @Nullable String dedupKey
+    @Nullable String dedupKey,
+    Map<String, String> headers
 ) {
 
     public Creation {
@@ -38,29 +44,42 @@ public record Creation<T>(
         if (delay != null && suspended) {
             throw new IllegalArgumentException("a creation is either delayed or suspended");
         }
+        headers = Headers.copy(headers);
     }
 
     public static <T> Creation<T> of(String identifier, T payload) {
-        return new Creation<>(identifier, payload, null, null, false, 0, null);
+        return new Creation<>(identifier, payload, null, null, false, 0, null, Map.of());
     }
 
     public Creation<T> withReference(String reference) {
-        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey);
+        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey, headers);
     }
 
     public Creation<T> withDelay(Duration delay) {
-        return new Creation<>(identifier, payload, reference, delay, false, priority, dedupKey);
+        return new Creation<>(identifier, payload, reference, delay, false, priority, dedupKey, headers);
     }
 
     public Creation<T> asSuspended() {
-        return new Creation<>(identifier, payload, reference, null, true, priority, dedupKey);
+        return new Creation<>(identifier, payload, reference, null, true, priority, dedupKey, headers);
     }
 
     public Creation<T> withPriority(int priority) {
-        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey);
+        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey, headers);
     }
 
     public Creation<T> withDedupKey(String dedupKey) {
-        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey);
+        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey, headers);
+    }
+
+    /** Adds a header, or replaces the one with this name. */
+    public Creation<T> withHeader(String name, String value) {
+        return withHeaders(Map.of(name, value));
+    }
+
+    /** Adds these headers, replacing any with the same names. */
+    public Creation<T> withHeaders(Map<String, String> headers) {
+        Map<String, String> merged = new LinkedHashMap<>(this.headers);
+        merged.putAll(Headers.copy(headers));
+        return new Creation<>(identifier, payload, reference, delay, suspended, priority, dedupKey, merged);
     }
 }

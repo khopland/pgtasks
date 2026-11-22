@@ -228,7 +228,7 @@ public final class InMemoryTaskStore implements TaskStore {
             }
             long id = nextTask++;
             Rows.Task row = new Rows.Task(topicId, id, task.identifier(), task.reference(), task.payload(), task.payloadType(),
-                task.parentId(), task.rootId(), now, null, null, null, null, 0, null, task.traceContext());
+                task.parentId(), task.rootId(), now, null, null, null, null, 0, null, task.headers());
             if (superseded) {
                 memory.put(tasks, id, row.redundant(now));
                 results.add(new Pushed(task.identifier(), Pushed.Status.REDUNDANT, id));
@@ -335,7 +335,7 @@ public final class InMemoryTaskStore implements TaskStore {
             putQueued(memory, active);
             Rows.Task task = task(row.taskId());
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
-                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.traceContext(), row.failures(), row.firstFailedAt()));
+                task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.headers(), row.failures(), row.firstFailedAt()));
         }
         if (admission != null && !claimed.isEmpty()) {
             Rows.Bucket bucket = Objects.requireNonNull(buckets.get(admission.name()), "bucket");
@@ -795,7 +795,8 @@ public final class InMemoryTaskStore implements TaskStore {
             task.createdAt(),
             task.completedAt(),
             row != null ? row.failures() : 0,
-            row != null ? row.firstFailedAt() : null
+            row != null ? row.firstFailedAt() : null,
+            task.headers()
         ));
     }
 

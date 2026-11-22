@@ -25,6 +25,7 @@ import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration;
@@ -358,6 +359,24 @@ class TaskAutoConfigurationTest {
             context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "after the restart");
             EngineFixture.await("the task ran", Duration.ofSeconds(5), () -> context.getBean(Modules.class).handled.contains("after the restart"));
         });
+    }
+
+    @Test
+    void mdc_headers_carry_mdc_keys_from_the_push_to_the_handler() {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        memory().withPropertyValues("pgtasks.mdc-headers=korrelasjonsid")
+            .withBean(TaskConfigurer.class, () -> tasks -> tasks.eachTask(NOTIFY, task ->
+                seen.add(task.task().header("korrelasjonsid").orElse("none") + "/" + MDC.get("korrelasjonsid"))))
+            .run(context -> {
+                MDC.put("korrelasjonsid", "k-1");
+                try {
+                    context.getBean(Tasks.class).independently().push(NOTIFY, "anna", "hello");
+                } finally {
+                    MDC.remove("korrelasjonsid");
+                }
+                EngineFixture.await("the task ran", Duration.ofSeconds(5), () -> !seen.isEmpty());
+                assertThat(seen).containsExactly("k-1/k-1");
+            });
     }
 
     @Test

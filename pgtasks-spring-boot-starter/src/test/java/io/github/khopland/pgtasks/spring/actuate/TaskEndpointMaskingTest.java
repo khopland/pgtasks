@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import io.github.khopland.pgtasks.Creation;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskEngine;
@@ -50,7 +52,8 @@ class TaskEndpointMaskingTest {
 
     @Test
     void payloads_and_messages_are_hidden_unless_shown() throws Exception {
-        engine.tasks().independently().push(WORK, "a", "type: fnr 12345678901");
+        engine.tasks().independently().push(WORK, Insertion.APPEND,
+            Creation.of("a", "type: fnr 12345678901").withHeader("korrelasjonsid", "k-12345678901"));
         TaskTester.of(engine).awaitIdle();
 
         TaskEndpoint hidden = new TaskEndpoint(engine);
@@ -63,10 +66,12 @@ class TaskEndpointMaskingTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> task = (Map<String, Object>) hidden.read("tasks", "1", SecurityContext.NONE).getBody();
         assertThat(task.get("payload")).isEqualTo("******");
+        assertThat(task.get("headers")).as("names are shown, values hidden").isEqualTo(Map.of("korrelasjonsid", "******"));
 
         TaskEndpoint shown = new TaskEndpoint(engine, Show.ALWAYS, Set.of());
         Map<String, Object> visible = first(shown.readPart("topics", "work", "dead-letters", null, null, SecurityContext.NONE).getBody(), "deadLetters");
         assertThat(visible.get("payload")).isEqualTo("type: fnr 12345678901");
         assertThat((String) visible.get("error")).contains("person 12345678901 is unknown");
+        assertThat(visible.get("headers")).isEqualTo(Map.of("korrelasjonsid", "k-12345678901"));
     }
 }

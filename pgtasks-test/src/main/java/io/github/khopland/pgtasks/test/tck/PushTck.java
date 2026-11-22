@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -207,7 +208,7 @@ public abstract class PushTck extends StoreTck {
     @Test
     void lineage_and_reference_are_stored() throws SQLException {
         StoreFixture fixture = setUp();
-        var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L, null);
+        var child = new TaskStore.NewTask("a", null, "v1", "ref-1", null, false, 0, null, 10L, 7L, Map.of("korrelasjonsid", "k-1"));
         long id = StoreFixture.id(fixture.push(topic, Insertion.APPEND, child).getFirst());
 
         TaskView view = fixture.view(id).orElseThrow();
@@ -215,6 +216,7 @@ public abstract class PushTck extends StoreTck {
         assertThat(view.parentId()).isEqualTo(10L);
         assertThat(view.rootId()).isEqualTo(7L);
         assertThat(view.payloadType()).isEqualTo("v1");
+        assertThat(view.headers()).containsExactly(Map.entry("korrelasjonsid", "k-1"));
     }
 
     @Test

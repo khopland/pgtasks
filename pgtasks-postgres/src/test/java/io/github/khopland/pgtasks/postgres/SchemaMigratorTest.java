@@ -168,12 +168,12 @@ class SchemaMigratorTest {
     void reapplies_a_repeatable_file_when_it_changes(PostgresDatabase database) throws SQLException {
         TaskSchema.migrate(database.dataSource());
         String changed = shipped().stream().filter(script -> script.name().equals("R__task_view.sql")).findFirst().orElseThrow().content()
-            .replace("t.error\nFROM", "t.error,\n       t.trace_context\nFROM");
+            .replace("t.headers\nFROM", "t.headers,\n       t.completed_at AS finished_at\nFROM");
 
         TaskSchema.Status status = migrate(database, replacing("R__task_view.sql", changed));
 
         assertThat(status.applied()).containsExactly("R__task_view.sql");
-        assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_name = 'task_view' AND column_name = 'trace_context'")).isEqualTo(1);
+        assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_name = 'task_view' AND column_name = 'finished_at'")).isEqualTo(1);
         assertThat(migrate(database, replacing("R__task_view.sql", changed)).applied()).isEmpty();
     }
 

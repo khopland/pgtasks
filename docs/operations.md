@@ -54,7 +54,7 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 
 | Metric | What |
 |---|---|
-| `pgtasks.push`, `pgtasks.batch` | Observations (timers, and spans with tracing) of pushes and batches |
+| `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
 | `pgtasks.pushed{topic,status}` | Committed pushes |
 | `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, throttled, unavailable, retrying, dead-lettered |
 | `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
@@ -75,9 +75,55 @@ counts the queue. Alert on:
 - `pgtasks.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
 - `pgtasks.breaker.open`, and the health indicator going DOWN.
 
-Traces follow a task from the code that pushed it through every topic downstream: the pushing
-code's W3C `traceparent` is stored with the task. MDC carries `task.topic`, and `task.id` and
-`task.identifier` for batches of one.
+## Tracing and correlation
+
+Traces follow a task from the code that pushed it through every topic downstream. Every header the
+tracer's propagator writes is stored with the task (`traceparent` and `tracestate`, `baggage`,
+`b3`, ...), so W3C, B3 and remote baggage fields all carry over. A trace looks like this:
+
+```
+POST /returns
+  push assessment            the push, a producer span
+    process assessment       the batch
+      handle assessment      the task, while its decider runs
+        push notify          its downstream work
+          process notify
+            handle notify
+```
+
+A batch continues its tasks' trace when they all share one, such as a batch of one or of tasks
+pushed together. A batch of tasks from different traces starts a trace of its own, and each
+task's `handle` span continues the trace that task was pushed from, so none of them is cut off
+and each task's downstream work stays in its own trace. Tasks get their own span when the handler
+goes through `batch.decide`, `decideConcurrently` or `eachTask`, and when they have downstream
+work; a handler that only returns `Decisions` for the whole batch is traced as the batch.
+
+The MDC carries `task.topic`, and `task.id` and `task.identifier` while a task's own span is
+current (and for batches of one).
+
+For a correlation id without tracing, or next to it, name the MDC keys to carry:
+
+```yaml
+pgtasks:
+  mdc-headers: korrelasjonsid
+```
+
+or `builder.observer(TaskObserver.mdc(List.of("korrelasjonsid")))`. Each key the MDC has when a
+task is pushed, typically set by a web filter for the request, is stored as a header of that
+name, and is in the MDC again while a handler works on the task, so log lines carry it and
+downstream pushes pick it up again. The value comes from the task: a handler that wants to give
+downstream work a new one sets the header on the creation. With tracing, a remote baggage field
+(`management.tracing.baggage.remote-fields` and `correlation.fields`) does the same through
+`baggage`.
+
+Headers are a `jsonb` column, so support can find a flow by its correlation id:
+
+```sql
+SELECT * FROM tasks.task_view WHERE headers->>'korrelasjonsid' = '...';
+```
+
+Add an index on that expression if you look them up often. The endpoint shows header names, and
+their values only where `show-values` allows.
 
 ## Dead letters
 

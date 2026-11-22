@@ -2,19 +2,17 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
-import org.jspecify.annotations.Nullable;
-
 /**
  * Several observers seen as one, each wrapped so one that throws doesn't keep the others from
- * seeing anything. A push's stored trace is the first observer's that gives one.
+ * seeing anything. A push stores every observer's headers; for a name two give, the first one's.
  */
 final class CompositeObserver implements TaskObserver {
 
@@ -29,8 +27,10 @@ final class CompositeObserver implements TaskObserver {
         List<PushObservation> each = observers.stream().map(observer -> observer.pushing(topic, tasks)).toList();
         return new PushObservation() {
             @Override
-            public @Nullable String traceContext() {
-                return each.stream().map(PushObservation::traceContext).filter(Objects::nonNull).findFirst().orElse(null);
+            public Map<String, String> headers() {
+                Map<String, String> headers = new LinkedHashMap<>();
+                each.forEach(observation -> observation.headers().forEach(headers::putIfAbsent));
+                return headers;
             }
 
             @Override
@@ -64,6 +64,29 @@ final class CompositeObserver implements TaskObserver {
                 List<Scope> scopes = new ArrayList<>(each.size());
                 each.forEach(observation -> scopes.add(observation.open()));
                 return () -> scopes.reversed().forEach(Scope::close);
+            }
+
+            @Override
+            public TaskObservation task(Task<?> task) {
+                List<TaskObservation> tasks = each.stream().map(observation -> observation.task(task)).toList();
+                return new TaskObservation() {
+                    @Override
+                    public Scope open() {
+                        List<Scope> scopes = new ArrayList<>(tasks.size());
+                        tasks.forEach(observation -> scopes.add(observation.open()));
+                        return () -> scopes.reversed().forEach(Scope::close);
+                    }
+
+                    @Override
+                    public void error(Throwable error) {
+                        tasks.forEach(observation -> observation.error(error));
+                    }
+
+                    @Override
+                    public void close() {
+                        tasks.reversed().forEach(TaskObservation::close);
+                    }
+                };
             }
 
             @Override

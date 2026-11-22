@@ -14,10 +14,10 @@
     <module.name>io.github.khopland.pgtasks.micrometer</module.name>
   </properties>
   <description>
-    pgtasks with Micrometer: an Observation for every push and batch, so traces continue from the
-    pushing code through every topic (the traceparent is stored with the task), counters for
-    committed pushes and results, queue gauges from the leader's snapshots, and the batch's
-    topic and task in the logging MDC.
+    pgtasks with Micrometer: an Observation for every push, batch and task, so traces continue
+    from the pushing code through every topic (the propagation headers are stored with the task,
+    and each task of a batch continues its own trace), counters for committed pushes and results,
+    queue gauges from the leader's snapshots, and the batch's topic and task in the logging MDC.
   </description>
 
   <dependencies>

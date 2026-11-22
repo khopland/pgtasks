@@ -348,8 +348,8 @@ public interface TaskStore {
     }
 
     /**
-     * A task to store. Payload and type are already encoded. {@code traceContext} is the pushing
-     * code's trace, as a W3C {@code traceparent}, or null.
+     * A task to store. Payload and type are already encoded. {@code headers} are stored as they
+     * are and come back with every claim; an empty map stores none.
      */
     record NewTask(
         String identifier,
@@ -362,10 +362,11 @@ public interface TaskStore {
         @Nullable String dedupKey,
         @Nullable Long parentId,
         @Nullable Long rootId,
-        @Nullable String traceContext
+        Map<String, String> headers
     ) {
         public NewTask {
             Objects.requireNonNull(identifier, "identifier");
+            headers = Map.copyOf(headers);
         }
     }
 
@@ -409,10 +410,13 @@ public interface TaskStore {
         @Nullable Long rootId,
         Instant createdAt,
         Instant claimedAt,
-        @Nullable String traceContext,
+        Map<String, String> headers,
         int failures,
         @Nullable Instant firstFailedAt
     ) {
+        public ClaimedTask {
+            headers = Map.copyOf(headers);
+        }
     }
 
     /**

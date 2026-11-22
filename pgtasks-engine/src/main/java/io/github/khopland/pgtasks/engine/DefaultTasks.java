@@ -3,12 +3,15 @@ package io.github.khopland.pgtasks.engine;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Insertion;
@@ -106,7 +109,7 @@ final class DefaultTasks implements Tasks {
         if (store.joinsApplicationTransactions()) {
             Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
                 "The current transaction has no JDBC connection, so a push to " + store + " can't join it."));
-            List<Pushed> results = write(join(connection), topic, insertion, creations, null);
+            List<Pushed> results = write(join(connection), topic, insertion, creations);
             transaction.afterCommit(() -> observed(topic, insertion, creations, results));
             return results;
         }
@@ -142,7 +145,7 @@ final class DefaultTasks implements Tasks {
         return new TaskWriter() {
             @Override
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-                List<Pushed> results = write(join(connection), topic, insertion, creations, null);
+                List<Pushed> results = write(join(connection), topic, insertion, creations);
                 observed(topic, insertion, creations, results);
                 return results;
             }
@@ -156,7 +159,7 @@ final class DefaultTasks implements Tasks {
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
                 List<Pushed> pushed;
                 try {
-                    pushed = EngineCore.transact(store, transaction -> write(transaction, topic, insertion, creations, null));
+                    pushed = EngineCore.transact(store, transaction -> write(transaction, topic, insertion, creations));
                 } catch (SQLException e) {
                     throw new TaskStorageException("Could not push to " + topic, e);
                 } catch (RuntimeException e) {
@@ -184,37 +187,79 @@ final class DefaultTasks implements Tasks {
         }
     }
 
+    private <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
+        return write(transaction, topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE);
+    }
+
     /**
      * Writes in the given store transaction without committing. {@code parents}, if given, holds
-     * the task that staged each creation, for the lineage columns.
+     * the task that staged each creation, for the lineage columns; {@code context} opens a parent
+     * task's observation, so the observers see each parent's downstream work pushed from it.
      */
     <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
-                                @Nullable List<? extends Task<?>> parents) {
+                           @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context) {
         try {
-            return store(transaction, topic, insertion, creations, parents);
+            return store(transaction, topic, insertion, creations, parents, context);
         } catch (SQLException e) {
             throw new TaskStorageException("Could not push to " + topic, e);
         }
     }
 
     private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
-                                     @Nullable List<? extends Task<?>> parents) throws SQLException {
+                                   @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
         PayloadCodec<T> codec = codec(topic);
         int topicId = topics.id(transaction, topic.name());
-        try (TaskObserver.PushObservation observation = taskObserver.pushing(topic, creations.size())) {
-            return store.push(transaction, topicId, insertion, newTasks(codec, creations, parents, observation.traceContext()));
+        List<TaskObserver.PushObservation> observations = new ArrayList<>();
+        try {
+            List<Map<String, String>> headers = observe(topic, creations.size(), parents, context, observations);
+            return store.push(transaction, topicId, insertion, newTasks(codec, creations, parents, headers));
+        } finally {
+            observations.reversed().forEach(TaskObserver.PushObservation::close);
         }
     }
 
+    /**
+     * Starts the push's observations, each closed by the caller once the write is done: one for
+     * the push, or one per parent task, started with that task opened. Returns the headers the
+     * observers give each creation.
+     */
+    private List<Map<String, String>> observe(TopicRef<?> topic, int size, @Nullable List<? extends Task<?>> parents,
+                                              Function<Task<?>, TaskObserver.Scope> context, List<TaskObserver.PushObservation> observations) {
+        if (parents == null) {
+            TaskObserver.PushObservation observation = taskObserver.pushing(topic, size);
+            observations.add(observation);
+            return Collections.nCopies(size, observation.headers());
+        }
+        Map<Long, List<Integer>> byParent = new LinkedHashMap<>();
+        for (int index = 0; index < size; index++) {
+            byParent.computeIfAbsent(parents.get(index).id(), id -> new ArrayList<>()).add(index);
+        }
+        List<Map<String, String>> headers = new ArrayList<>(Collections.nCopies(size, Map.of()));
+        for (List<Integer> indexes : byParent.values()) {
+            try (TaskObserver.Scope ignored = context.apply(parents.get(indexes.getFirst()))) {
+                TaskObserver.PushObservation observation = taskObserver.pushing(topic, indexes.size());
+                observations.add(observation);
+                Map<String, String> observed = observation.headers();
+                indexes.forEach(index -> headers.set(index, observed));
+            }
+        }
+        return headers;
+    }
+
     private static <T> List<TaskStore.NewTask> newTasks(PayloadCodec<T> codec, List<Creation<T>> creations,
-                                                       @Nullable List<? extends Task<?>> parents, @Nullable String traceContext) {
+                                                       @Nullable List<? extends Task<?>> parents, List<Map<String, String>> observed) {
         List<TaskStore.NewTask> tasks = new ArrayList<>(creations.size());
         for (int index = 0; index < creations.size(); index++) {
             Creation<T> creation = creations.get(index);
             Task<?> parent = parents == null ? null : parents.get(index);
+            Map<String, String> headers = observed.get(index);
+            if (!creation.headers().isEmpty()) {
+                headers = new LinkedHashMap<>(headers);
+                headers.putAll(creation.headers());
+            }
             tasks.add(new TaskStore.NewTask(
                 creation.identifier(),
                 creation.payload() == null ? null : codec.encode(creation.payload()),
@@ -226,7 +271,7 @@ final class DefaultTasks implements Tasks {
                 creation.dedupKey(),
                 parent == null ? null : parent.id(),
                 parent == null ? null : parent.flowRootId(),
-                traceContext
+                headers
             ));
         }
         return tasks;

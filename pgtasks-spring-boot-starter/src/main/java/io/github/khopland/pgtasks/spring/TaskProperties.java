@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.spring;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -46,6 +47,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param version         the application's version, for topics that revive their dead letters
  *                        on a new version; by default the build's, from {@code BuildProperties}
  *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)
+ * @param mdcHeaders      MDC keys that follow the work, such as a correlation id: each one the MDC
+ *                        has when a task is pushed is stored as a header of the same name, and is
+ *                        in the MDC again while a handler works on the task, so downstream pushes
+ *                        carry it too ({@code TaskObserver.mdc})
  */
 @ConfigurationProperties("pgtasks")
 @SuppressWarnings("InvalidParam") // {@code none} is a schema mode, not a misspelt {@code node}
@@ -59,7 +64,8 @@ public record TaskProperties(
     Map<String, Map<String, String>> topics,
     Map<String, Map<String, String>> limits,
     @DefaultValue("false") boolean testing,
-    String version
+    String version,
+    List<String> mdcHeaders
 ) {
 
     public enum Store { POSTGRES, MEMORY }
@@ -67,6 +73,7 @@ public record TaskProperties(
     public TaskProperties {
         topics = topics == null ? Map.of() : topics;
         limits = limits == null ? Map.of() : limits;
+        mdcHeaders = mdcHeaders == null ? List.of() : List.copyOf(mdcHeaders);
     }
 
     /** As the engine builder takes them: {@code topics.<topic>.<setting>} and {@code limits.<limit>.<setting>}. */
