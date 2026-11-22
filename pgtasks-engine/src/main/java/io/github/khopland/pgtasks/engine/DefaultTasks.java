@@ -5,13 +5,14 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntConsumer;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Insertion;
@@ -54,7 +55,8 @@ final class DefaultTasks implements Tasks {
     private final List<TopicTemplate<?>> templates;
     private final Map<Class<?>, PayloadCodec<?>> typeCodecs;
     private final TransactionBinding transactions;
-    private final Consumer<String> wakeLocally;
+    private final IntConsumer wakeLocally;
+    private final ReadyNotices notices;
     private final TaskObserver taskObserver;
     private volatile @Nullable PayloadCodecs fallbackCodecs;
     private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new ConcurrentHashMap<>();
@@ -67,7 +69,7 @@ final class DefaultTasks implements Tasks {
         List<TopicTemplate<?>> templates,
         Map<Class<?>, PayloadCodec<?>> typeCodecs,
         TransactionBinding transactions,
-        Consumer<String> wakeLocally,
+        IntConsumer wakeLocally,
         TaskObserver taskObserver
     ) {
         this.store = store;
@@ -77,6 +79,7 @@ final class DefaultTasks implements Tasks {
         this.typeCodecs = Map.copyOf(typeCodecs);
         this.transactions = transactions;
         this.wakeLocally = wakeLocally;
+        this.notices = new ReadyNotices(store);
         this.taskObserver = taskObserver;
     }
 
@@ -109,8 +112,12 @@ final class DefaultTasks implements Tasks {
         if (store.joinsApplicationTransactions()) {
             Connection connection = transaction.connection().orElseThrow(() -> new IllegalStateException(
                 "The current transaction has no JDBC connection, so a push to " + store + " can't join it."));
-            List<Pushed> results = write(join(connection), topic, insertion, creations);
-            transaction.afterCommit(() -> observed(topic, insertion, creations, results));
+            Set<Integer> ready = new LinkedHashSet<>();
+            List<Pushed> results = write(join(connection), topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE, ready);
+            transaction.afterCommit(() -> {
+                observed(topic, insertion, creations, results);
+                committed(ready);
+            });
             return results;
         }
         // The store can't join the transaction: check now, store once it has committed.
@@ -145,7 +152,8 @@ final class DefaultTasks implements Tasks {
         return new TaskWriter() {
             @Override
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-                List<Pushed> results = write(join(connection), topic, insertion, creations);
+                // The engine doesn't see this commit, so the push notifies inside the caller's transaction.
+                List<Pushed> results = write(join(connection), topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE, null);
                 observed(topic, insertion, creations, results);
                 return results;
             }
@@ -158,8 +166,12 @@ final class DefaultTasks implements Tasks {
             @Override
             public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
                 List<Pushed> pushed;
+                Set<Integer> ready = new LinkedHashSet<>();
                 try {
-                    pushed = EngineCore.transact(store, transaction -> write(transaction, topic, insertion, creations));
+                    pushed = EngineCore.transact(store, transaction -> {
+                        ready.clear();
+                        return write(transaction, topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE, ready);
+                    });
                 } catch (SQLException e) {
                     throw new TaskStorageException("Could not push to " + topic, e);
                 } catch (RuntimeException e) {
@@ -168,7 +180,7 @@ final class DefaultTasks implements Tasks {
                     throw new IllegalStateException(e);
                 }
                 observed(topic, insertion, creations, pushed);
-                wakeLocally.accept(topic.name());
+                committed(ready);
                 return pushed;
             }
         };
@@ -187,26 +199,39 @@ final class DefaultTasks implements Tasks {
         }
     }
 
-    private <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
-        return write(transaction, topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE);
+    /**
+     * Wakes this node's workers and, through the debounced {@link ReadyNotices}, every other node,
+     * for topics written with a {@code ready} set once their transaction has committed.
+     */
+    void committed(Set<Integer> ready) {
+        for (int topicId : ready) {
+            wakeLocally.accept(topicId);
+            notices.ready(topicId);
+        }
     }
 
     /**
      * Writes in the given store transaction without committing. {@code parents}, if given, holds
      * the task that staged each creation, for the lineage columns; {@code context} opens a parent
      * task's observation, so the observers see each parent's downstream work pushed from it.
+     *
+     * <p>{@code ready} is for a caller that sees the transaction commit: the push doesn't notify
+     * inside the transaction, the topic is added to {@code ready} if the push queued a task that
+     * is ready now, and the caller passes it to {@link #committed} after the commit. With
+     * {@code null} the push notifies at commit, whoever commits.
      */
     <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
-                           @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context) {
+                           @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context, @Nullable Set<Integer> ready) {
         try {
-            return store(transaction, topic, insertion, creations, parents, context);
+            return store(transaction, topic, insertion, creations, parents, context, ready);
         } catch (SQLException e) {
             throw new TaskStorageException("Could not push to " + topic, e);
         }
     }
 
     private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
-                                   @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context) throws SQLException {
+                                   @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context,
+                                   @Nullable Set<Integer> ready) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
@@ -215,10 +240,31 @@ final class DefaultTasks implements Tasks {
         List<TaskObserver.PushObservation> observations = new ArrayList<>();
         try {
             List<Map<String, String>> headers = observe(topic, creations.size(), parents, context, observations);
-            return store.push(transaction, topicId, insertion, newTasks(codec, creations, parents, headers));
+            List<TaskStore.NewTask> tasks = newTasks(codec, creations, parents, headers);
+            if (ready == null) {
+                return store.push(transaction, topicId, insertion, tasks, TaskStore.WakeUp.AT_COMMIT);
+            }
+            List<Pushed> results = store.push(transaction, topicId, insertion, tasks, TaskStore.WakeUp.BY_CALLER);
+            if (readyNow(tasks, results)) {
+                ready.add(topicId);
+            }
+            return results;
         } finally {
             observations.reversed().forEach(TaskObserver.PushObservation::close);
         }
+    }
+
+    /** Whether the push queued a task that can run now, not suspended or delayed. */
+    private static boolean readyNow(List<TaskStore.NewTask> tasks, List<Pushed> results) {
+        for (int index = 0; index < tasks.size(); index++) {
+            TaskStore.NewTask task = tasks.get(index);
+            Pushed.Status status = results.get(index).status();
+            if ((status == Pushed.Status.QUEUED || status == Pushed.Status.PENDING) && !task.suspended()
+                && (task.delay() == null || task.delay().isZero())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

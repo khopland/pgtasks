@@ -108,7 +108,7 @@ public final class TaskEngine implements AutoCloseable {
         this.admin = new TaskAdmin(this, store);
         // Known from the configuration, so limits() works before the store is prepared.
         this.limits = new RateLimits(store, configuredLimits(), this::limitChanged);
-        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wake,
+        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wakeById,
             settings.observer());
     }
 
