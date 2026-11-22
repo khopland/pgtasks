@@ -19,6 +19,7 @@
     <module>pgtasks-engine</module>
     <module>pgtasks-micrometer</module>
     <module>pgtasks-jackson</module>
+    <module>pgtasks-kotlin</module>
     <module>pgtasks-junit</module>
     <module>pgtasks-spring-boot-starter</module>
   </modules>

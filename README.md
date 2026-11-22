@@ -56,6 +56,7 @@ Import the BOM, then add modules without versions:
 | `pgtasks-memory` | An in-memory store for local runs and fast tests. It passes the same TCK as Postgres. |
 | `pgtasks-micrometer` | Metrics and tracing through Micrometer Observation. |
 | `pgtasks-jackson` | JSON payloads with Jackson 3, for payload types without a codec of their own. |
+| `pgtasks-kotlin` | Kotlin helpers: reified topic references, topic registration and a non-null payload accessor, over the same API. |
 | `pgtasks-junit` | A JUnit 5 extension: an engine per test on the in-memory store, with a manual clock. |
 | `pgtasks-api` | What application code sees: `TopicRef`, `Tasks`, handlers, `Decision`, operator views. |
 | `pgtasks-spi` | What stores and integrations implement. Applications never need it directly. |
@@ -100,6 +101,28 @@ pgtasks:
 ```
 
 A topic, limit or setting that no code defines fails startup, so a typo can't go unnoticed.
+
+### In Kotlin
+
+Add `pgtasks-kotlin` as well. Kotlin 2.1+ reads the JSpecify annotations, so payloads and other values that may be null are nullable types; `requirePayload()` is an explicit assertion for a topic that always carries a payload.
+
+```kotlin
+object AssessmentTopics {
+    val ASSESSMENT = topic<AssessmentRequest>("assessment")
+}
+
+@Configuration
+class AssessmentTasks {
+    @Bean
+    fun assessmentTasks(assessor: Assessor) = TaskConfigurer { tasks ->
+        tasks.eachTask(AssessmentTopics.ASSESSMENT) { work ->
+            assessor.assess(work.requirePayload())
+        }
+    }
+}
+```
+
+To declare and register a topic in one step, use `tasks.eachTopic<AssessmentRequest>("assessment") { work -> ... }`. Pushing needs no helper: `tasks.push(AssessmentTopics.ASSESSMENT, id, request)` infers the payload type. Building the module requires Kotlin 2.3 or newer, for Java 25 bytecode.
 
 ## Quick start without Spring
 
