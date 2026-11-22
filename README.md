@@ -84,7 +84,8 @@ class AssessmentTasks {
 ```
 
 Records and other payload types without a codec are stored as JSON when Jackson is on the
-classpath. To push from anywhere, inject `Tasks`:
+classpath. Binary formats such as Protobuf take `PayloadCodec.binary(Invoice::toByteArray, Invoice::parseFrom)`,
+stored as Base64 text. To push from anywhere, inject `Tasks`:
 
 - `tasks.push(...)` joins the current transaction and throws if there is none.
 - `tasks.on(connection).push(...)` joins the transaction on an explicit JDBC connection.
