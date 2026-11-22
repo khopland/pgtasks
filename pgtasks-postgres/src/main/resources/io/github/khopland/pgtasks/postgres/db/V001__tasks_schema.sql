@@ -1,4 +1,5 @@
--- pgtasks schema, version 1 (plan section 10).
+-- pgtasks schema, version 1 (plan section 10). Released with 0.1.0: never edit this file, add
+-- V002 instead (docs/operations.md, "Changing the schema"). SchemaFreezeTest holds its checksum.
 --
 -- The small, hot queue table holds unfinished tasks and is the only table polling touches.
 -- The task table is the record of every task, written once at push and once at completion. It is

@@ -51,6 +51,26 @@ in. With another tool, pass the same name the engine uses:
 - **A DBA pipeline**: replace the placeholder in each file, for instance with
   `sed 's/\${pgtasks_schema}/billing_tasks/g'`, and run the files in the order of `TaskSchema.FILES`.
 
+### Changing the schema
+
+`V001__tasks_schema.sql` is frozen for 0.1.0. **Never edit a released versioned file**: databases
+that applied it would no longer match it. The built-in runner refuses to start when an applied
+file's checksum changed, and Flyway and Liquibase do the same. Add the next file instead:
+
+1. `V002__<what>.sql`: the change, written so that 0.1.0 nodes still run against it during a rolling
+   deploy, or with `compatible_from` raised if they can't. It ends by recording its version in the
+   meta table, like V001. Use `${pgtasks_schema}` for every name.
+2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
+3. Functions, views and triggers stay in the `R__` files, which may change at any time: every path
+   applies them again when their content changes. Dropping or changing a view's column needs a
+   versioned file.
+4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
+   Add the new file's checksum there when it is released. `SchemaUpgradeTest` applies the files as
+   0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
+   state, then the current files, checks the tasks are still usable and runs part of the store TCK
+   on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory
+   and a seed when a release changes the schema.
+
 ## Actuator: the tasks endpoint and health
 
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.
