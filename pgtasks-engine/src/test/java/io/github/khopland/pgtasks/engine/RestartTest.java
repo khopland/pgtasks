@@ -10,8 +10,6 @@ import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 /** Review 2026-11-21: stop() switched the reloads off for good, so an engine started again ignored notifications. */
 class RestartTest {
 

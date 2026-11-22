@@ -29,7 +29,6 @@ import io.github.khopland.pgtasks.engine.RateLimit;
 import io.github.khopland.pgtasks.engine.RateLimits;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.VersionConflictException;
-import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.actuate.endpoint.SecurityContext;

@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.test.tck;
 
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
@@ -13,7 +12,6 @@ import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
-import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.Test;
 
