@@ -103,7 +103,10 @@ public final class PostgresTaskStore implements TaskStore {
         // without statistics walked task_completed_idx by topic and matched the ids in a filter,
         // reading the topic's whole history on every completion (NOTIFY benchmark). A history
         // lookup by identifier binds both columns of task_identifier_idx, and compares the outcome
-        // as text so task_completed_idx (topic_id, outcome) can't look narrower. And no statement
+        // as text so task_completed_idx (topic_id, outcome) can't look narrower. It takes the topic
+        // from a subquery, so the planner estimates an average topic's share of the history: given
+        // the value, statistics analyzed before the topic had history say it has none, and walking
+        // task_completed_idx by topic alone looked as cheap as looking up each identifier. No statement
         // runs on a cached generic plan (NamedSql). CompletionPlanTest finishes tasks every way
         // next to 50,000 finished tasks of the same topic.
         createTopic = sql("SELECT pgtasks.create_topic(:name)");
@@ -663,7 +666,7 @@ public final class PostgresTaskStore implements TaskStore {
                     UPDATE pgtasks.task t SET previous_outcome = t.outcome, outcome = 'redundant'
                     WHERE t.id = ANY (ARRAY(
                         SELECT d.id FROM pgtasks.task d
-                        WHERE d.topic_id = :topic::integer
+                        WHERE d.topic_id = (SELECT :topic::integer)
                           AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                           AND d.outcome::text IN ('succeeded', 'filtered', 'failed')
                         FOR UPDATE OF d SKIP LOCKED))
@@ -687,7 +690,7 @@ public final class PostgresTaskStore implements TaskStore {
                     DELETE FROM pgtasks.task t
                     WHERE t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
                           SELECT d.id FROM pgtasks.task d
-                          WHERE d.topic_id = :topic::integer
+                          WHERE d.topic_id = (SELECT :topic::integer)
                             AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
                             AND d.outcome IS NOT NULL
                           FOR UPDATE OF d SKIP LOCKED))
@@ -754,7 +757,7 @@ public final class PostgresTaskStore implements TaskStore {
                 """;
             case ANY -> """
                 SELECT 1 FROM pgtasks.task t
-                WHERE t.topic_id = :topic::integer AND t.identifier = g.identifier
+                WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
                   AND (t.outcome IS NULL OR t.outcome <> 'redundant')
                 """;
         };

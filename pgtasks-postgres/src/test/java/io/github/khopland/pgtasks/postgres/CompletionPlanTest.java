@@ -49,20 +49,26 @@ class CompletionPlanTest {
     @ParameterizedTest
     @EnumSource(Statistics.class)
     void finishing_a_task_does_not_read_the_topics_history(Statistics statistics, PostgresDatabase database) throws SQLException {
+        // A plan that reads the history per task runs for many minutes; fail instead.
+        database.execute("ALTER DATABASE \"" + database.name() + "\" SET statement_timeout = '30s'");
         // One connection, so the plans made while the tables were small are the ones used later.
         PlanAudit audit = new PlanAudit(database.newPool("audited", 1), DrainedQueue.ALLOWED, List.of());
         PostgresStoreFixture fixture = new PostgresStoreFixture(database, audit.dataSource(), TaskSchema.DEFAULT_SCHEMA);
+        // The rounds while the tables are small run in a topic of their own: a cached plan doesn't
+        // depend on the topic, and their dead queue rows stay out of the last round's queue lookups
+        // (Postgres 15 and 16 walk queue_identifier_idx by topic in the pushes' cleanup).
+        int warmUp = fixture.topic("warm-up");
         int topic = fixture.topic("topic");
         int node = fixture.node("node-a");
         database.execute("ALTER TABLE pgtasks.task SET (autovacuum_enabled = false)");
         database.execute("ALTER TABLE pgtasks.queue SET (autovacuum_enabled = false)");
 
-        round(fixture, database, topic, node, "first");
+        round(fixture, database, warmUp, node, "first");
         if (statistics == Statistics.ANALYZED_WHILE_DRAINED) {
             database.execute("DELETE FROM pgtasks.queue");
             database.execute("ANALYZE pgtasks.task");
             database.execute("ANALYZE pgtasks.queue");
-            round(fixture, database, topic, node, "second");
+            round(fixture, database, warmUp, node, "second");
         } else {
             assertThat(database.count("SELECT count(*) FROM pg_stat_user_tables WHERE relname IN ('task', 'queue') AND last_analyze IS NULL AND last_autoanalyze IS NULL"))
                 .as("neither table has been analyzed").isEqualTo(2);
