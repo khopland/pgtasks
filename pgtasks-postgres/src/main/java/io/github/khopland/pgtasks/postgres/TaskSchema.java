@@ -9,6 +9,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -49,7 +50,9 @@ import javax.sql.DataSource;
  * {@code V<version>__<description>.sql} for tables, types and indexes, applied once, each ending
  * by recording its version and the lowest version it stays compatible with in {@code pgtasks.meta};
  * {@code R__<description>.sql} for functions, views and triggers, idempotent and re-applied when
- * they change; and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
+ * they change, with a {@code -- revision: <n>} header comment raised by every change, so the
+ * built-in runner never applies an older definition over a newer one during a rolling deploy
+ * ({@code SchemaFreezeTest} pins each revision's checksum); and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
  * run outside a transaction, such as {@code CREATE INDEX CONCURRENTLY}.
  *
  * <p>Rights: with {@code MIGRATE} the application's user owns the schema. Otherwise the runtime
@@ -132,12 +135,27 @@ public final class TaskSchema {
         return migrate(dataSource, DEFAULT_SCHEMA);
     }
 
-    /** Applies whatever is missing to the given schema with the built-in runner, then checks the version. */
+    /**
+     * Applies whatever is missing to the given schema with the built-in runner, then checks the
+     * version. Each statement waits at most 5 seconds for a lock; see {@link #migrate(DataSource, String, Duration)}.
+     */
     public static Status migrate(DataSource dataSource, String schema) throws SQLException {
+        return migrate(dataSource, schema, SchemaMigrator.LOCK_TIMEOUT);
+    }
+
+    /**
+     * Applies whatever is missing to the given schema with the built-in runner, then checks the
+     * version. Changing a trigger or table needs a lock that waits behind every open transaction
+     * that touched the table, and every push and claim then queues behind the waiting change. So
+     * each statement waits at most {@code lockTimeout} for a lock; on a timeout the runner rolls the
+     * file back and tries again a few times with a growing pause, then fails with a
+     * {@link TaskSchemaException} naming the transactions that hold locks on the schema's tables.
+     */
+    public static Status migrate(DataSource dataSource, String schema, Duration lockTimeout) throws SQLException {
         validName(schema);
         try (Connection connection = dataSource.getConnection()) {
             refuseKeyword(connection, schema);
-            return new SchemaMigrator(scripts(), schema).migrate(connection);
+            return new SchemaMigrator(scripts(), schema, lockTimeout, SchemaMigrator.ATTEMPTS, SchemaMigrator.BACKOFF).migrate(connection);
         }
     }
 

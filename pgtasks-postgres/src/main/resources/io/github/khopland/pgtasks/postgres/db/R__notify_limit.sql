@@ -1,3 +1,4 @@
+-- revision: 1
 -- Broadcasts changes to rate limit overrides, so every node applies them without waiting for its
 -- next heartbeat. The payload is the limit's name; nodes reload the overrides on any notification.
 -- Also covers an operator changing the rate_limit table by hand. Repeatable.

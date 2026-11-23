@@ -13,6 +13,15 @@ Everything lives in one schema, `pgtasks` unless you name another, as plain SQL 
   rights: a topic is a row.
 - `none`: nothing is checked.
 
+Changing a trigger or table takes a lock that waits behind every open transaction that touched the
+table, and every push and claim then queues behind the waiting change. So the built-in runner lets
+each statement wait at most 5 seconds for a lock (`TaskSchema.migrate(dataSource, schema,
+lockTimeout)` takes another limit). When one times out, it rolls the file back and tries again up to
+five times, pausing 1, 2, 4 and 8 seconds in between. Then startup fails with a message that lists
+the open transactions holding locks on the schema's tables, oldest first, such as an application
+transaction that pushed and stayed open. With Flyway or Liquibase, set `lock_timeout` for the
+migration's user yourself, for instance with `ALTER ROLE migrator SET lock_timeout = '5s'`.
+
 `pgtasks.task_view` shows each task with its current state, for looking around in SQL.
 
 ### Naming the schema
@@ -63,9 +72,18 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
 3. Functions, views and triggers stay in the `R__` files, which may change at any time: every path
    applies them again when their content changes. Dropping or changing a view's column needs a
-   versioned file.
+   versioned file. **Raise the `-- revision: <n>` line in the file's header with every change.**
+   The built-in runner records the revision in `schema_history` and never applies a file over a
+   higher revision, so during a rolling deploy an old node that restarts leaves the new node's
+   functions, views and triggers alone (it logs that it did). Without the revision it would apply
+   its own older definitions again, and the new ones would stay rolled back until a new node
+   restarted. Flyway and Liquibase re-apply an `R__` file whenever its content differs from the
+   last one they applied, whatever the revision: run them once per release from the pipeline, not
+   from every node at startup.
 4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
-   Add the new file's checksum there when it is released. `SchemaUpgradeTest` applies the files as
+   Add the new file's checksum there when it is released. It also pins the checksum of every
+   revision of every `R__` file, so changing one without raising its revision fails the build; add
+   the new revision's checksum next to the old ones. `SchemaUpgradeTest` applies the files as
    0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
    state, then the current files, checks the tasks are still usable and runs part of the store TCK
    on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory

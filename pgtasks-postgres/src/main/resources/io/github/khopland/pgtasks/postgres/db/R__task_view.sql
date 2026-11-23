@@ -1,3 +1,4 @@
+-- revision: 1
 -- Replaces TASK_PRETTY: the current state is the queue state if the task is unfinished,
 -- otherwise its outcome. Repeatable. CREATE OR REPLACE VIEW can only add columns at the end;
 -- to drop or change one, drop the view in the versioned file that needs it.

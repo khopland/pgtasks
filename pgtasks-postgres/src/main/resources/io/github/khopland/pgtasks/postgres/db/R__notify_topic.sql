@@ -1,3 +1,4 @@
+-- revision: 1
 -- Broadcasts new topics, topics paused or resumed, and deleted topics, so every node starts or
 -- stops processing them without waiting for its next heartbeat. The payload is the topic's name;
 -- nodes compare all topics with what they run on any notification. Also covers topics registered
