@@ -20,10 +20,17 @@ import org.slf4j.LoggerFactory;
  * changes to topics and rate limit overrides send. Uses one
  * long-lived connection; on any error it reconnects with backoff and reports
  * {@link Listener#missed()}, so the engine polls every topic once.
+ *
+ * <p>Waiting for notifications doesn't notice a connection the network dropped without closing
+ * (a failover, a NAT or firewall timing out an idle flow): the socket just stays quiet. So every
+ * 30 seconds the notifier runs a query on it, with a network timeout, and
+ * reconnects when that fails.
  */
 public final class PostgresNotifier implements Notifier {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PostgresNotifier.class);
+    private static final int LIVENESS_SECONDS = 30;
+    private static final Duration LIVENESS_TIMEOUT = Duration.ofSeconds(10);
 
     /** Opens the listening connection. It should not come from the application's pool. */
     @FunctionalInterface
@@ -36,6 +43,8 @@ public final class PostgresNotifier implements Notifier {
     private final String ready;
     private final String limit;
     private final String topic;
+    private final Duration livenessInterval;
+    private final Duration livenessTimeout;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile @Nullable Thread thread;
     private volatile boolean connected;
@@ -47,6 +56,13 @@ public final class PostgresNotifier implements Notifier {
 
     /** Listens to the given schema's channels: {@code <schema>_ready}, {@code <schema>_limit} and {@code <schema>_topic}. */
     public PostgresNotifier(ConnectionFactory connections, String schema) {
+        this(connections, schema, Duration.ofSeconds(LIVENESS_SECONDS), LIVENESS_TIMEOUT);
+    }
+
+    /** For tests: how often the connection is checked, and how long a check may take. */
+    PostgresNotifier(ConnectionFactory connections, String schema, Duration livenessInterval, Duration livenessTimeout) {
+        this.livenessInterval = Objects.requireNonNull(livenessInterval);
+        this.livenessTimeout = Objects.requireNonNull(livenessTimeout);
         this.connections = Objects.requireNonNull(connections);
         TaskSchema.validName(schema);
         this.ready = schema + "_ready";
@@ -67,6 +83,11 @@ public final class PostgresNotifier implements Notifier {
         boolean first = true;
         while (running.get()) {
             try (Connection connection = connections.open()) {
+                // A pool may hand out connections with auto-commit off; LISTEN only takes effect at
+                // commit, so the session would sit idle in transaction and hear nothing.
+                connection.setAutoCommit(true);
+                // Bounds the liveness check's wait for a reply; waiting for notifications sets its own.
+                connection.setNetworkTimeout(Runnable::run, Math.toIntExact(livenessTimeout.toMillis()));
                 try (Statement statement = connection.createStatement()) {
                     statement.execute("LISTEN " + ready);
                     statement.execute("LISTEN " + limit);
@@ -79,7 +100,14 @@ public final class PostgresNotifier implements Notifier {
                 first = false;
                 backoff = Duration.ofMillis(100);
                 PGConnection postgres = connection.unwrap(PGConnection.class);
+                long checked = System.nanoTime();
                 while (running.get()) {
+                    if (System.nanoTime() - checked >= livenessInterval.toNanos()) {
+                        try (Statement statement = connection.createStatement()) {
+                            statement.execute("SELECT 1");
+                        }
+                        checked = System.nanoTime();
+                    }
                     PGNotification[] notifications = postgres.getNotifications(500);
                     if (notifications == null) {
                         continue;
