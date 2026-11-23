@@ -317,9 +317,7 @@ their values only where `show-values` allows.
 ## Dead letters
 
 1. Look at what fails: `GET .../topics/{topic}/failing` groups the failing tasks by error.
-2. Fix the cause, or let the deploy that fixes it revive them
-   (`DeadLetterPolicy.KEEP.withReviveOnNewVersion()`, with the application version from Spring
-   Boot's `BuildProperties`, `pgtasks.version`, or `builder.version(...)`).
+2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
 

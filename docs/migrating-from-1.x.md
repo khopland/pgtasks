@@ -17,7 +17,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | `TaskSource.Order` LAST_IN_FIRST_OUT | Dropped. Use `Creation.withPriority(n)` for work that should jump the queue |
 | `TaskJuncture` SINGULAR, ETERNAL | `Junction.Counts.SUSPENDED`, `Junction.Counts.ANY`, staged with `task.junction(...)` |
 | Results SUCCESS, FILTER, SUSPENSION, FAILURE | `Decision.success()`, `filtered(reason)`, `suspended()` or `later(delay)`, `failed(cause)` |
-| FAILED stays failed until `TaskReviver` resets it | A retry policy, then dead letters: revived by an operator, by error type, or on a new version |
+| FAILED stays failed until `TaskReviver` resets it | A retry policy, then dead letters, revived by an operator by id or error type |
 | EXPIRED tasks from dead owners are never requeued | Requeued with backoff once the owner counts as dead; dead-lettered the third time |
 | Contexts and `TaskSupplement` lookups | `BatchResource` (open, review, beforeCommit, afterCommit) and `batch.resource(...)` |
 | `TASK_PRETTY` | `pgtasks.task_view` |
@@ -26,8 +26,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 Behaviour that changes:
 
 - Attempts are bounded. A topic that relied on "reset failed tasks every 30 minutes, forever" can
-  keep that with `Retry.standard().forever()`, or with
-  `DeadLetterPolicy.KEEP.withReviveEvery(Duration.ofMinutes(30))`.
+  keep that with `Retry.standard().forever()`.
 - Retention counts from completion, not from creation.
 - A scheduling delay on a successful or filtered task never makes it run again. Recurring work
   uses `tasks.recurring(...)`.

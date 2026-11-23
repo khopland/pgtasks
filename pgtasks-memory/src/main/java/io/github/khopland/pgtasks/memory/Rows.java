@@ -24,27 +24,14 @@ final class Rows {
     }
 
     /** @param retention per outcome, or null if no node set it */
-    record Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention,
-                 @Nullable String revivedVersion, @Nullable Instant reviveSweptAt) {
-
-        Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention) {
-            this(id, name, createdAt, paused, retention, null, null);
-        }
+    record Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention) {
 
         Topic withRetention(Map<Outcome, Period> retention) {
-            return new Topic(id, name, createdAt, paused, Map.copyOf(retention), revivedVersion, reviveSweptAt);
+            return new Topic(id, name, createdAt, paused, Map.copyOf(retention));
         }
 
         Topic withPaused(boolean paused) {
-            return new Topic(id, name, createdAt, paused, retention, revivedVersion, reviveSweptAt);
-        }
-
-        Topic revivedFor(String version) {
-            return new Topic(id, name, createdAt, paused, retention, version, reviveSweptAt);
-        }
-
-        Topic sweptAt(Instant now) {
-            return new Topic(id, name, createdAt, paused, retention, revivedVersion, now);
+            return new Topic(id, name, createdAt, paused, retention);
         }
     }
 

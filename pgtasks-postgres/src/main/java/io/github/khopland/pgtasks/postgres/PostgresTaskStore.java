@@ -66,7 +66,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
+    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, junctionLocks;
     private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
@@ -514,17 +514,6 @@ public final class PostgresTaskStore implements TaskStore {
                              WHERE l.node_id = n.id AND l.expires_at >= now()), '{}') AS leases
             FROM pgtasks.node n
             ORDER BY n.id
-            """);
-        // One row update decides which node of a new version, or which sweep, revives the dead letters.
-        claimRevival = sql("""
-            UPDATE pgtasks.topic SET revived_version = :version::text
-            WHERE id = :topic::integer AND revived_version IS DISTINCT FROM :version::text
-            RETURNING id
-            """);
-        claimReviveSweep = sql("""
-            UPDATE pgtasks.topic SET revive_swept_at = now()
-            WHERE id = :topic::integer AND (revive_swept_at IS NULL OR revive_swept_at <= now() - :every::bigint * interval '1 millisecond')
-            RETURNING id
             """);
         // queue_failing_idx keeps this to the topic's failing tasks.
         failingGroups = sql("""
@@ -1674,23 +1663,6 @@ public final class PostgresTaskStore implements TaskStore {
     public int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException {
         try (PreparedStatement statement = deleteDeadNodes.prepare(transaction.connection(), NamedSql.parameters().set("dead", deadFor.toMillis()))) {
             return statement.executeUpdate();
-        }
-    }
-
-    @Override
-    public boolean claimRevival(StoreTransaction transaction, int topicId, String version) throws SQLException {
-        try (PreparedStatement statement = claimRevival.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("version", version));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
-        }
-    }
-
-    @Override
-    public boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) throws SQLException {
-        try (PreparedStatement statement = claimReviveSweep.prepare(transaction.connection(),
-                 NamedSql.parameters().set("topic", topicId).set("every", every.toMillis()));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
         }
     }
 

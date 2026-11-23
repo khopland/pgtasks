@@ -29,7 +29,4 @@ public interface TopicOptions {
     TopicOptions retain(Outcome outcome, Period period);
 
     TopicOptions retainForever(Outcome outcome);
-
-    /** Whether dead letters are revived on a new application version, or every so often; kept until someone acts by default. */
-    TopicOptions deadLetters(DeadLetterPolicy policy);
 }

@@ -44,8 +44,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        retry.max-backoff, retain.&lt;outcome&gt;
  * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
  *                        Spring Modulith module tests get one without it
- * @param version         the application's version, for topics that revive their dead letters
- *                        on a new version; by default the build's, from {@code BuildProperties}
+ * @param version         the application's version, recorded with this node in pgtasks.node;
+ *                        by default the build's, from {@code BuildProperties}
  *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)
  * @param mdcHeaders      MDC keys that follow the work, such as a correlation id: each one the MDC
  *                        has when a task is pushed is stored as a header of the same name, and is

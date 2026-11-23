@@ -459,23 +459,6 @@ public final class TaskAdmin {
         }
     }
 
-    /**
-     * Revives every dead letter of a topic in the given transaction, a batch at a time, so a claim
-     * made in it commits with the revival or not at all. The caller wakes the topic after commit.
-     */
-    int reviveAll(StoreTransaction transaction, int topicId) throws Exception {
-        int total = 0;
-        DeadLetterQuery next = DeadLetterQuery.ALL;
-        while (true) {
-            List<Long> done = store.revive(transaction, topicId, next, BATCH);
-            total += done.size();
-            if (done.size() < BATCH) {
-                return total;
-            }
-            next = next.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
-        }
-    }
-
     int topicId(String topic) throws Exception {
         return EngineCore.transact(store, transaction -> store.findTopic(transaction, topic))
             .orElseThrow(() -> new IllegalArgumentException("Unknown topic '" + topic + "'"));

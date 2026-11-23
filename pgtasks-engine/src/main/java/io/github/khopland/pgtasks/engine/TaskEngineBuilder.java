@@ -175,8 +175,7 @@ public final class TaskEngineBuilder {
     }
 
     /**
-     * The application's version, recorded with this node in pgtasks.node, and what a topic that
-     * revives its dead letters on a new version compares; see {@link DeadLetterPolicy}.
+     * The application's version, recorded with this node in pgtasks.node.
      */
     public TaskEngineBuilder version(@Nullable String version) {
         this.version = version;
@@ -307,11 +306,6 @@ public final class TaskEngineBuilder {
         @Override
         public TopicOptions retain(Outcome outcome, Period period) {
             return set("retain." + outcome.label(), period);
-        }
-
-        @Override
-        public TopicOptions deadLetters(DeadLetterPolicy policy) {
-            return set("dead-letters", Objects.requireNonNull(policy));
         }
 
         @Override
@@ -621,7 +615,6 @@ public final class TaskEngineBuilder {
         values.put("retry", defaults.retry());
         values.put("batch-deadline", defaults.batchDeadline());
         values.put("poll-interval", defaults.pollInterval());
-        values.put("dead-letters", defaults.deadLetters());
         for (Outcome outcome : Outcome.values()) {
             Period period = defaults.retention().get(outcome);
             values.put("retain." + outcome.label(), period == null ? "forever" : period);
@@ -662,8 +655,7 @@ public final class TaskEngineBuilder {
             setting(values, "retry", Retry.class),
             setting(values, "batch-deadline", Duration.class),
             setting(values, "poll-interval", Duration.class),
-            retention,
-            setting(values, "dead-letters", DeadLetterPolicy.class)
+            retention
         );
         return new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
@@ -757,7 +749,6 @@ public final class TaskEngineBuilder {
     private static String describe(Object value) {
         return switch (value) {
             case Retry retry -> retry.describe();
-            case DeadLetterPolicy policy -> policy.describe();
             default -> String.valueOf(value);
         };
     }

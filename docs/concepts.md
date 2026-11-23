@@ -170,9 +170,7 @@ codec can't decode is always dead-lettered at once, since retrying won't change 
 
 A dead letter stays in the queue, holding back later tasks under `…_ON_FAILURE` and
 `…_UNTIL_SUCCESS`, until an operator revives it (another round of attempts) or discards it
-(finished as failed). A topic can also revive them by itself:
-`options.deadLetters(DeadLetterPolicy.KEEP.withReviveOnNewVersion())` revives them when the first
-node of a new application version starts, so a bug fix gets a second go at what it broke.
+(finished as failed).
 
 A task whose node dies under it is requeued with backoff once the node counts as dead (10
 minutes without a heartbeat by default). The third time, it is dead-lettered whatever the

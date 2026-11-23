@@ -20,7 +20,6 @@ import io.github.khopland.pgtasks.Outcome;
  * @param pollInterval  fallback poll when no notification arrives
  * @param retention     how long finished tasks are kept per outcome, counted from completion;
  *                      an outcome that isn't listed is kept forever
- * @param deadLetters   whether dead letters are revived on a new version or every so often
  */
 record TopicSettings(
     int batchSize,
@@ -29,8 +28,7 @@ record TopicSettings(
     Retry retry,
     Duration batchDeadline,
     Duration pollInterval,
-    Map<Outcome, Period> retention,
-    DeadLetterPolicy deadLetters
+    Map<Outcome, Period> retention
 ) {
 
     /**
@@ -57,44 +55,39 @@ record TopicSettings(
             throw new IllegalArgumentException("batchDeadline and pollInterval must be positive");
         }
         retention = Map.copyOf(retention);
-        Objects.requireNonNull(deadLetters, "deadLetters");
     }
 
     /** 100 tasks per batch, 2 batches per node, FIFO, standard retry, 30 min deadline, 30 s poll. */
     public static TopicSettings defaults() {
-        return new TopicSettings(100, 2, Ordering.FIFO, Retry.standard(), Duration.ofMinutes(30), Duration.ofSeconds(30), DEFAULT_RETENTION,
-            DeadLetterPolicy.KEEP);
+        return new TopicSettings(100, 2, Ordering.FIFO, Retry.standard(), Duration.ofMinutes(30), Duration.ofSeconds(30), DEFAULT_RETENTION);
     }
 
     public TopicSettings withBatchSize(int batchSize) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withConcurrency(int concurrency) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withOrdering(Ordering ordering) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withRetry(Retry retry) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withBatchDeadline(Duration batchDeadline) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withPollInterval(Duration pollInterval) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
     public TopicSettings withRetention(Map<Outcome, Period> retention) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
+        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention);
     }
 
-    public TopicSettings withDeadLetters(DeadLetterPolicy deadLetters) {
-        return new TopicSettings(batchSize, concurrency, ordering, retry, batchDeadline, pollInterval, retention, deadLetters);
-    }
 }
