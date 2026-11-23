@@ -12,10 +12,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Set;
 
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.NodeView;
@@ -120,12 +118,6 @@ public interface TaskStore {
      * wake-up: a node may miss it, so a listener also reloads on every heartbeat.
      */
     void notify(StoreTransaction transaction, String channel, String payload) throws SQLException;
-
-    /**
-     * For each group of identifiers: if every identifier has a task in the topic that counts for
-     * the counts, the group's suspended tasks become ready. Returns the released identifiers.
-     */
-    Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException;
 
     /**
      * Claims up to {@code request.limit()} ready tasks, honouring the ordering. Each claim

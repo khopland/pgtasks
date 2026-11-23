@@ -9,9 +9,9 @@ It is a standalone Maven project, not a module of the root build.
 ## The flow
 
 ```
-POST /orders ──► orders.payment ──┐ marker "<id>:paid"      ┐
-   (one tx)  ├─► orders.stock ────┤ marker "<id>:reserved"  ├─ junction (Counts.ANY) releases
-             └─► orders.ship  (suspended) ◄─────────────────┘  the order's own ship task
+POST /orders ──► orders.payment
+   (one tx)  ├─► orders.stock
+             └─► orders.ship  (waits with later() until the order is paid and reserved)
                     └─► customer.notify "shipped", and "feedback" 30 s later (delayed)
 declined payment ──► orders.ship REPLACE (cancel: release stock, waits with later() for the stock step)
                         └─► customer.notify "declined"
@@ -22,7 +22,7 @@ orders.reconcile: about every minute, once per cluster (each run pushes the next
 |---|---|---|
 | `orders.payment` | gateway call per task, `decideConcurrently(16)`; 5xx/timeout → `failed`, not counted (`Retry.notCounting`), 429 → `later(Retry-After)`, 402 → cancel | dedup key `pay:<id>`, backoff 2 s..1 min, gives up after 1 h (YAML) |
 | `orders.stock` | stock reservation in our own tables, staged in a `BatchResource` (`StagedWrites`) | |
-| `orders.ship` | carrier call for the order; markers are filtered; 422 → `failed` (3 attempts, then dead letter) | |
+| `orders.ship` | carrier call once the order is paid and reserved (`later(2 s)` until then); 422 → `failed` (3 attempts, then dead letter) | |
 | `customer.notify` | mailer call | `SINGULAR_BY_IDENTIFIER` per customer, dedup keys |
 | `orders.reconcile` | counts stuck orders, then pushes the next run a minute later (SUPERSEDE) | |
 
@@ -59,7 +59,7 @@ for n in 1 2 3; do scripts/cluster.sh start $n; done
 - API: `curl -u api:api -H 'Content-Type: application/json' -d '{"requestId":"r1","customerId":"c-1","lines":[{"sku":"sku-1","quantity":2}]}' localhost:8081/orders`
 - Dashboard: <http://localhost:8081/pgtasks/>, user `ops`/`ops`.
 - Prometheus: `localhost:8081/actuator/prometheus`; health: `localhost:8081/actuator/health`.
-- Operator calls from the shell, with the dashboard's session and CSRF token: `scripts/ops.sh 8081 POST topics/orders.ship/pause`.
+- Operator calls from the shell, with the dashboard's session and CSRF token: `scripts/ops.sh 8081 POST topics/orders.ship/revive`.
 - The stub: `curl -XPOST 'localhost:9091/config?fail=1.0'` (every call 500), `?down=true` (connection refused), `?reject=0`; `curl localhost:9091/stats`.
 
 ### Load, chaos, verification

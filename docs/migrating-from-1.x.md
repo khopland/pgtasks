@@ -1,7 +1,7 @@
 # Migrating from 1.x
 
-pgtasks keeps what 1.x does well: transactional enqueue, the insertion policies, ordering per
-identifier, and fan-in. Most of what applications wrote around 1.x is now in the library:
+pgtasks keeps what 1.x does well: transactional enqueue, the insertion policies and ordering per
+identifier. Most of what applications wrote around 1.x is now in the library:
 housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres only, in its own
 `pgtasks` schema, and needs Java 25.
 
@@ -15,7 +15,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | `TaskSink.Insertion` APPEND, SUPERSEDE, REPLACE, DELETE | `Insertion` APPEND, SUPERSEDE, REPLACE. DELETE is not in this version: use REPLACE, and retention for the history |
 | `TaskSource.Condition` NONE, SINGULAR_BY_IDENTIFIER, …_SUSPEND_ON_FAILURE, …_SUSPEND_UNTIL_SUCCESS | `Ordering` FIFO, SINGULAR_BY_IDENTIFIER, …_ON_FAILURE, …_UNTIL_SUCCESS, now applied within the topic only, and always |
 | `TaskSource.Order` LAST_IN_FIRST_OUT | Dropped. Use `Creation.withPriority(n)` for work that should jump the queue |
-| `TaskJuncture` SINGULAR, ETERNAL | `Junction.Counts.SUSPENDED`, `Junction.Counts.ANY`, staged with `task.junction(...)` |
+| `TaskJuncture` SINGULAR, ETERNAL | Not in this version. The waiting task checks its parts itself and decides `later(delay)` until they are done ([patterns](patterns.md#fan-out-and-fan-in)) |
 | Results SUCCESS, FILTER, SUSPENSION, FAILURE | `Decision.success()`, `filtered(reason)`, `suspended()` or `later(delay)`, `failed(cause)` |
 | FAILED stays failed until `TaskReviver` resets it | A retry policy, then dead letters, revived by an operator by id or error type |
 | EXPIRED tasks from dead owners are never requeued | Requeued with backoff once the owner counts as dead; dead-lettered the third time |

@@ -23,7 +23,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
@@ -253,8 +252,7 @@ final class BatchRun<T> {
             return handled;
         }
         Decisions.Builder complete = Decisions.builder();
-        // With their junctions: without them, a fan-in group a decided task belongs to stays suspended for good.
-        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream(), verdict.junctions()));
+        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream()));
         runnable.stream().filter(task -> !handled.covers(task)).forEach(task -> complete.decide(task, Decision.failed("The handler returned no decision for this task")));
         return complete.build();
     }
@@ -300,7 +298,6 @@ final class BatchRun<T> {
                 ready.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
                 targets.addAll(pushDownstream(transaction, decisions, observations, ready));
-                targets.addAll(applyJunctions(transaction, decisions));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
                 }
@@ -388,40 +385,6 @@ final class BatchRun<T> {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
         List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready);
         return () -> core.tasks().observed(topic, insertion, creations, results);
-    }
-
-    /**
-     * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
-     * task pushed in the same completion can complete a group. One call per target and counts,
-     * in topic-name order like the pushes, since each call locks its groups' members until commit.
-     */
-    private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws SQLException {
-        record Target(String topic, Junction.Counts counts) {
-        }
-        Map<Target, List<Set<String>>> groups = new LinkedHashMap<>();
-        for (Decisions.Verdict verdict : decisions.verdicts()) {
-            if (!verdict.decision().continues()) {
-                continue;
-            }
-            for (Junction junction : verdict.junctions()) {
-                Set<String> group = new LinkedHashSet<>(junction.identifiers());
-                group.add(verdict.task().identifier());
-                groups.computeIfAbsent(new Target(junction.topic().name(), junction.counts()), ignored -> new ArrayList<>()).add(group);
-            }
-        }
-        Set<String> released = new LinkedHashSet<>();
-        for (Map.Entry<Target, List<Set<String>>> entry : byTopicName(groups, Target::topic)) {
-            int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
-            try {
-                if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
-                    released.add(entry.getKey().topic());
-                }
-            } catch (SQLException e) {
-                core.tasks().failed(entry.getKey().topic(), topicId, e);
-                throw e;
-            }
-        }
-        return released;
     }
 
     /** The entries sorted by topic name; a stable sort, so entries for one topic keep their order. */

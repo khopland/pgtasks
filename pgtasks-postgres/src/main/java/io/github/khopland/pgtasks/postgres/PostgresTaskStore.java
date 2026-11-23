@@ -27,7 +27,6 @@ import java.util.Set;
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.NodeView;
@@ -64,9 +63,8 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks;
     private final NamedSql deleteDeadNodes, listNodes;
-    private final NamedSql lead, resign, setRetention, retention, junctionLocks;
+    private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks;
-    private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -132,8 +130,8 @@ public final class PostgresTaskStore implements TaskStore {
         // holds the locks until it commits; the next push's statement takes its snapshot after
         // that. APPEND pushes take no lock (they don't touch earlier tasks, and are the hot path),
         // so concurrent APPEND pushes for one identifier may still commit out of id order.
-        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims and
-        // junctions; topics share a hash only by chance, which merely serializes those pushes.
+        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims;
+        // topics share a hash only by chance, which merely serializes those pushes.
         identifierLocks = sql("""
             SELECT count(pg_advisory_xact_lock(key))
             FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
@@ -156,8 +154,7 @@ public final class PostgresTaskStore implements TaskStore {
         // snapshot, where another node's uncommitted claim still looks ready: with an earlier task
         // turned ready meanwhile (a promotion, a release), both nodes would claim one identifier.
         // So SINGULAR_* claims on a topic take turns until commit, and each poll's snapshot shows
-        // the previous claim. The first key is negative and topic ids are positive, so it can't
-        // meet a junction lock (topic, hashtext(identifier)). FIFO claims don't wait.
+        // the previous claim. FIFO claims don't wait.
         singularClaimLock = sql("SELECT pg_advisory_xact_lock(" + SINGULAR_CLAIM_LOCK + ", :topic::integer)");
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""
@@ -278,17 +275,6 @@ public final class PostgresTaskStore implements TaskStore {
                   AND t.id = r.task_id
             )
             SELECT topic_id FROM requeued
-            """);
-        for (Junction.Counts counts : Junction.Counts.values()) {
-            junctions.put(counts, sql(junctionSql(counts)));
-        }
-        // Two parts of a group completing at once would each check the group before the other
-        // commits, and neither would release it. Each completion first locks every member of its
-        // groups, in one order so two completions can't deadlock on them, until it commits. The
-        // check is the next statement, so its snapshot already shows a part committed meanwhile.
-        junctionLocks = sql("""
-            SELECT count(pg_advisory_xact_lock(:topic::integer, member))
-            FROM (SELECT DISTINCT hashtext(identifier) AS member FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) members
             """);
         findTask = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
@@ -726,45 +712,6 @@ public final class PostgresTaskStore implements TaskStore {
             FROM input
             ORDER BY ord
             """;
-    }
-
-    private static String junctionSql(Junction.Counts counts) {
-        // A group is complete when every identifier has a task that counts; then the group's
-        // suspended tasks become ready. ANY skips redundant tasks (a newer push replaced them) and
-        // cancelled ones (they never ran). It reads the task table, so a part whose row
-        // retention has purged no longer counts.
-        String present = switch (counts) {
-            case SUSPENDED -> """
-                SELECT 1 FROM pgtasks.queue s
-                WHERE s.topic_id = :topic::integer AND s.identifier = g.identifier AND s.state = 'suspended'
-                """;
-            case ANY -> """
-                SELECT 1 FROM pgtasks.task t
-                WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
-                  AND (t.outcome IS NULL OR t.outcome <> 'redundant')
-                """;
-        };
-        return """
-            WITH g AS (
-                SELECT * FROM unnest(:groups::integer[], :identifiers::text[]) AS g(group_no, identifier)
-            ),
-            checked AS (
-                SELECT g.group_no, g.identifier, EXISTS (%s) AS present
-                FROM g
-            ),
-            complete AS (
-                SELECT group_no FROM checked GROUP BY group_no HAVING bool_and(present)
-            ),
-            released AS (
-                UPDATE pgtasks.queue q
-                SET state = 'ready'
-                WHERE q.topic_id = :topic::integer
-                  AND q.state = 'suspended'
-                  AND q.identifier = ANY (ARRAY(SELECT c.identifier FROM checked c JOIN complete USING (group_no)))
-                RETURNING q.identifier
-            )
-            SELECT DISTINCT identifier FROM released
-            """.formatted(present);
     }
 
     private static String pollSql(Ordering ordering) {
@@ -1260,38 +1207,6 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = heartbeat.prepare(connection, NamedSql.parameters().set("node", nodeId))) {
             return statement.executeUpdate() == 1;
         }
-    }
-
-    @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {
-        List<Object> numbers = new ArrayList<>(), identifiers = new ArrayList<>();
-        int group = 0;
-        for (Set<String> members : groups) {
-            group++;
-            for (String identifier : members) {
-                numbers.add(group);
-                identifiers.add(identifier);
-            }
-        }
-        if (identifiers.isEmpty()) {
-            return Set.of();
-        }
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("topic", topicId)
-            .array("groups", "integer", numbers.toArray())
-            .array("identifiers", "text", identifiers.toArray());
-        try (PreparedStatement statement = junctionLocks.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            resultSet.next();
-        }
-        Set<String> released = new LinkedHashSet<>();
-        try (PreparedStatement statement = Objects.requireNonNull(junctions.get(counts)).prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                released.add(resultSet.getString(1));
-            }
-        }
-        return released;
     }
 
     @Override

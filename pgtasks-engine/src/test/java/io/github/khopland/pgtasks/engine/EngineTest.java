@@ -20,7 +20,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Pushed;
@@ -210,36 +209,6 @@ class EngineTest {
         assertThat(view(tester, id).state()).isIn("retrying", "ready");
         assertThat(view(tester, id).attempt()).isZero();
         assertThat(view(tester, id).failures()).isZero();
-    }
-
-    @Test
-    @DisplayName("Fan-in: parts release the merge task once every part has arrived")
-    void junction_releases_the_merge_once_every_part_arrived() throws Exception {
-        TopicRef<String> parts = TopicRef.of("parts", String.class);
-        TopicRef<String> merge = TopicRef.of("merge", String.class);
-        List<String> merged = new CopyOnWriteArrayList<>();
-        TaskEngine engine = engines.start("node-a", List.of(
-            Topic.of(parts, batch -> batch.decide(task -> {
-                // Each part waits in "merge" for its sibling; the group is both parts' identifiers.
-                task.push(merge, Insertion.APPEND, Creation.of(task.identifier(), task.payload()).asSuspended());
-                task.junction(merge, Junction.Counts.SUSPENDED, Set.of(task.payload()));
-                return Decision.success();
-            })),
-            Topic.of(merge, batch -> batch.decide(task -> {
-                merged.add(task.identifier());
-                return Decision.success();
-            }))
-        ));
-        TaskTester tester = engines.tester();
-
-        engine.tasks().independently().push(parts, "left", "right");
-        tester.awaitIdle();
-        assertThat(merged).isEmpty();
-        assertThat(tester.counts(merge).suspended()).isEqualTo(1);
-
-        engine.tasks().independently().push(parts, "right", "left");
-        tester.awaitIdle();
-        assertThat(merged).containsExactlyInAnyOrder("left", "right");
     }
 
     @ParameterizedTest(name = "{0}")

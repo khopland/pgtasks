@@ -2,7 +2,7 @@
 
 Handlers are plain code, so most tests need no engine at all. When the queue's behaviour
 matters (retries, ordering, what gets pushed downstream), run a real engine on the in-memory
-store. It passes the same TCK as Postgres, so ordering, insertion policies, fencing, junctions,
+store. It passes the same TCK as Postgres, so ordering, insertion policies, fencing
 and retries behave the same. Keep a few tests on Postgres for what only Postgres can
 prove: that a push commits and rolls back with your own tables.
 

@@ -42,27 +42,22 @@ So decide, for every effect a handler has, which of these it is:
 
 ## Fan-out and fan-in
 
-Fan-out is pushing several downstream tasks. Fan-in waits for a group of them: push the waiting
-task suspended, and let each part stage a junction for the group.
+Fan-out is pushing several downstream tasks. For fan-in, push the task that waits for the parts
+as an ordinary task, and let its handler check whether every part is done, in the application's
+own tables, deciding `later(delay)` until they are:
 
 ```java
-// The aggregate waits until every part has arrived.
-task.push(MERGE, invoiceId, Insertion.APPEND, Creation.of(invoiceId, request).asSuspended());
+// The aggregate, pushed with the parts.
+task.push(MERGE, invoiceId, request);
 
-// Each part, when it succeeds, checks the group in the target topic.
-part.junction(MERGE, Junction.Counts.SUSPENDED, Set.of("line-1", "line-2", "line-3"));
+// Its handler: done once every line is.
+if (!lines.allDone(invoiceId)) {
+    return Decision.later(Duration.ofSeconds(5));
+}
 ```
 
-Once every identifier in the group (the staging task's own plus the given ones) has a task
-there that counts, the group's suspended tasks become ready. `Counts.SUSPENDED` counts only
-suspended tasks: every part is waiting. `Counts.ANY` counts any task that wasn't made redundant,
-finished or not.
-
-`Counts.ANY` looks at the tasks the topic still keeps. Retention deletes finished tasks per
-outcome (succeeded after 30 days by default), and a deleted part no longer counts. If one part
-succeeded 31 days before the last one arrives, the group never completes. Set the target topic's
-retention for `SUCCEEDED` (and any other outcome that should count) longer than a group can take,
-for example `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`.
+`later()` doesn't use up an attempt. The order-service example ships an order this way once it is
+both paid and reserved.
 
 ## Producers and consumers in separate services
 

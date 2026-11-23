@@ -31,8 +31,7 @@ import io.github.khopland.pgtasks.TopicRef;
  *       ({@link Options#withTopicNames}); names that aren't valid topic names, or that two topics
  *       would share, stop the import before anything is copied.</li>
  *   <li>READY, ACTIVE and EXPIRED tasks become ready, or delayed until their {@code SCHEDULED}
- *       time if it is still to come; SUSPENDED stay suspended, waiting for a junction or an
- *       operator; FAILED become dead letters, to revive or discard. In sequence order, so ordering
+ *       time if it is still to come; SUSPENDED stay suspended; FAILED become dead letters, to revive or discard. In sequence order, so ordering
  *       by identifier carries on as it was.</li>
  *   <li>Finished tasks (SUCCEEDED, FILTERED, REDUNDANT, RECREATED) are copied only with
  *       {@link Options#withHistory()}, then kept as the topic's retention says.</li>

@@ -2,7 +2,6 @@
 # Calls the tasks endpoint as an operator would through the dashboard: a session, and the CSRF
 # token the dashboard reads from <path>/config.json.
 #   scripts/ops.sh [port] GET  topics/orders.ship
-#   scripts/ops.sh [port] POST topics/orders.ship/pause
 #   scripts/ops.sh [port] POST topics/orders.ship/revive '{"all":"true"}'
 set -euo pipefail
 cd "$(dirname "$0")/.."

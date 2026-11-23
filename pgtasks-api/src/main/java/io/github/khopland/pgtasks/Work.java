@@ -1,11 +1,10 @@
 package io.github.khopland.pgtasks;
 
-import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
 /**
- * One task inside {@link Batch#decide}: read it, and stage downstream work and junctions that are
+ * One task inside {@link Batch#decide}: read it, and stage downstream work that is
  * committed together with the batch's completion, but only if this task's final decision
  * continues.
  */
@@ -42,10 +41,4 @@ public interface Work<T> {
     }
 
     <C> void push(TopicRef<C> topic, Insertion insertion, Creation<C> creation);
-
-    /**
-     * Stages a junction: if this task continues, its identifier and the given ones form a group in
-     * the target topic, whose suspended tasks become ready once every identifier has a task there.
-     */
-    void junction(TopicRef<?> topic, Junction.Counts counts, Set<String> identifiers);
 }

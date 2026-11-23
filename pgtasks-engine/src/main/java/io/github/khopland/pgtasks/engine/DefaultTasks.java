@@ -347,10 +347,8 @@ final class DefaultTasks implements Tasks {
      * completion: no codec for its payloads, or no such topic. Otherwise one task's mistake would
      * fail the whole batch's completion. The topic is looked up once, then known.
      */
-    void checkTarget(TopicRef<?> topic, boolean needsCodec) {
-        if (needsCodec) {
-            codec(topic);
-        }
+    void checkTarget(TopicRef<?> topic) {
+        codec(topic);
         if (topics.known(topic.name())) {
             return;
         }

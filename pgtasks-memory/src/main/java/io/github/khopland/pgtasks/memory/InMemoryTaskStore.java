@@ -6,7 +6,6 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.Period;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -27,7 +26,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.NodeView;
@@ -257,35 +255,6 @@ public final class InMemoryTaskStore implements TaskStore {
             }
         }
         return results;
-    }
-
-    @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) {
-        MemoryTransaction memory = memory(transaction);
-        Set<String> complete = new HashSet<>();
-        for (Set<String> group : groups) {
-            if (group.stream().allMatch(identifier -> counts(topicId, counts, identifier))) {
-                complete.addAll(group);
-            }
-        }
-        Set<String> released = new LinkedHashSet<>();
-        for (Rows.Queued row : List.copyOf(queue.values())) {
-            if (row.topicId() == topicId && row.state() == State.SUSPENDED && complete.contains(row.identifier())) {
-                putQueued(memory, row.with(State.READY, null, row.attempt(), null, null));
-                released.add(row.identifier());
-            }
-        }
-        return released;
-    }
-
-    private boolean counts(int topicId, Junction.Counts counts, String identifier) {
-        return switch (counts) {
-            case SUSPENDED -> queue.values().stream().anyMatch(row ->
-                row.topicId() == topicId && row.identifier().equals(identifier) && row.state() == State.SUSPENDED);
-            case ANY -> tasks.values().stream().anyMatch(row ->
-                row.topicId() == topicId && row.identifier().equals(identifier)
-                && !"redundant".equals(row.outcome()));
-        };
     }
 
     @Override

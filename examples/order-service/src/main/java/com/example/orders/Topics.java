@@ -6,9 +6,9 @@ import io.github.khopland.pgtasks.TopicRef;
  * Every topic of the order flow:
  *
  * <pre>
- * POST /orders ──► orders.payment ──┐ (marker "id:paid")
- *              ├─► orders.stock ────┤ (marker "id:reserved")
- *              └─► orders.ship (suspended, released by the junction once both markers exist)
+ * POST /orders ──► orders.payment
+ *              ├─► orders.stock
+ *              └─► orders.ship (waits with later() until the order is paid and reserved)
  *                       └─► customer.notify (shipped; feedback request 30 s later)
  * declined payment ──► orders.ship (REPLACE: cancel, releases the stock) ──► customer.notify (declined)
  * </pre>
@@ -20,12 +20,8 @@ public final class Topics {
     }
 
     public enum Step {
-        /** The order's own shipping task, suspended until payment and stock are done. */
+        /** The order's own shipping task: it waits until payment and stock are done. */
         SHIP,
-        /** A marker in the ship topic: payment is done. */
-        PAID,
-        /** A marker in the ship topic: stock is reserved. */
-        RESERVED,
         /** Payment was declined: release the stock and tell the customer. */
         CANCEL
     }
@@ -44,14 +40,6 @@ public final class Topics {
     public static final TopicRef<ShipRequest> SHIP = TopicRef.of("orders.ship", ShipRequest.class);
     public static final TopicRef<Notice> NOTIFY = TopicRef.of("customer.notify", Notice.class);
     public static final TopicRef<Reconcile> RECONCILE = TopicRef.of("orders.reconcile", Reconcile.class);
-
-    public static String paidMarker(String orderId) {
-        return orderId + ":paid";
-    }
-
-    public static String reservedMarker(String orderId) {
-        return orderId + ":reserved";
-    }
 
     private Topics() {
     }

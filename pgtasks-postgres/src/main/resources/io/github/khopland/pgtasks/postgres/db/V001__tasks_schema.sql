@@ -77,7 +77,7 @@ CREATE TABLE ${pgtasks_schema}.task (
     -- indexes bloat meanwhile, as the sustained-load benchmark showed. 1 % vacuums every 250,000.
     autovacuum_vacuum_scale_factor = 0.01
 );
--- History per identifier: REPLACE, DELETE, junctions that count any task, and recreate.
+-- History per identifier: REPLACE, and recreate.
 CREATE INDEX task_identifier_idx ON ${pgtasks_schema}.task (topic_id, identifier, id);
 CREATE INDEX task_reference_idx ON ${pgtasks_schema}.task (reference) WHERE reference IS NOT NULL;
 CREATE INDEX task_root_idx ON ${pgtasks_schema}.task (root_id) WHERE root_id IS NOT NULL;
@@ -114,7 +114,7 @@ CREATE TABLE ${pgtasks_schema}.queue (
 );
 -- Polling: holds only ready rows, so it stays tiny.
 CREATE INDEX queue_ready_idx ON ${pgtasks_schema}.queue (topic_id, priority DESC, task_id) WHERE state = 'ready';
--- Per-identifier ordering, SUPERSEDE/REPLACE/DELETE and junctures.
+-- Per-identifier ordering, SUPERSEDE and REPLACE.
 CREATE INDEX queue_identifier_idx ON ${pgtasks_schema}.queue (topic_id, identifier, task_id);
 -- Promoting due retries and delayed tasks.
 CREATE INDEX queue_due_idx ON ${pgtasks_schema}.queue (run_at) WHERE state IN ('scheduled', 'retrying');

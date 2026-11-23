@@ -59,7 +59,7 @@ public class OrderService {
         OrderRef ref = new OrderRef(orderId, request.customerId(), amount);
         tasks.push(PAYMENT, Insertion.APPEND, Creation.of(orderId, ref).withDedupKey("pay:" + orderId));
         tasks.push(STOCK, orderId, ref);
-        tasks.push(SHIP, Insertion.APPEND, Creation.of(orderId, new ShipRequest(orderId, request.customerId(), Step.SHIP)).asSuspended());
+        tasks.push(SHIP, Insertion.APPEND, Creation.of(orderId, new ShipRequest(orderId, request.customerId(), Step.SHIP)));
         return new Placed(orderId, true);
     }
 }

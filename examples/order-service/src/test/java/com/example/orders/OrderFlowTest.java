@@ -50,7 +50,7 @@ class OrderFlowTest {
         .globals(new PgtasksConfig().globals(Duration.ofSeconds(5), Duration.ofMinutes(2)))
         .configure("payment", new PaymentTasks().payments(PARTNERS, WRITES))
         .configure("stock", new StockTasks().stock(WRITES))
-        .configure("shipping", new ShippingTasks().shipping(PARTNERS, WRITES, WRITES::reserved))
+        .configure("shipping", new ShippingTasks().shipping(PARTNERS, WRITES, WRITES))
         .configure("notification", new NotificationTasks().notifications(PARTNERS, WRITES)));
 
     @BeforeEach
@@ -71,7 +71,7 @@ class OrderFlowTest {
             if (stock) {
                 tasks.push(STOCK, orderId, order);
             }
-            tasks.push(SHIP, Insertion.APPEND, Creation.of(orderId, new ShipRequest(orderId, "c-1", Step.SHIP)).asSuspended());
+            tasks.push(SHIP, Insertion.APPEND, Creation.of(orderId, new ShipRequest(orderId, "c-1", Step.SHIP)));
             return null;
         });
     }
@@ -182,7 +182,7 @@ class OrderFlowTest {
     }
 
     /** Records the SQL of the tasks that continue, by order id (the statements' last parameter). */
-    static final class RecordingWrites extends StagedWrites {
+    static final class RecordingWrites extends StagedWrites implements ShippingTasks.OrderStates {
         final Map<String, List<String>> byOrder = new ConcurrentHashMap<>();
 
         void reset() {
@@ -193,8 +193,19 @@ class OrderFlowTest {
             return byOrder.getOrDefault(orderId, List.of());
         }
 
-        boolean reserved(String orderId) {
+        @Override
+        public boolean reserved(String orderId) {
             return statements(orderId).stream().anyMatch(sql -> sql.contains("'reserve'"));
+        }
+
+        @Override
+        public boolean paid(String orderId) {
+            return statements(orderId).stream().anyMatch(sql -> sql.contains("'PAID'"));
+        }
+
+        @Override
+        public boolean declined(String orderId) {
+            return statements(orderId).stream().anyMatch(sql -> sql.contains("'DECLINED'"));
         }
 
         @Override

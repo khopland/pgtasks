@@ -4,14 +4,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
-import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import io.github.khopland.pgtasks.Batch;
@@ -20,7 +19,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
@@ -31,14 +29,14 @@ final class DefaultBatch<T> implements Batch<T> {
     private final TopicRef<T> topic;
     private final List<Task<T>> tasks;
     private final Map<BatchResource<?>, Object> resources;
-    /** Checks a staged push's or junction's target topic; see {@link DefaultTasks#checkTarget}. */
-    private final BiConsumer<TopicRef<?>, Boolean> targets;
+    /** Checks a staged push's target topic; see {@link DefaultTasks#checkTarget}. */
+    private final Consumer<TopicRef<?>> targets;
 
     /** Each task's own observation, opened around its decider; see {@link TaskObserver.BatchObservation#task}. */
     private final Function<Task<?>, TaskObserver.TaskObservation> observations;
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources,
-                 BiConsumer<TopicRef<?>, Boolean> targets,
+                 Consumer<TopicRef<?>> targets,
                  Function<Task<?>, TaskObserver.TaskObservation> observations) {
         this.topic = topic;
         this.tasks = List.copyOf(tasks);
@@ -74,7 +72,7 @@ final class DefaultBatch<T> implements Batch<T> {
                 throw new CancellationException("Batch cancelled");
             }
             StagedWork<T> work = new StagedWork<>(task, targets);
-            decisions.decide(task, decideOne(topic.name(), decider, work, observations.apply(task)), work.pushes, work.junctions);
+            decisions.decide(task, decideOne(topic.name(), decider, work, observations.apply(task)), work.pushes);
         }
         return decisions.build();
     }
@@ -114,7 +112,7 @@ final class DefaultBatch<T> implements Batch<T> {
                     }
                     throw new CancellationException("Batch cancelled");
                 }
-                decisions.decide(work.task, decision, work.pushes, work.junctions);
+                decisions.decide(work.task, decision, work.pushes);
             }
             return decisions.build();
         } catch (InterruptedException e) {
@@ -155,11 +153,10 @@ final class DefaultBatch<T> implements Batch<T> {
     private static final class StagedWork<T> implements Work<T> {
 
         private final Task<T> task;
-        private final BiConsumer<TopicRef<?>, Boolean> targets;
+        private final Consumer<TopicRef<?>> targets;
         private final List<Push<?>> pushes = new ArrayList<>();
-        private final List<Junction> junctions = new ArrayList<>();
 
-        StagedWork(Task<T> task, BiConsumer<TopicRef<?>, Boolean> targets) {
+        StagedWork(Task<T> task, Consumer<TopicRef<?>> targets) {
             this.task = task;
             this.targets = targets;
         }
@@ -172,15 +169,9 @@ final class DefaultBatch<T> implements Batch<T> {
         @Override
         public <C> void push(TopicRef<C> topic, Insertion insertion, Creation<C> creation) {
             Push<C> push = new Push<>(topic, insertion, creation);
-            targets.accept(topic, true);
+            targets.accept(topic);
             pushes.add(push);
         }
 
-        @Override
-        public void junction(TopicRef<?> topic, Junction.Counts counts, Set<String> identifiers) {
-            Junction junction = new Junction(topic, counts, identifiers);
-            targets.accept(topic, false);
-            junctions.add(junction);
-        }
     }
 }
