@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -16,6 +17,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Creation;
@@ -376,7 +378,14 @@ final class BatchRun<T> {
         core.tasks().committed(ready);
     }
 
-    /** Pushes the downstream work of continuing tasks, one statement per target topic and insertion. */
+    /**
+     * Pushes the downstream work of continuing tasks, one statement per target topic and insertion.
+     * Each non-APPEND push locks its identifiers until commit, so the targets go in topic-name
+     * order: two completions pushing to the same topics then lock them in the same order and
+     * can't deadlock on them. Within a topic, targets keep the order the handlers pushed in, since
+     * a later insertion may act on an earlier one's tasks; two completions that push one topic
+     * with different insertions in opposite orders can still deadlock, and the completion retries.
+     */
     private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready) {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
@@ -393,7 +402,7 @@ final class BatchRun<T> {
             }
         }
         Set<String> targets = new LinkedHashSet<>();
-        for (Map.Entry<Target, List<Push<?>>> entry : pushes.entrySet()) {
+        for (Map.Entry<Target, List<Push<?>>> entry : byTopicName(pushes, target -> target.topic().name())) {
             observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready));
             targets.add(entry.getKey().topic().name());
         }
@@ -410,7 +419,8 @@ final class BatchRun<T> {
 
     /**
      * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
-     * task pushed in the same completion can complete a group. One call per target and counts.
+     * task pushed in the same completion can complete a group. One call per target and counts,
+     * in topic-name order like the pushes, since each call locks its groups' members until commit.
      */
     private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws SQLException {
         record Target(String topic, Junction.Counts counts) {
@@ -427,13 +437,18 @@ final class BatchRun<T> {
             }
         }
         Set<String> released = new LinkedHashSet<>();
-        for (Map.Entry<Target, List<Set<String>>> entry : groups.entrySet()) {
+        for (Map.Entry<Target, List<Set<String>>> entry : byTopicName(groups, Target::topic)) {
             int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
             if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
                 released.add(entry.getKey().topic());
             }
         }
         return released;
+    }
+
+    /** The entries sorted by topic name; a stable sort, so entries for one topic keep their order. */
+    private static <K, V> List<Map.Entry<K, V>> byTopicName(Map<K, V> map, Function<K, String> topic) {
+        return map.entrySet().stream().sorted(Comparator.comparing(entry -> topic.apply(entry.getKey()))).toList();
     }
 
     /** The claim of a task in this batch. */

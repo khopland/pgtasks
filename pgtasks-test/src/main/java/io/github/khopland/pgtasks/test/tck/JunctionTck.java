@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,23 @@ public abstract class JunctionTck extends StoreTck {
 
         assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "r")))).isEmpty();
         assertThat(fixture.state(a)).isEqualTo("suspended");
+    }
+
+    /** A cancelled task never ran, so its part hasn't arrived. Pushing it again counts. */
+    @Test
+    void eternal_does_not_count_a_cancelled_task() throws SQLException {
+        StoreFixture fixture = setUp();
+        long a = parked(fixture, topic, "a");
+        long c = fixture.push(topic, "c");
+        List<Long> cancelled = fixture.inTransaction(transaction -> fixture.store().cancel(transaction, topic, TaskQuery.ids(List.of(c)), 100));
+        assertThat(cancelled).containsExactly(c);
+
+        assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "c")))).isEmpty();
+        assertThat(fixture.state(a)).isEqualTo("suspended");
+
+        fixture.push(topic, "c");
+        assertThat(junction(fixture, Junction.Counts.ANY, List.of(Set.of("a", "c")))).containsExactly("a");
+        assertThat(fixture.state(a)).isEqualTo("ready");
     }
 
     @Test

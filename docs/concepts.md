@@ -79,10 +79,16 @@ Earlier and later mean task-id order. A push draws its ids before it commits, so
 identifier could commit out of id order, and the one that commits first couldn't see the other's
 task. So every push but `APPEND` waits per identifier for another uncommitted non-`APPEND` push of
 the same identifier to finish, and its ids follow commit order (in read committed transactions,
-the Postgres default). A transaction holds these waits until it commits: one that pushes several
-identifiers in separate calls should push them in the same order as other producers, or in one
-call, to avoid deadlocks. `APPEND` waits for nothing, since it is the common, cheapest push, so
+the Postgres default). `APPEND` waits for nothing, since it is the common, cheapest push, so
 concurrent `APPEND` pushes for one identifier may commit out of id order.
+
+A transaction holds these waits until it commits, and only the identifiers of one call are taken
+in a fixed order. If one transaction pushes `a` and then `b` in separate calls while another
+pushes `b` and then `a`, each waits for the other, and Postgres aborts one with a deadlock
+(SQLState `40P01`). The engine retries its own completions on that, and pushes a completion's
+downstream work in topic-name order to make it rare. An application transaction gets the
+exception: push several identifiers in one call, or in the same order in every producer, and
+retry the transaction on a deadlock.
 
 ### Ordering
 
@@ -191,8 +197,8 @@ Operators can also act on tasks that are still waiting, not only on dead letters
 
 `cancelled` is an outcome of its own rather than `failed` (which says the task gave up) or
 `redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
-retention, 30 days by default. A cancelled task still counts as present for an `ANY` junction,
-like any task that isn't redundant, and `REPLACE` leaves it in the history as it is.
+retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
+since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
 
 ## The breaker
 
@@ -227,6 +233,10 @@ tasks.recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", oslo), "nightly-repo
 
 The housekeeping leader pushes it when due, once across the cluster. A run missed while no node
 was up is made up once. By default each push supersedes the last one if that is still waiting.
+
+Every node that starts replaces the topic's schedules with its own, so the schedules are those of
+the node that started last. See [rolling deploys](operations.md#deploys-and-shutdown) for what
+that means when versions add or remove schedules.
 
 ## Where settings come from
 

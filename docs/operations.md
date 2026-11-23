@@ -350,6 +350,8 @@ Finished tasks are deleted by the housekeeping leader, per topic and outcome, co
 completion: succeeded and cancelled after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
+A fan-in with `Junction.Counts.ANY` only sees parts whose rows are still there: keep its target
+topic's retention longer than a group can take to arrive (see [patterns](patterns.md#fan-out-and-fan-in)).
 Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
 backlog after downtime can't hold up housekeeping.
 
@@ -411,6 +413,14 @@ push with `tasks.push(...)` in a bound transaction instead.
   `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
+- Recurring tasks follow the node that started last: each node that registers a topic replaces
+  the topic's schedules with its own when it starts. While old and new versions run side by side,
+  an old node that restarts (a crash, a rescheduled pod) removes the schedules the new version
+  added, and they stay gone until a new node starts. A schedule the new version removed comes
+  back the same way. So don't count on a new schedule until the rollout is done, and change
+  schedules in two steps: add new ones in one release, and remove old ones, if needed, in the
+  next. Then no rollout both adds and removes, and a schedule that comes back briefly is one the
+  running versions still expect.
 - Topic changes (created, paused, resumed, deleted) and rate limit overrides reach every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another

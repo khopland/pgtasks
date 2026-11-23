@@ -309,7 +309,8 @@ public final class InMemoryTaskStore implements TaskStore {
             case SUSPENDED -> queue.values().stream().anyMatch(row ->
                 row.topicId() == topicId && row.identifier().equals(identifier) && row.state() == State.SUSPENDED);
             case ANY -> tasks.values().stream().anyMatch(row ->
-                row.topicId() == topicId && row.identifier().equals(identifier) && !"redundant".equals(row.outcome()));
+                row.topicId() == topicId && row.identifier().equals(identifier)
+                && !"redundant".equals(row.outcome()) && !"cancelled".equals(row.outcome()));
         };
     }
 

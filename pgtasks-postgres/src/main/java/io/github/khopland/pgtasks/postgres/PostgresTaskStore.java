@@ -939,7 +939,9 @@ public final class PostgresTaskStore implements TaskStore {
 
     private static String junctionSql(Junction.Counts counts) {
         // A group is complete when every identifier has a task that counts; then the group's
-        // suspended tasks become ready.
+        // suspended tasks become ready. ANY skips redundant tasks (a newer push replaced them) and
+        // cancelled ones (they never ran). It reads the task table, so a part whose row
+        // retention has purged no longer counts.
         String present = switch (counts) {
             case SUSPENDED -> """
                 SELECT 1 FROM pgtasks.queue s
@@ -948,7 +950,7 @@ public final class PostgresTaskStore implements TaskStore {
             case ANY -> """
                 SELECT 1 FROM pgtasks.task t
                 WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
-                  AND (t.outcome IS NULL OR t.outcome <> 'redundant')
+                  AND (t.outcome IS NULL OR t.outcome NOT IN ('redundant', 'cancelled'))
                 """;
         };
         return """
