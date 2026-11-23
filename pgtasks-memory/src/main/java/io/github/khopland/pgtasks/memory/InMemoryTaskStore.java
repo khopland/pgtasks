@@ -30,10 +30,8 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.TaskQuery;
@@ -627,30 +625,6 @@ public final class InMemoryTaskStore implements TaskStore {
             .toList();
     }
 
-    @Override
-    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
-        MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> cancelled = unfinished(topicId, query, EnumSet.complementOf(EnumSet.of(State.ACTIVE)), limit);
-        Instant now = now();
-        for (Rows.Queued row : cancelled) {
-            memory.remove(queue, row.taskId());
-            Rows.Task task = task(row.taskId());
-            memory.put(tasks, task.id(), task.finish("cancelled", task.output(), row.attempt(), now));
-        }
-        if (!cancelled.isEmpty()) {
-            memory.ready(topicId);
-        }
-        return cancelled.stream().map(Rows.Queued::taskId).toList();
-    }
-
-    @Override
-    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
-        MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> due = unfinished(topicId, query, EnumSet.of(State.SCHEDULED, State.RETRYING), limit);
-        due.forEach(row -> putQueued(memory, row.with(State.READY, null, row.attempt(), null, null)));
-        return due.stream().map(Rows.Queued::taskId).toList();
-    }
-
     /** The topic's unfinished tasks in these states that match, lowest id first. */
     private List<Rows.Queued> unfinished(int topicId, TaskQuery query, Set<State> states, int limit) {
         return queue.values().stream()
@@ -763,25 +737,6 @@ public final class InMemoryTaskStore implements TaskStore {
         return dead.size();
     }
 
-    @Override
-    public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) {
-        memory(transaction);
-        Map<String, List<Rows.Queued>> groups = new HashMap<>();
-        queue.values().stream()
-            .filter(row -> row.topicId() == topicId && row.failures() > 0)
-            .forEach(row -> groups.computeIfAbsent(errorKey(task(row.taskId()).error()), ignored -> new ArrayList<>()).add(row));
-        return groups.entrySet().stream()
-            .map(group -> {
-                Rows.Queued example = group.getValue().stream().min(Comparator.comparingLong(Rows.Queued::taskId)).orElseThrow();
-                Instant oldest = group.getValue().stream().map(row -> Objects.requireNonNull(row.firstFailedAt())).min(Comparator.naturalOrder()).orElseThrow();
-                return new FailureGroup(group.getKey(), group.getValue().size(), oldest, example.taskId(),
-                    jsonField(task(example.taskId()).error(), "message"));
-            })
-            .sorted(Comparator.comparingLong(FailureGroup::tasks).reversed().thenComparing(FailureGroup::error))
-            .limit(limit)
-            .toList();
-    }
-
     /** The error's type, or its message if it has none, as Postgres groups them. */
     private static String errorKey(@Nullable String error) {
         String type = jsonField(error, "type");
@@ -811,16 +766,6 @@ public final class InMemoryTaskStore implements TaskStore {
                 leases.entrySet().stream()
                     .filter(lease -> lease.getValue().nodeId() == node.id() && !lease.getValue().until().isBefore(now))
                     .map(Map.Entry::getKey).sorted().toList()))
-            .toList();
-    }
-
-    @Override
-    public List<AttemptView> attempts(StoreTransaction transaction, long taskId) {
-        memory(transaction);
-        return attempts.stream()
-            .filter(attempt -> attempt.taskId() == taskId)
-            .sorted(Comparator.comparingInt(Rows.Attempt::attempt).thenComparing(Rows.Attempt::finishedAt))
-            .map(attempt -> new AttemptView(attempt.taskId(), attempt.attempt(), attempt.nodeId(), attempt.result(), attempt.error()))
             .toList();
     }
 

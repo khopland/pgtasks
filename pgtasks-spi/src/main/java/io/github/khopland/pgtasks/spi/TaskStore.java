@@ -18,10 +18,8 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
@@ -315,33 +313,6 @@ public interface TaskStore {
 
     /** A topic's unfinished tasks that match the query, in any state, lowest id first. */
     List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
-
-    /**
-     * Takes the matching unfinished tasks out of the queue, lowest ids first: they finish as
-     * cancelled, with the attempts they took. Ready, delayed, retrying, suspended and dead-lettered
-     * tasks are cancelled; active ones are skipped, since a node runs them. Tasks they held back
-     * under an ordering run next.
-     *
-     * @return the cancelled ids
-     */
-    List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
-
-    /**
-     * Makes the matching delayed and retrying tasks ready at once, lowest ids first, keeping their
-     * attempts and failures. Tasks in other states are skipped.
-     *
-     * @return the ids made ready
-     */
-    List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
-
-    /**
-     * A topic's failing tasks grouped by error type (or, for errors without one, by message), the
-     * largest group first, with when the longest-failing task of each first failed.
-     */
-    List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) throws SQLException;
-
-    /** The logged attempts of a task: failed and expired ones. */
-    List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
 
     /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they

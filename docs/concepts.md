@@ -176,25 +176,11 @@ A task whose node dies under it is requeued with backoff once the node counts as
 minutes without a heartbeat by default). The third time, it is dead-lettered whatever the
 policy says, so a task that crashes the JVM can't take down node after node.
 
-## Operator actions on unfinished tasks
+## Searching unfinished tasks
 
-Operators can also act on tasks that are still waiting, not only on dead letters
-(`engine.admin()`, the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)):
-
-- **Search** a topic's unfinished tasks by identifier, reference, state, one header's value and
-  when they were pushed, a page at a time, lowest id first.
-- **Run now** makes delayed and retrying tasks ready at once. Their attempts and failures stay, so
-  a further failure backs off as it would have.
-- **Cancel** takes ready, delayed, retrying, suspended and dead-lettered tasks out of the queue.
-  They finish with the outcome `cancelled` and never run; like a discarded dead letter, a
-  cancelled task stops holding back later tasks under a `SINGULAR_…` ordering. An **active** task
-  is never cancelled: its node is running it and can't be stopped, so the cancel skips it and it
-  runs to its end with its own outcome. Cancel it again if it comes back to wait.
-
-`cancelled` is an outcome of its own rather than `failed` (which says the task gave up) or
-`redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
-retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
-since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
+Operators can search a topic's unfinished tasks by identifier, reference, state, one header's
+value and when they were pushed, a page at a time, lowest id first (`engine.admin().tasks(...)`,
+the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)).
 
 ## Where settings come from
 

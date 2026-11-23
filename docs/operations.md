@@ -118,13 +118,11 @@ Expose it like any endpoint: `management.endpoints.web.exposure.include=health,t
 GET    /actuator/tasks                                   topics by module, this node and every node
 GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
-GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
-POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}, or {"identifier": "...", "reference": "...", "state": "...", "header": "name=value", "createdFrom": "...", "createdUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
-GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
+GET    /actuator/tasks/tasks/{id}                        a task
 ```
 
 Payloads, outputs and error messages often contain personal data, so the endpoint hides them
@@ -159,19 +157,15 @@ Then open `http://<host>/pgtasks/`. It shows:
 - **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
   task, failing tasks and dead letters, and whether this node runs it.
   Every registered node with its heartbeat (marked late after the lease term) and what it leads.
-- **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
-  list of dead letters to revive or discard by id (or all of them), the topic's effective settings
+- **Topic**: counts, a paged list of dead letters to revive or discard by id (or all of them), the topic's effective settings
   and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
-  when they were pushed, then run the selected or every matching task now, or cancel them. A
-  search runs when you ask and on a page change or after a change, not on every refresh, since
+  when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
   one without an identifier or reference reads the topic's backlog.
-- **Task**: look one up by id in the header, with its attempts and errors; run a waiting task now
-  or cancel it.
+- **Task**: look one up by id in the header, with its error.
 
-Discards, cancels, purges and deletes ask for confirmation, and the ones that can't be undone at
-scale (discarding every dead letter, any cancel, purging, deleting a topic) ask you to type the
-topic's name.
+Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
+(discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
 "Live" refreshes the page every 10 seconds.
 
 **Security.** The page holds no data and has no server logic of its own: it reads and changes
@@ -315,32 +309,24 @@ their values only where `show-values` allows.
 
 ## Dead letters
 
-1. Look at what fails: `GET .../topics/{topic}/failing` groups the failing tasks by error.
+1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors.
 2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
 
 ## Unfinished tasks
 
-What [concepts](concepts.md#operator-actions-on-unfinished-tasks) describes, from the endpoint or
+What [concepts](concepts.md#searching-unfinished-tasks) describes, from the endpoint or
 `engine.admin()`:
 
 ```java
 TaskQuery stuck = TaskQuery.ALL.withIdentifier("person-42").inStates(QueueState.RETRYING);
 admin.tasks("assessment", stuck, 50);            // a page, lowest id first; next page: stuck.after(lastId)
-admin.runNow("assessment", stuck);               // ready now, attempts kept
-admin.cancel("assessment", List.of(1201L, 1202L));
-admin.cancel("assessment", TaskQuery.ALL.withHeader("tenant", "closed-down"));
 ```
 
-- Like revive and discard, the endpoint acts on every task of a topic only with `"all": "true"`;
-  ids that weren't acted on are reported as `skipped` (active tasks for cancel, tasks that don't
-  wait for a time for run now). Bulk actions go in batches of 1,000 tasks per transaction.
-- Cancelling an active task does nothing: it runs to its end and keeps the outcome its handler
-  gives it. A cancel never interrupts a handler, and a cancelled record never hides work that ran.
-- Cost: a search or bulk action finds its tasks by identifier, reference or ids through an index.
-  With only a state, a header or a time range it reads the topic's whole backlog once per page or
-  batch, as counting the topic does. Fine for occasional use; don't poll it. (An index on
+- Cost: a search finds its tasks by identifier, reference or ids through an index.
+  With only a state, a header or a time range it reads the topic's whole backlog once per page,
+  as counting the topic does. Fine for occasional use; don't poll it. (An index on
   `queue (topic_id, task_id)` would avoid that, at a cost to every push and claim, so there is none.)
 - The search shows payloads, outputs, errors and header values under the same `show-values` rules
   as dead letters. Filtering by a header's value still works when values are hidden.

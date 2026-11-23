@@ -15,7 +15,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Outcome;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
@@ -44,16 +43,12 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * GET    /actuator/tasks                                   topics by module, this node and every node
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
- * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
  * GET    /actuator/tasks/topics/{topic}/tasks?after=&amp;limit=&amp;identifier=&amp;reference=&amp;state=ready,retrying&amp;header=tenant=north
  *                                                        &amp;createdFrom=&amp;createdUntil=   unfinished tasks, lowest id first
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
- * POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}; or {"identifier": "...", "reference": "...",
- *                                                        "state": "scheduled,retrying", "header": "tenant=north",
- *                                                        "createdFrom": "...", "createdUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
- * GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
+ * GET    /actuator/tasks/tasks/{id}                        a task
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
  * </pre>
  *
@@ -73,12 +68,6 @@ public class TaskEndpoint {
     static final String HIDDEN = "******";
     private static final int DEAD_LETTER_PAGE = 50;
     private static final int TASK_PAGE = 50;
-    /**
-     * An exception type, as errors are grouped by, or an expiry: shown even when values are
-     * hidden. A message, which may hold personal data, doesn't look like one.
-     */
-    private static final Pattern TYPE = Pattern.compile("[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)+|expired");
-
     private final TaskEngine engine;
     private final Show show;
     private final Set<String> roles;
@@ -121,17 +110,13 @@ public class TaskEndpoint {
                     .ifPresent(settings -> body.put("settings", settings(settings)));
                 return body;
             }));
-            case "tasks" -> found(number(name).flatMap(this::task).map(view -> {
-                Map<String, Object> body = task(view, shown);
-                body.put("attempts", engine.admin().attempts(view.id()).stream().map(attempt -> attempt(attempt, shown)).toList());
-                return body;
-            }));
+            case "tasks" -> found(number(name).flatMap(this::task).map(view -> task(view, shown)));
             default -> notFound();
         };
     }
 
     /**
-     * A topic's dead letters, what is failing, or its unfinished tasks that match the parameters
+     * A topic's dead letters, or its unfinished tasks that match the parameters
      * ({@code state} a comma-separated list, {@code header} one {@code name=value}).
      */
     @ReadOperation
@@ -141,7 +126,7 @@ public class TaskEndpoint {
                                                 @Nullable String createdFrom, @Nullable String createdUntil,
                                                 @Nullable SecurityContext security) throws Exception {
         boolean shown = show.isShown(security == null ? SecurityContext.NONE : security, roles);
-        if (!kind.equals("topics") || !Set.of("dead-letters", "failing", "tasks").contains(part)) {
+        if (!kind.equals("topics") || !Set.of("dead-letters", "tasks").contains(part)) {
             return notFound();
         }
         if (status(name).isEmpty()) {
@@ -161,19 +146,6 @@ public class TaskEndpoint {
             body.put("next", page.size() == size ? page.getLast().id() : null);
             return new WebEndpointResponse<>(body);
         }
-        if (part.equals("failing")) {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("failing", engine.admin().failing(name, limit == null ? 50 : Math.clamp(limit, 1, 1_000)).stream().map(group -> {
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("error", shown || TYPE.matcher(group.error()).matches() ? group.error() : HIDDEN);
-                entry.put("tasks", group.tasks());
-                entry.put("oldestFailedAt", text(group.oldestFailedAt()));
-                entry.put("example", group.example());
-                entry.put("exampleMessage", shown || group.exampleMessage() == null ? group.exampleMessage() : HIDDEN);
-                return entry;
-            }).toList());
-            return new WebEndpointResponse<>(body);
-        }
         int size = limit == null ? DEAD_LETTER_PAGE : Math.clamp(limit, 1, 1_000);
         List<TaskView> page = engine.admin().deadLetters(name, after == null ? 0 : after, size);
         Map<String, Object> body = new LinkedHashMap<>();
@@ -183,14 +155,12 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: revive, discard, purge, cancel, run-now. */
+    /** Topic actions: revive, discard, purge. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
                                            @Nullable String error, @Nullable String failedFrom, @Nullable String failedUntil,
-                                           @Nullable String all, @Nullable String identifier, @Nullable String reference,
-                                           @Nullable String state, @Nullable String header, @Nullable String createdFrom,
-                                           @Nullable String createdUntil) throws Exception {
+                                           @Nullable String all) throws Exception {
         if (!kind.equals("topics")) {
             return notFound();
         }
@@ -217,20 +187,6 @@ public class TaskEndpoint {
                 }
                 body.put(action.equals("revive") ? "revived" : "discarded",
                     action.equals("revive") ? engine.admin().revive(name, query) : engine.admin().discard(name, query));
-            }
-            case "cancel", "run-now" -> {
-                TaskQuery query;
-                try {
-                    query = taskQuery(taskIds, identifier, reference, state, header, createdFrom, createdUntil, all);
-                } catch (IllegalArgumentException | DateTimeParseException e) {
-                    return badRequest(e.getMessage());
-                }
-                int done = action.equals("cancel") ? engine.admin().cancel(name, query) : engine.admin().runNow(name, query);
-                body.put(action.equals("cancel") ? "cancelled" : "madeReady", done);
-                if (taskIds != null) {
-                    // Active tasks aren't cancelled, and only delayed or retrying ones are made ready.
-                    body.put("skipped", taskIds.size() - done);
-                }
             }
             case "purge" -> {
                 if (outcome == null || before == null) {
@@ -283,24 +239,6 @@ public class TaskEndpoint {
             .failedBetween(failedFrom == null ? null : Instant.parse(failedFrom), failedUntil == null ? null : Instant.parse(failedUntil));
     }
 
-    /**
-     * Ids, or a filter, or all of them, but only when asked for in so many words, as for dead
-     * letters: one stray call with an empty body would otherwise cancel a topic's whole backlog.
-     */
-    private static TaskQuery taskQuery(@Nullable List<Long> taskIds, @Nullable String identifier, @Nullable String reference,
-                                       @Nullable String state, @Nullable String header, @Nullable String createdFrom,
-                                       @Nullable String createdUntil, @Nullable String all) {
-        TaskQuery query = filter(TaskQuery.ALL, identifier, reference, state, header, createdFrom, createdUntil);
-        if (taskIds != null) {
-            return query.withIds(taskIds);
-        }
-        if (!query.filtered() && !"true".equalsIgnoreCase(all)) {
-            throw new IllegalArgumentException("Name the tasks: \"ids\", or any of \"identifier\", \"reference\", \"state\", \"header\", "
-                + "\"createdFrom\" and \"createdUntil\", or \"all\": \"true\" for every one");
-        }
-        return query;
-    }
-
     /** The query narrowed by the request's parameters; blank ones are left out. */
     private static TaskQuery filter(TaskQuery query, @Nullable String identifier, @Nullable String reference, @Nullable String state,
                                     @Nullable String header, @Nullable String createdFrom, @Nullable String createdUntil) {
@@ -346,15 +284,6 @@ public class TaskEndpoint {
         node.put("heartbeatAt", text(view.heartbeatAt()));
         node.put("leases", view.leases());
         return node;
-    }
-
-    private static Map<String, Object> attempt(AttemptView view, boolean shown) {
-        Map<String, Object> attempt = new LinkedHashMap<>();
-        attempt.put("attempt", view.attempt());
-        attempt.put("node", view.nodeId());
-        attempt.put("result", view.result());
-        attempt.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
-        return attempt;
     }
 
     private Optional<TopicStatus> status(String name) {

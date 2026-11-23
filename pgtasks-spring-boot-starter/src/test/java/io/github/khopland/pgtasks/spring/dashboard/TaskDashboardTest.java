@@ -143,7 +143,7 @@ class TaskDashboardTest {
         // config.json, and the one call that every route goes through.
         assertThat(Pattern.compile("\\bfetch\\(").matcher(script).results().count()).isEqualTo(2);
         assertThat(script).contains("fetch(\"config.json\"").contains("const response = await fetch(target,");
-        assertThat(DashboardRoutes.routes()).hasSizeGreaterThanOrEqualTo(10);
+        assertThat(DashboardRoutes.routes()).hasSizeGreaterThanOrEqualTo(9);
     }
 
     /** Every route in the script's table, called against the endpoint the page is pointed at. */

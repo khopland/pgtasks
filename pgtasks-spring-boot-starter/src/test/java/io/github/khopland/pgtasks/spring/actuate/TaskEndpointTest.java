@@ -145,13 +145,7 @@ class TaskEndpointTest {
         assertThat(dead.status()).isEqualTo(200);
         assertThat(dead.body().path("deadLetters").get(0).path("id").asLong()).isEqualTo(id);
         assertThat(dead.body().path("deadLetters").get(0).path("error").asString()).contains("not yet");
-        JsonNode attempts = get("/tasks/tasks/" + id).body().path("attempts");
-        assertThat(attempts.get(0).path("attempt").asInt()).isEqualTo(1);
-        assertThat(attempts.get(0).path("error").asString()).contains("not yet");
-        Response failing = get("/tasks/topics/work/failing");
-        assertThat(failing.body().path("failing").get(0).path("error").asString()).isEqualTo("not yet");
-        assertThat(failing.body().path("failing").get(0).path("tasks").asLong()).isEqualTo(1);
-        assertThat(failing.body().path("failing").get(0).path("example").asLong()).isEqualTo(id);
+        assertThat(get("/tasks/topics/work/failing").status()).as("no longer a route").isEqualTo(404);
 
         assertThat(send("POST", "/tasks/topics/work/discard", "{}").status()).as("all of them only when asked for").isEqualTo(400);
         assertThat(send("POST", "/tasks/topics/work/revive", "{}").status()).isEqualTo(400);
@@ -164,7 +158,7 @@ class TaskEndpointTest {
     }
 
     @Test
-    void unfinished_tasks_are_searched_run_now_and_cancelled() throws Exception {
+    void unfinished_tasks_are_searched() throws Exception {
         long later = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("search-a", "later").withDelay(Duration.ofHours(1))
             .withHeader("tenant", "north")).id();
         long tomorrow = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("search-b", "tomorrow")
@@ -181,18 +175,7 @@ class TaskEndpointTest {
         assertThat(get("/tasks/topics/work/tasks?createdFrom=yesterday").status()).isEqualTo(400);
         assertThat(get("/tasks/topics/missing/tasks").status()).isEqualTo(404);
 
-        assertThat(send("POST", "/tasks/topics/work/cancel", "{}").status()).as("all of them only when asked for").isEqualTo(400);
-        assertThat(send("POST", "/tasks/topics/work/run-now", "{}").status()).isEqualTo(400);
-        Response cancelled = send("POST", "/tasks/topics/work/cancel", "{\"identifier\": \"search-b\"}");
-        assertThat(cancelled.status()).isEqualTo(200);
-        assertThat(cancelled.body().path("cancelled").asInt()).isOne();
-        assertThat(get("/tasks/tasks/" + tomorrow).body().path("state").asString()).isEqualTo("cancelled");
-
-        Response ran = send("POST", "/tasks/topics/work/run-now", "{\"ids\": \"" + later + "," + tomorrow + "\"}");
-        assertThat(ran.body().path("madeReady").asInt()).isOne();
-        assertThat(ran.body().path("skipped").asInt()).as("a finished task isn't waiting").isOne();
-        EngineFixture.await("the task made ready succeeded", Duration.ofSeconds(5),
-            () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + later).body().path("state").asString())));
+        assertThat(send("POST", "/tasks/topics/work/cancel", "{\"all\": \"true\"}").status()).as("no longer an action").isEqualTo(404);
     }
 
     @Test

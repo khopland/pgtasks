@@ -103,22 +103,14 @@ class BulkActionLocksTest {
     }
 
     @Test
-    void a_cancel_takes_a_task_that_was_locked_while_its_batch_ran() throws Exception {
-        List<Long> ids = push(3);
-        lock(ids.getFirst());
-
-        assertThat(engine.admin().cancel(WORK.name(), TaskQuery.ALL)).isEqualTo(3);
-        assertThat(database.count("SELECT count(*) FROM pgtasks.queue")).isZero();
-    }
-
-    @Test
     void a_task_still_locked_is_left_and_not_counted() throws Exception {
         List<Long> ids = push(3);
+        database.execute("UPDATE pgtasks.queue SET state = 'failed', failures = 1, first_failed_at = now()");
         lock(ids.get(1));
         // Keep the lock through every rescan.
         Connection kept = holder.getAndSet(null);
         try {
-            assertThat(engine.admin().cancel(WORK.name(), TaskQuery.ALL)).isEqualTo(2);
+            assertThat(engine.admin().discard(WORK.name(), DeadLetterQuery.ALL)).isEqualTo(2);
         } finally {
             kept.rollback();
             kept.close();

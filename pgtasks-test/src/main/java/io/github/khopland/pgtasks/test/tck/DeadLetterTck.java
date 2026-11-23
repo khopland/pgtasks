@@ -80,7 +80,6 @@ public abstract class DeadLetterTck extends StoreTck {
         ClaimedTask again = fixture.claim(topic, node).getFirst();
         assertThat(again.id()).isEqualTo(id);
         assertThat(again.attempt()).isEqualTo(1);
-        assertThat(fixture.attempts(id)).as("the earlier failure stays in the log").hasSize(1);
         assertThat(fixture.counts(topic).failed()).isZero();
         assertThat(fixture.view(id).orElseThrow().failures()).as("a revived task starts afresh").isZero();
         assertThat(fixture.view(id).orElseThrow().firstFailedAt()).isNull();

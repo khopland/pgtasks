@@ -149,8 +149,8 @@ class AdminTest {
     }
 
     @Test
-    @DisplayName("Unfinished tasks are found, run now and cancelled; a run time waits, one in the past doesn't")
-    void unfinished_tasks_are_found_run_now_and_cancelled() throws Exception {
+    @DisplayName("Unfinished tasks are found; a run time waits, one in the past doesn't")
+    void unfinished_tasks_are_found() throws Exception {
         ManualClock clock = new ManualClock(Instant.parse("2026-11-21T10:00:00Z"));
         TopicRef<String> next = TopicRef.of("next", String.class);
         Set<String> ran = ConcurrentHashMap.newKeySet();
@@ -184,17 +184,6 @@ class AdminTest {
         assertThat(engine.admin().tasks("next", TaskQuery.ALL.inStates(QueueState.SCHEDULED), 10)).singleElement()
             .satisfies(task -> assertThat(task.runAt()).as("downstream work keeps its run time").isEqualTo(clock.instant().plus(Duration.ofHours(2))));
 
-        assertThat(engine.admin().runNow("work", List.of(later))).isOne();
-        tester.awaitIdle();
-        assertThat(ran).contains("later");
-
-        assertThat(engine.admin().cancel("work", TaskQuery.ALL.withIdentifier("a"))).isOne();
-        assertThat(engine.admin().cancel("next", TaskQuery.ALL)).isOne();
-        tester.advance(Duration.ofDays(2));
-        tester.awaitIdle();
-        assertThat(ran).doesNotContain("tomorrow", "chained");
-        assertThat(tester.task(tomorrow).state()).isEqualTo(Outcome.CANCELLED.label());
-        assertThat(engine.admin().cancel("work", TaskQuery.ALL)).as("nothing left").isZero();
     }
 
     @Test

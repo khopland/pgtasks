@@ -5,7 +5,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -16,11 +15,8 @@ import java.util.Set;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TaskStorageException;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.NodeView;
-import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -33,13 +29,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
- * cancelled, run now), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
+ * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks, dead
+ * letters and retention. Everything here reads or changes the store directly, so it works on a node that
  * only pushes, and acts on the whole cluster.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  *
- * <p>A bulk action (revive, discard, cancel, run now) works in batches and takes each row it can
+ * <p>A bulk action (revive, discard) works in batches and takes each row it can
  * lock. A row that stays locked by another transaction, such as a claim or a push, through the
  * action's few re-reads is left as it is; the count it returns says how many it took.
  */
@@ -141,19 +137,6 @@ public final class TaskAdmin {
         return Unchecked.call("Finding task " + taskId, () -> EngineCore.transact(store, transaction -> store.find(transaction, taskId)));
     }
 
-    /** A task's logged attempts, failed and expired ones: its first and its last ten. */
-    public List<AttemptView> attempts(long taskId) {
-        return Unchecked.call("Reading the attempts of task " + taskId, () -> EngineCore.transact(store, transaction -> store.attempts(transaction, taskId)));
-    }
-
-    /** What is failing in a topic: its failing tasks grouped by error, the largest group first. */
-    public List<FailureGroup> failing(String topic, int limit) {
-        return Unchecked.call("Reading what fails in " + topic, () -> {
-            int id = topicId(topic);
-            return EngineCore.transact(store, transaction -> store.failing(transaction, id, limit));
-        });
-    }
-
     /** A page of a topic's dead letters, lowest id first, after {@code afterId} (0 for the first page). */
     public List<TaskView> deadLetters(String topic, long afterId, int limit) {
         return deadLetters(topic, DeadLetterQuery.ALL.after(afterId), limit);
@@ -227,61 +210,6 @@ public final class TaskAdmin {
         });
     }
 
-    /**
-     * Cancels these unfinished tasks: see {@link #cancel(String, TaskQuery)}. Ids that aren't
-     * unfinished tasks of the topic, or are active, are skipped.
-     *
-     * @return how many were cancelled
-     */
-    public int cancel(String topic, Collection<Long> taskIds) {
-        return cancel(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
-    }
-
-    /**
-     * Takes the matching unfinished tasks out of the queue; {@link TaskQuery#ALL} for every one.
-     * They finish as {@link Outcome#CANCELLED}, with the attempts they took, kept as long as the
-     * topic's retention for cancelled tasks says, and never run. Ready, delayed, retrying,
-     * suspended and dead-lettered tasks are cancelled, and tasks they held back under an ordering
-     * run next. An active task is skipped and runs to its end: its node can't be stopped, so
-     * marking it cancelled would only make the record disagree with what its handler did.
-     *
-     * @return how many were cancelled
-     */
-    public int cancel(String topic, TaskQuery query) {
-        return Unchecked.call("Cancelling tasks of " + topic, () -> {
-            int id = topicId(topic);
-            int cancelled = inBatches(query, id, CANCELLABLE, (transaction, batch, limit) -> store.cancel(transaction, id, batch, limit));
-            if (cancelled > 0) {
-                LOGGER.info("Cancelled {} task(s) of {}", cancelled, topic);
-                engine.wake(topic);
-            }
-            return cancelled;
-        });
-    }
-
-    /** Makes these delayed or retrying tasks ready now: see {@link #runNow(String, TaskQuery)}. */
-    public int runNow(String topic, Collection<Long> taskIds) {
-        return runNow(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
-    }
-
-    /**
-     * Makes the matching delayed and retrying tasks ready at once, keeping their attempts and
-     * failures, so a further failure backs off as it would have. Tasks in other states are skipped.
-     *
-     * @return how many were made ready
-     */
-    public int runNow(String topic, TaskQuery query) {
-        return Unchecked.call("Running tasks of " + topic + " now", () -> {
-            int id = topicId(topic);
-            int ready = inBatches(query, id, EnumSet.of(QueueState.SCHEDULED, QueueState.RETRYING),
-                (transaction, batch, limit) -> store.runNow(transaction, id, batch, limit));
-            if (ready > 0) {
-                engine.wake(topic);
-            }
-            return ready;
-        });
-    }
-
     /** Deletes a topic's finished tasks with an outcome that finished before a time, as retention does. Returns how many. */
     public long purge(String topic, Outcome outcome, Instant finishedBefore) {
         return Unchecked.call("Purging " + topic, () -> {
@@ -312,39 +240,6 @@ public final class TaskAdmin {
 
         /** The ids of rows that match and that the action would take, read without locking them. */
         List<Long> matching(StoreTransaction transaction, Q query, int limit) throws Exception;
-    }
-
-    /** States a cancel takes: every one but active. */
-    private static final Set<QueueState> CANCELLABLE = EnumSet.complementOf(EnumSet.of(QueueState.ACTIVE));
-
-    /** As for dead letters, for the tasks in the given states that the action takes. */
-    private int inBatches(TaskQuery query, int topicId, Set<QueueState> takes, Work<TaskQuery> work) throws Exception {
-        Set<QueueState> states = query.states().isEmpty() ? takes : EnumSet.copyOf(query.states());
-        states.retainAll(takes);
-        if (states.isEmpty()) {
-            return 0; // it asks for states the action doesn't take
-        }
-        return inBatches(query, work, new Paging<>() {
-            @Override
-            public @Nullable Collection<Long> ids(TaskQuery query) {
-                return query.taskIds();
-            }
-
-            @Override
-            public TaskQuery after(TaskQuery query, long id) {
-                return query.after(id);
-            }
-
-            @Override
-            public TaskQuery withIds(TaskQuery query, Collection<Long> ids) {
-                return query.withIds(ids);
-            }
-
-            @Override
-            public List<Long> matching(StoreTransaction transaction, TaskQuery query, int limit) throws Exception {
-                return store.tasks(transaction, topicId, query.inStates(states), limit).stream().map(TaskView::id).toList();
-            }
-        });
     }
 
     private int inBatches(DeadLetterQuery query, int topicId, Work<DeadLetterQuery> work) throws Exception {

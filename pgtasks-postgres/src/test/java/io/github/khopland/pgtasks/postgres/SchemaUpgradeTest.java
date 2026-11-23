@@ -174,9 +174,6 @@ class SchemaUpgradeTest {
             assertThat(database.count("SELECT count(*) FROM pgtasks.schedule")).isOne();
             assertThat(store.promoteDue(transaction, 100).tasks()).as("the delayed task stays delayed").isZero();
 
-            List<Long> cancelled = store.cancel(transaction, topic, TaskQuery.ALL.withIdentifier("person-8"), 10);
-            assertThat(cancelled).as("V002's outcome works on a task 0.1.0 stored").hasSize(1);
-            assertThat(store.find(transaction, cancelled.getFirst())).hasValueSatisfying(view -> assertThat(view.state()).isEqualTo("cancelled"));
             transaction.commit();
         }
         assertThat(database.rows("SELECT version, compatible_from FROM pgtasks.meta")).as("0.1.0 nodes may keep running against it")
