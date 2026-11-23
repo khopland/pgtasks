@@ -429,8 +429,13 @@ final class BatchRun<T> {
         Set<String> released = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Set<String>>> entry : groups.entrySet()) {
             int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
-            if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
-                released.add(entry.getKey().topic());
+            try {
+                if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
+                    released.add(entry.getKey().topic());
+                }
+            } catch (SQLException e) {
+                core.tasks().failed(entry.getKey().topic(), topicId, e);
+                throw e;
             }
         }
         return released;

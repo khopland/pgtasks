@@ -213,7 +213,7 @@ public final class InMemoryTaskStore implements TaskStore {
             return List.of();
         }
         if (!topics.containsKey(topicId)) {
-            throw new SQLException("No topic with id " + topicId);
+            throw new SQLException("No topic with id " + topicId, "23503"); // like the foreign key on task.topic_id
         }
         Instant now = now();
         Map<String, Integer> last = new HashMap<>();
