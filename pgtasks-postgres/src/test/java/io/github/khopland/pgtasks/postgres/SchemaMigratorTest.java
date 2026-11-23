@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -217,6 +218,116 @@ class SchemaMigratorTest {
 
         assertThat(TaskSchema.migrate(database.dataSource()).applied()).containsExactlyElementsOf(
             TaskSchema.FILES.stream().filter(name -> name.startsWith("R__")).toList());
+    }
+
+    private static final String PUSH = """
+        WITH t AS (
+            INSERT INTO pgtasks.task (topic_id, identifier, payload)
+            SELECT id, 'someone', 'payload' FROM pgtasks.topic WHERE name = 'busy'
+            RETURNING id, topic_id, identifier
+        )
+        INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state)
+        SELECT id, topic_id, identifier, 'ready' FROM t
+        """;
+
+    /** A transaction that pushed and stays open, the way a long application transaction does: it holds a lock on the queue. */
+    private static Connection openPush(PostgresDatabase database, Connection connection) throws SQLException {
+        database.execute("SELECT pgtasks.create_topic('busy')");
+        connection.setAutoCommit(false);
+        try (var statement = connection.createStatement()) {
+            statement.execute(PUSH);
+        }
+        return connection;
+    }
+
+    private static long pid(Connection connection) throws SQLException {
+        try (var statement = connection.createStatement(); var resultSet = statement.executeQuery("SELECT pg_backend_pid()")) {
+            resultSet.next();
+            return resultSet.getLong(1);
+        }
+    }
+
+    /** The trigger file with its revision raised: applying it takes a SHARE ROW EXCLUSIVE lock on the queue. */
+    private static List<SchemaScript> changedTrigger() {
+        return replacing("R__notify_ready.sql", nextRevision("R__notify_ready.sql", "Repeatable.", "Repeatable, revised."));
+    }
+
+    /** Pushes one task at a time until stopped, and returns the longest a push took, in ms. */
+    private static CompletableFuture<Long> pushUntil(PostgresDatabase database, CompletableFuture<?> done) {
+        return CompletableFuture.supplyAsync(() -> {
+            long longest = 0;
+            int pushes = 0;
+            try (Connection connection = database.connect(); var statement = connection.createStatement()) {
+                while (!done.isDone() || pushes == 0) {
+                    long started = System.nanoTime();
+                    statement.execute(PUSH);
+                    longest = Math.max(longest, (System.nanoTime() - started) / 1_000_000);
+                    pushes++;
+                    Thread.sleep(10);
+                }
+            } catch (SQLException | InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+            return longest;
+        });
+    }
+
+    @Test
+    void a_change_that_cannot_get_its_lock_gives_up_without_stalling_pushes(PostgresDatabase database) throws Exception {
+        TaskSchema.migrate(database.dataSource());
+        try (Connection blocker = database.connect()) {
+            long blockerPid = pid(blocker);
+            openPush(database, blocker);
+            CompletableFuture<TaskSchema.Status> migration = CompletableFuture.supplyAsync(() -> {
+                try (Connection connection = database.connect()) {
+                    return new SchemaMigrator(changedTrigger(), TaskSchema.DEFAULT_SCHEMA, Duration.ofMillis(300), 3, Duration.ofMillis(100))
+                        .migrate(connection);
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            CompletableFuture<Long> pushes = pushUntil(database, migration);
+
+            assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
+                .hasCauseInstanceOf(TaskSchemaException.class)
+                .cause()
+                .hasMessageContaining("Could not apply R__notify_ready.sql to the pgtasks schema: it waited more than 300 ms for a lock on each of 3 attempts")
+                .hasMessageContaining("pid " + blockerPid + " (user " + database.user())
+                .hasMessageContaining("idle in transaction")
+                .hasMessageContaining("last statement: WITH t AS ( INSERT INTO pgtasks.task");
+            assertThat(pushes.get(30, TimeUnit.SECONDS)).as("longest push, ms, while the change waited").isLessThan(2_000);
+            blocker.rollback();
+        }
+        assertThat(database.rows("SELECT revision FROM pgtasks.schema_history WHERE script = 'R__notify_ready.sql'")).containsExactly(List.of(1));
+        assertThat(database.rows("SELECT current_setting('lock_timeout')")).as("on other sessions").containsExactly(List.of("0"));
+    }
+
+    @Test
+    void a_change_that_times_out_on_a_lock_is_applied_once_the_lock_is_free(PostgresDatabase database) throws Exception {
+        TaskSchema.migrate(database.dataSource());
+        Connection blocker = openPush(database, database.connect());
+        CompletableFuture.delayedExecutor(700, TimeUnit.MILLISECONDS).execute(() -> {
+            try (blocker) {
+                blocker.commit();
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        TaskSchema.Status status;
+        String lockTimeout;
+        try (Connection connection = database.connect()) {
+            status = new SchemaMigrator(changedTrigger(), TaskSchema.DEFAULT_SCHEMA, Duration.ofMillis(200), 10, Duration.ofMillis(100))
+                .migrate(connection);
+            try (var statement = connection.createStatement(); var resultSet = statement.executeQuery("SELECT current_setting('lock_timeout')")) {
+                resultSet.next();
+                lockTimeout = resultSet.getString(1);
+            }
+        }
+
+        assertThat(status.applied()).containsExactly("R__notify_ready.sql");
+        assertThat(database.rows("SELECT revision FROM pgtasks.schema_history WHERE script = 'R__notify_ready.sql' ORDER BY installed_rank"))
+            .containsExactly(List.of(1), List.of(2));
+        assertThat(lockTimeout).as("the connection's own setting, restored").isEqualTo("0");
     }
 
     @Test

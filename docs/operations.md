@@ -13,6 +13,15 @@ Everything lives in one schema, `pgtasks` unless you name another, as plain SQL 
   rights: a topic is a row.
 - `none`: nothing is checked.
 
+Changing a trigger or table takes a lock that waits behind every open transaction that touched the
+table, and every push and claim then queues behind the waiting change. So the built-in runner lets
+each statement wait at most 5 seconds for a lock (`TaskSchema.migrate(dataSource, schema,
+lockTimeout)` takes another limit). When one times out, it rolls the file back and tries again up to
+five times, pausing 1, 2, 4 and 8 seconds in between. Then startup fails with a message that lists
+the open transactions holding locks on the schema's tables, oldest first, such as an application
+transaction that pushed and stayed open. With Flyway or Liquibase, set `lock_timeout` for the
+migration's user yourself, for instance with `ALTER ROLE migrator SET lock_timeout = '5s'`.
+
 `pgtasks.task_view` shows each task with its current state, for looking around in SQL.
 
 ### Naming the schema
