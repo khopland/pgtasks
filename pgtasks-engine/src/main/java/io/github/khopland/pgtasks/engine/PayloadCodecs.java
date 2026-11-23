@@ -4,7 +4,7 @@ import io.github.khopland.pgtasks.PayloadCodec;
 
 /**
  * Codecs for payload types nobody registered one for, such as JSON for every record: asked
- * last, after a topic's own codec, a template's and those given with
+ * last, after a topic's own codec and those given with
  * {@link TaskEngineBuilder#codec}. The Spring starter gives one that uses the application's
  * Jackson mapper.
  */
