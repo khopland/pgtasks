@@ -76,6 +76,7 @@ public final class TaskEngineBuilder {
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
+    private final List<Extension> extensions = new ArrayList<>();
     private @Nullable String version;
     private @Nullable PayloadCodecs fallbackCodecs;
     private boolean topicsCreatedOnPush;
@@ -193,6 +194,14 @@ public final class TaskEngineBuilder {
     public TaskEngineBuilder observer(TaskObserver observer) {
         Objects.requireNonNull(observer);
         this.observer = this.observer == TaskObserver.NONE ? observer : TaskObserver.composite(List.of(this.observer, observer));
+        return this;
+    }
+
+    /** Adds features from outside the core; installed in this order when the engine is built. */
+    public TaskEngineBuilder extension(Extension... extensions) {
+        for (Extension extension : extensions) {
+            this.extensions.add(Objects.requireNonNull(extension, "extension"));
+        }
         return this;
     }
 
@@ -550,7 +559,17 @@ public final class TaskEngineBuilder {
             throw new IllegalStateException("The task setup is invalid:\n - " + String.join("\n - ", problems));
         }
         engine.withPushedTo(pushedTo.keySet());
-        return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
+        if (topicsCreatedOnPush) {
+            engine.withTopicsCreatedOnPush();
+        }
+        for (Extension extension : extensions) {
+            try {
+                engine.install(extension);
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("Extension " + extension.name() + " could not be installed: " + e.getMessage(), e);
+            }
+        }
+        return engine;
     }
 
     /** Connections the engine may use besides claims and completions: heartbeat, housekeeping, retention, reloads. */

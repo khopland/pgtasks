@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -69,6 +70,11 @@ public final class TaskEngine implements AutoCloseable {
     private volatile boolean prepared;
     /** Whether it was started and stopped before, so a start must switch the reloads back on. */
     private boolean stopped;
+    /** What installed extensions registered; see {@link #install}. */
+    private final List<HousekeepingJob> extensionJobs = new ArrayList<>();
+    private final List<Runnable> onStart = new ArrayList<>();
+    private final List<Runnable> onStop = new ArrayList<>();
+    private final List<String> extensions = new ArrayList<>();
     /** How long one retention run may take; shorter in tests. */
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
@@ -245,11 +251,12 @@ public final class TaskEngine implements AutoCloseable {
             }
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
-            }, purgeBudget);
+            }, purgeBudget, extensionJobs);
             housekeeper = keeper;
             keeper.start();
             started = true;
             reconcileTopics();
+            onStart.forEach(Runnable::run);
         } catch (Exception | Error e) {
             if (started) {
                 stop(Duration.ZERO);
@@ -499,6 +506,13 @@ public final class TaskEngine implements AutoCloseable {
         started = false;
         stopped = true;
         long deadline = System.nanoTime() + timeout.toNanos();
+        for (Runnable action : onStop) {
+            try {
+                action.run();
+            } catch (RuntimeException e) {
+                LOGGER.warn("An extension's stop action failed; the engine stops anyway", e);
+            }
+        }
         try {
             // Nothing new starts: no wake-ups, no reloads.
             Notifier wakeUps = notifier;
@@ -540,6 +554,59 @@ public final class TaskEngine implements AutoCloseable {
     @Override
     public void close() {
         stop(Duration.ofSeconds(30));
+    }
+
+    /** Installs an extension: it registers its hooks with this engine. Only while the engine is built. */
+    void install(Extension extension) {
+        if (prepared || started) {
+            throw new IllegalStateException("Extensions are installed while the engine is built");
+        }
+        extension.install(new Context());
+        extensions.add(extension.name());
+    }
+
+    /** The names of the installed extensions, in the order they were installed. */
+    public List<String> extensions() {
+        return List.copyOf(extensions);
+    }
+
+    /** The context an extension installs into: this engine's. */
+    private final class Context implements ExtensionContext {
+
+        @Override
+        public TaskStore store() {
+            return store;
+        }
+
+        @Override
+        public Tasks tasks() {
+            return tasks;
+        }
+
+        @Override
+        public InstantSource clock() {
+            return store.clock();
+        }
+
+        @Override
+        public boolean leading() {
+            return leadsHousekeeping();
+        }
+
+        @Override
+        public void job(HousekeepingJob job) {
+            extensionJobs.add(Objects.requireNonNull(job, "job"));
+        }
+
+        @Override
+        public void onStart(Runnable action) {
+            onStart.add(Objects.requireNonNull(action, "action"));
+        }
+
+        @Override
+        public void onStop(Runnable action) {
+            onStop.add(Objects.requireNonNull(action, "action"));
+        }
     }
 
     @Override

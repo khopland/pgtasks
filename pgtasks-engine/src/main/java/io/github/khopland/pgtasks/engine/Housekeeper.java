@@ -47,9 +47,9 @@ final class Housekeeper {
      */
     static final TaskStore.Expiries EXPIRIES = new TaskStore.Expiries(3, Duration.ofSeconds(30));
 
+    /** Kept for the engine's own callbacks. */
     @FunctionalInterface
-    interface Job {
-        void run() throws Exception;
+    interface Job extends HousekeepingJob.Action {
     }
 
     private final TaskStore store;
@@ -59,6 +59,8 @@ final class Housekeeper {
     private final IntConsumer wake;
     private final Job sweepOrphans;
     private final Job reconcile;
+    /** Jobs extensions added; each runs on a thread of its own. */
+    private final List<HousekeepingJob> extensionJobs;
     private final Object leadership = new Object();
     private final Object beating = new Object();
     private @Nullable Instant leaseEnds;
@@ -66,7 +68,8 @@ final class Housekeeper {
     /**
      * Three threads, so a slow job can't hold up the others: the heartbeat and lease alone on
      * one (a node that misses them loses the lease, and its health turns DOWN), the regular jobs
-     * on another, and retention, which can run long after downtime, on a third.
+     * on another, and retention, which can run long after downtime, on a third. Each extension
+     * job gets one more, so an extension can't hold up the engine's own.
      */
     private final List<ScheduledExecutorService> executors = new ArrayList<>();
     /** How long one retention run may delete before it leaves the rest to the next run. */
@@ -84,7 +87,8 @@ final class Housekeeper {
      *                     lost: the topics it runs
      */
     Housekeeper(TaskStore store, EngineSettings settings, IntSupplier nodeId, Job rejoin, IntConsumer wake, Job sweepOrphans, Job reconcile,
-                Duration purgeBudget) {
+                Duration purgeBudget, List<HousekeepingJob> extensionJobs) {
+        this.extensionJobs = List.copyOf(extensionJobs);
         this.purgeBudget = purgeBudget;
         this.store = store;
         this.settings = settings;
@@ -101,29 +105,26 @@ final class Housekeeper {
         ScheduledExecutorService beats = executor("pgtasks-heartbeat-");
         ScheduledExecutorService jobs = executor("pgtasks-housekeeping-");
         ScheduledExecutorService slow = executor("pgtasks-retention-");
-        schedule(beats, "heartbeat", settings.heartbeat(), this::heartbeat);
-        schedule(jobs, "orphan sweep", settings.heartbeat(), sweepOrphans);
-        schedule(jobs, "reconcile", settings.heartbeat(), reconcile);
-        schedule(jobs, "expiry", settings.heartbeat(), () -> {
-            if (leading()) {
-                expire();
-            }
-        });
-        schedule(jobs, "promotion", settings.promoteInterval(), () -> {
-            if (leading()) {
-                promote();
-            }
-        });
-        schedule(slow, "retention", settings.purgeInterval(), () -> {
-            if (leading()) {
-                purge();
-            }
-        });
-        schedule(jobs, "count snapshot", settings.snapshotInterval(), () -> {
-            if (leading()) {
-                snapshot();
-            }
-        });
+        schedule(beats, HousekeepingJob.everyNode("heartbeat", settings.heartbeat(), this::heartbeat));
+        for (HousekeepingJob job : coreJobs()) {
+            schedule(job.name().equals(RETENTION) ? slow : jobs, job);
+        }
+        for (HousekeepingJob job : extensionJobs) {
+            schedule(executor("pgtasks-job-" + job.name() + "-"), job);
+        }
+    }
+
+    private static final String RETENTION = "retention";
+
+    /** The engine's own jobs, besides the heartbeat. */
+    private List<HousekeepingJob> coreJobs() {
+        return List.of(
+            HousekeepingJob.everyNode("orphan sweep", settings.heartbeat(), sweepOrphans),
+            HousekeepingJob.everyNode("reconcile", settings.heartbeat(), reconcile),
+            HousekeepingJob.leader("expiry", settings.heartbeat(), this::expire),
+            HousekeepingJob.leader("promotion", settings.promoteInterval(), this::promote),
+            HousekeepingJob.leader(RETENTION, settings.purgeInterval(), this::purge),
+            HousekeepingJob.leader("count snapshot", settings.snapshotInterval(), this::snapshot));
     }
 
     private ScheduledExecutorService executor(String name) {
@@ -133,10 +134,14 @@ final class Housekeeper {
     }
 
     @SuppressWarnings("FutureReturnValueIgnored") // the job logs its own failures; stop() shuts the executor down
-    private void schedule(ScheduledExecutorService executor, String name, Duration interval, Job job) {
+    private void schedule(ScheduledExecutorService executor, HousekeepingJob job) {
+        String name = job.name();
+        Duration interval = job.interval();
         executor.scheduleWithFixedDelay(() -> {
             try {
-                job.run();
+                if (job.scope() == HousekeepingJob.Scope.EVERY_NODE || leading()) {
+                    job.run();
+                }
             } catch (Exception e) {
                 LOGGER.warn("The {} job failed; it runs again in {}", name, interval, e);
             } catch (Error e) {
@@ -231,13 +236,19 @@ final class Housekeeper {
         }
     }
 
-    /** If this node leads, runs the cluster-wide jobs once, now: for tests that move the clock. */
+    /** If this node leads, runs the cluster-wide jobs once, now, extensions' included: for tests that move the clock. */
     void runLeaderJobsNow() throws Exception {
         if (leading()) {
-            expire();
-            promote();
-            purge();
-            snapshot();
+            for (HousekeepingJob job : coreJobs()) {
+                if (job.scope() == HousekeepingJob.Scope.LEADER) {
+                    job.run();
+                }
+            }
+            for (HousekeepingJob job : extensionJobs) {
+                if (job.scope() == HousekeepingJob.Scope.LEADER) {
+                    job.run();
+                }
+            }
         }
     }
 

@@ -16,6 +16,8 @@ import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
 import io.github.khopland.pgtasks.engine.EngineFixture;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
+import io.github.khopland.pgtasks.engine.Extension;
+import io.github.khopland.pgtasks.engine.ExtensionContext;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
@@ -316,6 +318,52 @@ class TaskAutoConfigurationTest {
             TaskView view = engine.admin().find(id).orElseThrow();
             assertThat(view.payloadType()).isEqualTo("json");
             assertThat(view.payload()).isEqualTo("{\"id\":\"o-1\",\"quantity\":3}");
+        });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class Extensions {
+        final List<String> started = new CopyOnWriteArrayList<>();
+
+        @Bean
+        @org.springframework.core.annotation.Order(2)
+        Extension second() {
+            return new Extension() {
+                @Override
+                public String name() {
+                    return "second";
+                }
+
+                @Override
+                public void install(ExtensionContext context) {
+                    context.onStart(() -> started.add("second"));
+                }
+            };
+        }
+
+        @Bean
+        @org.springframework.core.annotation.Order(1)
+        Extension first() {
+            return new Extension() {
+                @Override
+                public String name() {
+                    return "first";
+                }
+
+                @Override
+                public void install(ExtensionContext context) {
+                    context.onStart(() -> started.add("first"));
+                }
+            };
+        }
+    }
+
+    @Test
+    void extension_beans_are_installed_in_their_order() {
+        memory().withUserConfiguration(Extensions.class).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(TaskEngine.class).extensions()).containsExactly("first", "second");
+            assertThat(context.getBean(Extensions.class).started).containsExactly("first", "second");
         });
     }
 

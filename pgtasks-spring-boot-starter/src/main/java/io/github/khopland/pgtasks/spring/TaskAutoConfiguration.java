@@ -8,6 +8,7 @@ import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.engine.PayloadCodecs;
+import io.github.khopland.pgtasks.engine.Extension;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskEngineBuilder;
@@ -84,6 +85,8 @@ public class TaskAutoConfiguration {
         // Each configurer's module is its bean name.
         beansOfType(beans, TaskConfigurer.class).forEach(builder::configure);
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
+        // Every Extension bean, in the beans' order (@Order, Ordered).
+        beans.getBeanProvider(Extension.class).orderedStream().forEach(builder::extension);
         // Every observer bean, such as pgtasks-micrometer's and the application's own, and the MDC keys to carry.
         List<TaskObserver> observers = new ArrayList<>(observer.orderedStream().toList());
         if (!properties.mdcHeaders().isEmpty()) {
