@@ -1,3 +1,4 @@
+-- revision: 1
 -- Registers a topic. Idempotent: returns the existing topic's id if it is registered already.
 -- A new topic is broadcast by the trigger on the topic table (R__notify_topic.sql), so every node
 -- that has a handler for it starts processing it.

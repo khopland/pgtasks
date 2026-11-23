@@ -164,17 +164,66 @@ class SchemaMigratorTest {
             .hasMessageContaining("add a new versioned file instead");
     }
 
+    private static SchemaScript shipped(String name) {
+        return shipped().stream().filter(script -> script.name().equals(name)).findFirst().orElseThrow();
+    }
+
+    /** A shipped repeatable file with its revision raised by one, the way the next release would change it. */
+    private static String nextRevision(String name, String from, String to) {
+        SchemaScript script = shipped(name);
+        String content = script.content();
+        assertThat(content).contains(from);
+        return content.replace("-- revision: " + script.revision() + "\n", "-- revision: " + (script.revision() + 1) + "\n").replace(from, to);
+    }
+
+    private static String changedView() {
+        return nextRevision("R__task_view.sql", "t.headers\nFROM", "t.headers,\n       t.completed_at AS finished_at\nFROM");
+    }
+
     @Test
     void reapplies_a_repeatable_file_when_it_changes(PostgresDatabase database) throws SQLException {
         TaskSchema.migrate(database.dataSource());
-        String changed = shipped().stream().filter(script -> script.name().equals("R__task_view.sql")).findFirst().orElseThrow().content()
-            .replace("t.headers\nFROM", "t.headers,\n       t.completed_at AS finished_at\nFROM");
+        String changed = changedView();
+        assertThat(SchemaScript.of("R__task_view.sql", changed).revision()).isEqualTo(shipped("R__task_view.sql").revision() + 1);
 
         TaskSchema.Status status = migrate(database, replacing("R__task_view.sql", changed));
 
         assertThat(status.applied()).containsExactly("R__task_view.sql");
         assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_name = 'task_view' AND column_name = 'finished_at'")).isEqualTo(1);
         assertThat(migrate(database, replacing("R__task_view.sql", changed)).applied()).isEmpty();
+        assertThat(database.rows("SELECT revision FROM pgtasks.schema_history WHERE script = 'R__task_view.sql' ORDER BY installed_rank"))
+            .containsExactly(List.of(1), List.of(2));
+    }
+
+    @Test
+    void an_older_node_does_not_roll_back_a_newer_repeatable_revision(PostgresDatabase database) throws SQLException {
+        // A newer release changed the view without a new versioned file, and one of its nodes applied it.
+        TaskSchema.migrate(database.dataSource());
+        migrate(database, replacing("R__task_view.sql", changedView()));
+
+        // An older node restarts mid-deploy: same schema version, older view.
+        TaskSchema.Status status = TaskSchema.migrate(database.dataSource());
+
+        assertThat(status.applied()).as("nothing rolled back").isEmpty();
+        assertThat(database.count("SELECT count(*) FROM information_schema.columns WHERE table_name = 'task_view' AND column_name = 'finished_at'")).isEqualTo(1);
+        assertThat(migrate(database, replacing("R__task_view.sql", changedView())).applied()).as("the newer node has nothing to restore").isEmpty();
+    }
+
+    @Test
+    void a_newer_revision_replaces_what_an_older_runner_recorded(PostgresDatabase database) throws SQLException {
+        // Rows an older runner recorded have no revision: they count as 0, so the current files replace them.
+        TaskSchema.migrate(database.dataSource());
+        database.execute("UPDATE pgtasks.schema_history SET revision = NULL, checksum = 'older' WHERE version IS NULL");
+
+        assertThat(TaskSchema.migrate(database.dataSource()).applied()).containsExactlyElementsOf(
+            TaskSchema.FILES.stream().filter(name -> name.startsWith("R__")).toList());
+    }
+
+    @Test
+    void reads_the_revision_from_the_header_only() {
+        assertThat(SchemaScript.of("R__x.sql", "-- About x.\n-- revision: 7\nSELECT 1;").revision()).isEqualTo(7);
+        assertThat(SchemaScript.of("R__x.sql", "SELECT 1;\n-- revision: 7\n").revision()).isZero();
+        assertThat(SchemaScript.of("R__x.sql", "SELECT 1;").revision()).isZero();
     }
 
     @Test

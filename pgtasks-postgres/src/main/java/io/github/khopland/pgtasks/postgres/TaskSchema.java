@@ -49,7 +49,9 @@ import javax.sql.DataSource;
  * {@code V<version>__<description>.sql} for tables, types and indexes, applied once, each ending
  * by recording its version and the lowest version it stays compatible with in {@code pgtasks.meta};
  * {@code R__<description>.sql} for functions, views and triggers, idempotent and re-applied when
- * they change; and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
+ * they change, with a {@code -- revision: <n>} header comment raised by every change, so the
+ * built-in runner never applies an older definition over a newer one during a rolling deploy
+ * ({@code SchemaFreezeTest} pins each revision's checksum); and a {@value SchemaScript#NO_TRANSACTION} header comment for scripts that must
  * run outside a transaction, such as {@code CREATE INDEX CONCURRENTLY}.
  *
  * <p>Rights: with {@code MIGRATE} the application's user owns the schema. Otherwise the runtime

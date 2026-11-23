@@ -12,15 +12,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * The built-in runner. Takes a session advisory lock per schema, keeps its history in the
  * schema's own {@code schema_history} table, runs each versioned file once in its own transaction, re-runs
- * repeatable files whose checksum changed, and refuses to run if an applied versioned file has
- * changed. If a newer node has already moved the schema ahead, it changes nothing and only
- * checks that this version may run against it.
+ * repeatable files whose checksum changed unless a higher revision of them is applied, and refuses
+ * to run if an applied versioned file has changed. If a newer node has already moved the schema
+ * ahead, it changes nothing and only checks that this version may run against it.
  */
 final class SchemaMigrator {
 
@@ -55,14 +56,16 @@ final class SchemaMigrator {
         try {
             execute(connection, "CREATE SCHEMA IF NOT EXISTS " + schema);
             execute(connection, history(schema));
+            execute(connection, "ALTER TABLE " + schema + ".schema_history ADD COLUMN IF NOT EXISTS revision integer");
             Map<Integer, String> appliedVersions = new HashMap<>();
-            Map<String, String> repeatableChecksums = new HashMap<>();
+            Map<String, Recorded> repeatableApplied = new HashMap<>();
             try (Statement statement = connection.createStatement();
-                 ResultSet resultSet = statement.executeQuery("SELECT version, script, checksum FROM " + schema + ".schema_history ORDER BY installed_rank")) {
+                 ResultSet resultSet = statement.executeQuery("SELECT version, script, checksum, coalesce(revision, 0) FROM " + schema
+                     + ".schema_history ORDER BY installed_rank")) {
                 while (resultSet.next()) {
                     Integer version = resultSet.getObject(1, Integer.class);
                     if (version == null) {
-                        repeatableChecksums.put(resultSet.getString(2), resultSet.getString(3));
+                        repeatableApplied.put(resultSet.getString(2), new Recorded(resultSet.getString(3), resultSet.getInt(4)));
                     } else {
                         appliedVersions.put(version, resultSet.getString(3));
                     }
@@ -102,7 +105,7 @@ final class SchemaMigrator {
                 }
             }
             for (SchemaScript script : repeatable) {
-                if (!script.checksum().equals(repeatableChecksums.get(script.name()))) {
+                if (shouldApply(script, repeatableApplied.get(script.name()))) {
                     apply(connection, script);
                     applied.add(script.name());
                 }
@@ -118,6 +121,35 @@ final class SchemaMigrator {
                 connection.setAutoCommit(autoCommit);
             }
         }
+    }
+
+    /** The latest row {@code schema_history} holds for a repeatable file; revision 0 if an older runner recorded it. */
+    private record Recorded(String checksum, int revision) {
+    }
+
+    /**
+     * Whether to apply a repeatable file: when it was never applied, when it is a higher revision
+     * than the one applied last, or when it is the same revision with other content, which only a
+     * file changed without raising its revision does (SchemaFreezeTest stops shipped files doing
+     * so). Never over a higher revision: a newer node applied that, and this one would roll it back.
+     */
+    private boolean shouldApply(SchemaScript script, @Nullable Recorded recorded) {
+        if (recorded == null) {
+            return true;
+        }
+        if (script.revision() < recorded.revision()) {
+            if (!script.checksum().equals(recorded.checksum())) {
+                LOGGER.info("{} is at revision {} in the {} schema, newer than this library's revision {}; leaving it as it is",
+                    script.name(), recorded.revision(), schema, script.revision());
+            }
+            return false;
+        }
+        if (script.revision() == recorded.revision() && !script.checksum().equals(recorded.checksum())) {
+            LOGGER.warn("{} differs from what the {} schema has applied at the same revision {}; applying it again. "
+                + "Raise the revision in the file's header with every change to it.", script.name(), schema, script.revision());
+            return true;
+        }
+        return script.revision() > recorded.revision();
     }
 
     private void apply(Connection connection, SchemaScript script) throws SQLException {
@@ -164,11 +196,12 @@ final class SchemaMigrator {
 
     private static void record(Connection connection, String schema, SchemaScript script, long started) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-            "INSERT INTO " + schema + ".schema_history (version, script, checksum, execution_ms) VALUES (?, ?, ?, ?)")) {
+            "INSERT INTO " + schema + ".schema_history (version, script, checksum, execution_ms, revision) VALUES (?, ?, ?, ?, ?)")) {
             statement.setObject(1, script.version());
             statement.setString(2, script.name());
             statement.setString(3, script.checksum());
             statement.setInt(4, (int) ((System.nanoTime() - started) / 1_000_000));
+            statement.setObject(5, script.repeatable() ? script.revision() : null, java.sql.Types.INTEGER);
             statement.executeUpdate();
         }
     }

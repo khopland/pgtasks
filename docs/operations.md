@@ -63,9 +63,18 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
 3. Functions, views and triggers stay in the `R__` files, which may change at any time: every path
    applies them again when their content changes. Dropping or changing a view's column needs a
-   versioned file.
+   versioned file. **Raise the `-- revision: <n>` line in the file's header with every change.**
+   The built-in runner records the revision in `schema_history` and never applies a file over a
+   higher revision, so during a rolling deploy an old node that restarts leaves the new node's
+   functions, views and triggers alone (it logs that it did). Without the revision it would apply
+   its own older definitions again, and the new ones would stay rolled back until a new node
+   restarted. Flyway and Liquibase re-apply an `R__` file whenever its content differs from the
+   last one they applied, whatever the revision: run them once per release from the pipeline, not
+   from every node at startup.
 4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
-   Add the new file's checksum there when it is released. `SchemaUpgradeTest` applies the files as
+   Add the new file's checksum there when it is released. It also pins the checksum of every
+   revision of every `R__` file, so changing one without raising its revision fails the build; add
+   the new revision's checksum next to the old ones. `SchemaUpgradeTest` applies the files as
    0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
    state, then the current files, checks the tasks are still usable and runs part of the store TCK
    on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory

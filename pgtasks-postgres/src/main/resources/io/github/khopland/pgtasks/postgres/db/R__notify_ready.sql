@@ -1,3 +1,4 @@
+-- revision: 1
 -- Wake-ups for workers. One statement-level trigger per event instead of a row-level one: a
 -- push or promotion of many rows sends one notification per topic. NOTIFY is delivered at
 -- commit and dropped on rollback; it is a hint, polling still finds the work. Repeatable.
