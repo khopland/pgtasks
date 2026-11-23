@@ -1,0 +1,25 @@
+# Postgres for the order service. The app instances run as plain JVMs (scripts/cluster.sh),
+# so they can be killed with -9 and restarted with other settings one by one.
+services:
+  postgres:
+    image: postgres:17
+    container_name: orders-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orders
+    command: >
+      postgres -c max_connections=200 -c shared_buffers=256MB
+               -c log_min_duration_statement=1000 -c log_lock_waits=on
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - orders-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "orders"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  orders-pgdata:

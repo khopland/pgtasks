@@ -182,6 +182,37 @@ class EngineTest {
     }
 
     @Test
+    @DisplayName("A completion still retrying a deadlock when the node stops hands its tasks back without using an attempt")
+    void stop_hands_back_a_batch_whose_completion_keeps_hitting_a_transient_error() throws Exception {
+        CountDownLatch completing = new CountDownLatch(1);
+        BatchResource<Object> deadlocking = new BatchResource<>() {
+            @Override
+            public Object open(TopicRef<?> topic, List<Task<?>> tasks) {
+                return new Object();
+            }
+
+            @Override
+            public void beforeCommit(Object resource, Decisions decisions, Connection connection) throws SQLException {
+                completing.countDown();
+                throw new SQLException("deadlock detected", "40P01");
+            }
+        };
+        TaskEngine engine = engines.start("node-a", List.of(Topic.of(TOPIC, batch -> batch.decide(task -> Decision.success()))
+            .withResources(deadlocking)));
+        TaskTester tester = engines.tester();
+        long id = engine.tasks().independently().push(TOPIC, "a", "payload").id();
+        assertThat(completing.await(5, TimeUnit.SECONDS)).isTrue();
+
+        engine.stop(Duration.ofMillis(500));
+
+        // The handler's work was fine and the database will be again: like a batch cut short by
+        // stop, the task goes back without a counted attempt or a failure the breaker would see.
+        assertThat(view(tester, id).state()).isIn("retrying", "ready");
+        assertThat(view(tester, id).attempt()).isZero();
+        assertThat(view(tester, id).failures()).isZero();
+    }
+
+    @Test
     @DisplayName("Fan-in: parts release the merge task once every part has arrived")
     void junction_releases_the_merge_once_every_part_arrived() throws Exception {
         TopicRef<String> parts = TopicRef.of("parts", String.class);

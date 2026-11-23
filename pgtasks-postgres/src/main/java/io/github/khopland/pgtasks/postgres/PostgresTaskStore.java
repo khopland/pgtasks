@@ -65,7 +65,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
-    private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
+    private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
@@ -306,6 +306,14 @@ public final class PostgresTaskStore implements TaskStore {
         for (Junction.Counts counts : Junction.Counts.values()) {
             junctions.put(counts, sql(junctionSql(counts)));
         }
+        // Two parts of a group completing at once would each check the group before the other
+        // commits, and neither would release it. Each completion first locks every member of its
+        // groups, in one order so two completions can't deadlock on them, until it commits. The
+        // check is the next statement, so its snapshot already shows a part committed meanwhile.
+        junctionLocks = sql("""
+            SELECT count(pg_advisory_xact_lock(:topic::integer, member))
+            FROM (SELECT DISTINCT hashtext(identifier) AS member FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) members
+            """);
         findTask = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
                    coalesce(q.attempt, t.attempts) AS attempt, q.run_at, coalesce(q.priority, 0) AS priority, q.node_id,
@@ -1443,6 +1451,10 @@ public final class PostgresTaskStore implements TaskStore {
             .set("topic", topicId)
             .array("groups", "integer", numbers.toArray())
             .array("identifiers", "text", identifiers.toArray());
+        try (PreparedStatement statement = junctionLocks.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+        }
         Set<String> released = new LinkedHashSet<>();
         try (PreparedStatement statement = Objects.requireNonNull(junctions.get(counts)).prepare(transaction.connection(), parameters);
              ResultSet resultSet = statement.executeQuery()) {

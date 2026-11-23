@@ -330,6 +330,17 @@ final class BatchRun<T> {
             if (e instanceof VirtualMachineError vm) {
                 fatal = vm;
             }
+            if (Transient.is(e) && core.stopping().getAsBoolean()) {
+                // The completion gave up on a transient error (a deadlock, the database restarting)
+                // only because this node is stopping. Nothing is wrong with the tasks: hand them
+                // back without an attempt, as stop does with a batch it cuts short.
+                LOGGER.warn("The completion of a batch in {} was cut short by stop on a transient error; its tasks are handed back: {}",
+                    topic.ref(), e.toString());
+                release(claims, List.copyOf(claims.keySet()));
+                observation.released();
+                returnProbe();
+                return;
+            }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
             List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();

@@ -1,0 +1,47 @@
+spring:
+  application.name: orders
+  datasource:
+    url: jdbc:postgresql://localhost:55432/orders
+    username: orders_app
+    password: app
+    hikari:
+      maximum-pool-size: 20
+  flyway:
+    # Migrations run as the owner; the application itself has no DDL rights.
+    user: orders_owner
+    password: owner
+    default-schema: orders
+    schemas: orders
+
+server:
+  port: 8081
+  shutdown: graceful
+
+orders:
+  partners:
+    url: http://localhost:9090
+    timeout: 2s
+  heartbeat: 5s
+  heartbeat-expiry: 2m
+
+pgtasks:
+  schema-mode: validate
+  mdc-headers: requestId
+  dashboard:
+    enabled: true
+  topics:
+    orders.payment: { retry.give-up-after: 1h }
+
+management:
+  endpoints.web.exposure.include: health,info,metrics,prometheus,tasks
+  endpoint:
+    health.show-details: always
+    tasks.show-values: when-authorized
+    tasks.roles: OPS
+  tracing.sampling.probability: 1.0
+
+logging:
+  pattern:
+    correlation: "[%X{traceId:-},%X{spanId:-},%X{requestId:-}] "
+  level:
+    io.github.khopland.pgtasks: INFO

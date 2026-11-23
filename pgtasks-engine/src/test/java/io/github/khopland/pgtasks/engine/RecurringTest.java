@@ -1,7 +1,10 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +16,7 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 
@@ -45,6 +49,10 @@ class RecurringTest {
     }
 
     private TaskEngine start(String node, String cron) throws Exception {
+        return start(node, cron, store);
+    }
+
+    private TaskEngine start(String node, String cron, TaskStore store) throws Exception {
         TaskEngine engine = TaskEngine.builder()
             .store(store)
             .node(node)
@@ -206,5 +214,37 @@ class RecurringTest {
                 .recurring(REPORTS, "nightly", Cron.parse("@daily"), "x", "y")
                 .recurring(REPORTS, "nightly", Cron.parse("@hourly"), "x", "y"))
             .build()).hasMessageContaining("Two recurring tasks named nightly");
+    }
+
+    @Test
+    @DisplayName("Fires once when the node's clock is a little behind the database's")
+    void fires_once_when_the_node_clock_lags_the_store() throws Exception {
+        // Postgres decides what is due by its own clock (clock_timestamp()), the engine works out
+        // the next run from the JVM's. A store whose clock() lags its own idea of now by 10 ms is
+        // a node whose clock is 10 ms behind the database server's.
+        InstantSource lagging = () -> clock.instant().minusMillis(10);
+        TaskStore skewed = (TaskStore) Proxy.newProxyInstance(TaskStore.class.getClassLoader(), new Class<?>[] {TaskStore.class},
+            (proxy, method, args) -> {
+                if (method.getName().equals("clock") && method.getParameterCount() == 0) {
+                    return lagging;
+                }
+                try {
+                    return method.invoke(store, args);
+                } catch (InvocationTargetException e) {
+                    throw e.getCause();
+                }
+            });
+        TaskEngine engine = start("node-a", "0 2 * * *", skewed);
+
+        clock.advance(Duration.ofHours(1));         // 02:00:00.000 for the store, 01:59:59.990 for the node
+        engine.heartbeatNow();
+        engine.runLeaderJobsNow();
+
+        // Fired for 02:00; the next run must be tomorrow's, not 02:00 again, which the store
+        // would find due at once and fire a second time.
+        assertThat(engine.admin().schedules()).singleElement().satisfies(schedule -> {
+            assertThat(schedule.lastRunAt()).isNotNull();
+            assertThat(schedule.nextRunAt()).isEqualTo(Instant.parse("2026-11-22T02:00:00Z"));
+        });
     }
 }
