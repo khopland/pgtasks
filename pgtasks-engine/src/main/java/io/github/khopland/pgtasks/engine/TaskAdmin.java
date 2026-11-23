@@ -16,7 +16,6 @@ import java.util.Set;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TaskStorageException;
-import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
@@ -60,18 +59,6 @@ public final class TaskAdmin {
     TaskAdmin(TaskEngine engine, TaskStore store) {
         this.engine = engine;
         this.store = store;
-    }
-
-    /**
-     * Registers a topic, so every node with a handler for it starts processing it: one registered
-     * by name, or matching a pattern. Idempotent.
-     */
-    public void createTopic(String name) {
-        TopicRef.of(name, Object.class);
-        Unchecked.run("Creating topic " + name, () -> {
-            EngineCore.transact(store, transaction -> store.createTopic(transaction, name));
-            engine.reconcileTopics();
-        });
     }
 
     /**

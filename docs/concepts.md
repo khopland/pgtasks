@@ -11,8 +11,9 @@ public static final TopicRef<AssessmentRequest> ASSESSMENT = TopicRef.of("assess
 
 Names use lower-case letters, digits, `.`, `_` and `-`. A topic is a row in `pgtasks.topic`, so
 creating one needs no DDL. A topic is created when an engine that registers it starts, or that
-declares it with `pushesTo` (see [producers in another service](patterns.md#producers-and-consumers-in-separate-services)),
-or with `admin().createTopic(name)`. A push never creates one, so a misspelt topic fails at once.
+declares it with `pushesTo` (see [producers in another service](patterns.md#producers-and-consumers-in-separate-services)).
+A push never creates one, so a misspelt topic fails at once. A topic that is no longer needed,
+with no unfinished tasks, can be deleted with its history: `engine.admin().deleteTopic(name)`.
 
 Configurers register topics, one per module:
 
@@ -21,7 +22,6 @@ TaskConfigurer notifyTasks = tasks -> tasks
     .defaults(options -> options.concurrency(4))           // this configurer's topics only
     .eachTask(NOTIFY, task -> mailer.send(task.payload()))
     .topic(REMINDERS, new ReminderHandler(), options -> options.ordering(Ordering.SINGULAR_BY_IDENTIFIER))
-    .topicsMatching("assessment-*", AssessmentRequest.class, assessments) // also topics created later, by anyone
     .pushesTo(ARCHIVE);                                    // another module's topic: created at start, codec checked
 ```
 

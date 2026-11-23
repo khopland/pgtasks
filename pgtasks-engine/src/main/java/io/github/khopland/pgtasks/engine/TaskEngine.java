@@ -15,7 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Push;
@@ -35,9 +34,8 @@ import org.slf4j.LoggerFactory;
  * registers the node, creates every topic registered by name, and starts one poll loop per topic
  * it runs, plus housekeeping.
  *
- * <p>Which topics it runs follows the store: every topic registered by name or matching one of its
- * patterns ({@link TaskRegistry#topicsMatching}), unless paused. A topic created, paused or resumed on any node is
- * broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
+ * <p>Which topics it runs follows the store: every topic registered by name, unless paused. A
+ * topic paused, resumed or deleted on any node is broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
  * so a lost notification delays a change by at most one heartbeat. A paused topic's running
  * batches finish; nothing is claimed from it until it is resumed.
  *
@@ -52,7 +50,6 @@ public final class TaskEngine implements AutoCloseable {
     private final EngineSettings settings;
     private final List<Topic<?>> topics;
     private final Map<String, Topic<?>> topicsByName = new LinkedHashMap<>();
-    private final List<TopicTemplate<?>> templates;
     private final TopicDirectory directory;
     /** Topics whose dead letters this node is still to revive for its version; see {@link #revivePending}. */
     private final Set<String> pendingRevivals = ConcurrentHashMap.newKeySet();
@@ -85,14 +82,9 @@ public final class TaskEngine implements AutoCloseable {
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
     TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics) {
-        this(store, settings, topics, List.of());
-    }
-
-    TaskEngine(TaskStore store, EngineSettings settings, List<Topic<?>> topics, List<TopicTemplate<?>> templates) {
         this.store = Objects.requireNonNull(store, "store");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.topics = List.copyOf(topics);
-        this.templates = List.copyOf(templates);
         Map<String, PayloadCodec<?>> codecs = new LinkedHashMap<>();
         for (Topic<?> topic : this.topics) {
             if (codecs.put(topic.ref().name(), topic.codec()) != null) {
@@ -104,7 +96,7 @@ public final class TaskEngine implements AutoCloseable {
         this.admin = new TaskAdmin(this, store);
         // Known from the configuration, so limits() works before the store is prepared.
         this.limits = new RateLimits(store, configuredLimits(), this::limitChanged);
-        this.tasks = new DefaultTasks(store, directory, codecs, this.templates, settings.codecs(), settings.transactions(), this::wakeById,
+        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wakeById,
             settings.observer());
     }
 
@@ -400,7 +392,7 @@ public final class TaskEngine implements AutoCloseable {
             }
             Map<String, TaskStore.TopicInfo> wanted = new HashMap<>();
             for (TaskStore.TopicInfo info : registered) {
-                if (!info.paused() && topicFor(info.name()) != null) {
+                if (!info.paused() && topicsByName.containsKey(info.name())) {
                     wanted.put(info.name(), info);
                 }
             }
@@ -418,28 +410,8 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /** The topic registered by name, or else made from the first template that matches; null if neither. */
-    private @Nullable Topic<?> topicFor(String name) {
-        Topic<?> topic = topicsByName.get(name);
-        if (topic != null) {
-            return topic;
-        }
-        return templates.stream().filter(template -> template.matches(name)).findFirst().map(template -> template.instantiate(name)).orElse(null);
-    }
-
     private void launch(TaskStore.TopicInfo info) throws Exception {
-        Topic<?> topic = topicFor(info.name());
-        if (topic == null) {
-            throw new IllegalStateException("No topic or template for " + info.name());
-        }
-        if (!topicsByName.containsKey(info.name())) {
-            // Topics registered by name record their retention at start; these show up later.
-            EngineCore.transact(store, transaction -> {
-                store.setRetention(transaction, info.id(), topic.settings().retention());
-                return null;
-            });
-            LOGGER.info("Processing topic {} on this node", info.name());
-        }
+        Topic<?> topic = Objects.requireNonNull(topicsByName.get(info.name()), info.name());
         directory.register(info.name(), info.id());
         TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), running(core));
         workersByName.put(info.name(), worker);
@@ -512,11 +484,6 @@ public final class TaskEngine implements AutoCloseable {
     /** The topics this node is processing now. */
     public Set<String> processing() {
         return started ? Set.copyOf(workersByName.keySet()) : Set.of();
-    }
-
-    /** The topic patterns this engine processes. */
-    List<TopicTemplate<?>> templates() {
-        return templates;
     }
 
     TaskStore store() {
@@ -645,8 +612,7 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     private List<RateLimit> configuredLimits() {
-        return Stream.concat(topics.stream().map(topic -> topic.settings().rateLimit()),
-            templates.stream().map(template -> template.settings().rateLimit())).filter(Objects::nonNull).toList();
+        return topics.stream().map(topic -> topic.settings().rateLimit()).filter(Objects::nonNull).toList();
     }
 
     /** Tells the workers using a limit that it changed, so a wait for permits ends early. */

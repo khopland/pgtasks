@@ -89,18 +89,3 @@ TaskConfigurer orderEvents = tasks -> tasks.pushesTo(BillingTopics.INVOICES, Shi
 
 With Spring, `pgtasks.enabled=false` makes a node only push. It applies the schema and registers its
 topics, but claims nothing, runs no housekeeping and doesn't listen for notifications.
-
-## Topics per year, region or customer
-
-Register a pattern, and every topic that matches runs with its handler and options, including
-topics created later by any node or in SQL:
-
-```java
-tasks.topicsMatching("assessment-*", AssessmentRequest.class, assessments, options -> options.concurrency(2));
-...
-engine.admin().createTopic("assessment-2027");   // every node with the pattern starts it within a second
-```
-
-Overrides address the pattern: `pgtasks.topics.assessment-*.concurrency: 4`. A topic that is no
-longer needed, with no unfinished tasks, can be deleted with its history:
-`engine.admin().deleteTopic("assessment-2019")`.

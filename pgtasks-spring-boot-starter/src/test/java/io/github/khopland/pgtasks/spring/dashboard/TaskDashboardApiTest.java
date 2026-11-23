@@ -45,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TaskDashboardApiTest {
 
     static final TopicRef<String> WORK = TopicRef.of("work", String.class);
+    /** An empty topic for the delete route. */
+    static final TopicRef<String> SCRATCH = TopicRef.of("scratch", String.class);
 
     @SpringBootApplication(excludeName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
     static class App {
@@ -54,6 +56,11 @@ class TaskDashboardApiTest {
             return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> task.payload().startsWith("flaky")
                 ? Decision.failed(new IllegalStateException("person 12345678901 is unknown")) : Decision.success()),
                 topic -> topic.retry(Retry.none()).limit("register"));
+        }
+
+        @Bean
+        TaskConfigurer scratchTasks() {
+            return tasks -> tasks.eachTask(SCRATCH, task -> { });
         }
 
         @Bean
@@ -110,7 +117,6 @@ class TaskDashboardApiTest {
     @Test
     void every_route_the_page_calls_exists() throws Exception {
         long taskId = tasks.independently().push(WORK, "a", "payload").id();
-        engine.admin().createTopic("scratch");
         long version = engine.limits().find("register").orElseThrow().version();
 
         DashboardRoutes.callEvery((method, path, body) -> {

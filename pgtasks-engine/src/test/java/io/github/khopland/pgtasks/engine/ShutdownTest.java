@@ -85,13 +85,10 @@ class ShutdownTest {
         fixture = new EngineFixture(database);
         AtomicInteger runs = new AtomicInteger();
         CountDownLatch running = new CountDownLatch(2);
-        List<TopicTemplate<?>> templates = List.of(TopicTemplate.of("assessment-*", batch -> batch.decide(task -> Decision.success())));
-        TaskEngine nodeA = fixture.create("node-a", busyTopics(runs, running), templates, settings -> settings).start();
-        TaskEngine nodeB = fixture.create("node-b", busyTopics(runs, running), templates, settings -> settings).start();
+        TaskEngine nodeA = fixture.create("node-a", busyTopics(runs, running), settings -> settings).start();
+        TaskEngine nodeB = fixture.create("node-b", busyTopics(runs, running), settings -> settings).start();
         nodeA.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 200));
         nodeA.tasks().independently().push(LIMITED, Insertion.APPEND, tasks("l", 50));
-        nodeA.admin().createTopic("assessment-2027");
-        nodeA.tasks().independently().push(TopicRef.of("assessment-2027", String.class), Insertion.APPEND, tasks("a", 20));
         nodeA.limits().override("downstream", Rate.perSecond(100), null, null, "ops", null);
         nodeA.admin().pause(PAUSED.name());
         nodeB.admin().resume(PAUSED.name());

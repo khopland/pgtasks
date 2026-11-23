@@ -225,19 +225,17 @@ public final class TaskEngineBuilder {
         return lambda < 0 ? name : name.substring(0, lambda);
     }
 
-    /** One topic, or topic pattern, as registered, before overrides. */
+    /** One topic as registered, before overrides. */
     private static final class TopicSpec<T> {
         final String name;
         final Class<T> type;
-        final boolean pattern;
         final BatchHandler<T> handler;
         final String module;
         final Spec spec;
 
-        TopicSpec(String name, Class<T> type, boolean pattern, BatchHandler<T> handler, String module, Spec spec) {
+        TopicSpec(String name, Class<T> type, BatchHandler<T> handler, String module, Spec spec) {
             this.name = name;
             this.type = type;
-            this.pattern = pattern;
             this.handler = handler;
             this.module = module;
             this.spec = spec;
@@ -493,16 +491,7 @@ public final class TaskEngineBuilder {
                 public <T> TaskRegistry topic(TopicRef<T> topic, BatchHandler<T> handler, Consumer<TopicOptions> options) {
                     Spec spec = new Spec(Source.TOPIC);
                     options.accept(spec);
-                    registered.add(new TopicSpec<>(topic.name(), topic.payloadType(), false, Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
-                    return this;
-                }
-
-                @Override
-                public <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler, Consumer<TopicOptions> options) {
-                    Spec spec = new Spec(Source.TOPIC);
-                    options.accept(spec);
-                    registered.add(new TopicSpec<>(Objects.requireNonNull(pattern, "pattern"), Objects.requireNonNull(type, "type"), true,
-                        Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
+                    registered.add(new TopicSpec<>(topic.name(), topic.payloadType(), Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
                     return this;
                 }
 
@@ -533,7 +522,7 @@ public final class TaskEngineBuilder {
                 public <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload,
                                                   Insertion insertion) {
                     Recurring<T> schedule = new Recurring<>(topic, name, cron, identifier, payload, insertion, configurer.name());
-                    if (registered.stream().noneMatch(spec -> !spec.pattern && spec.name.equals(topic.name()))) {
+                    if (registered.stream().noneMatch(spec -> spec.name.equals(topic.name()))) {
                         problems.add("Recurring task " + name + " is for topic " + topic.name() + ", which " + configurer.name()
                             + " doesn't register before it; a module schedules only its own topics");
                     } else if (recurring.stream().anyMatch(other -> other.topic().name().equals(topic.name()) && other.name().equals(name))) {
@@ -577,7 +566,6 @@ public final class TaskEngineBuilder {
         }));
 
         List<Topic<?>> resolved = new ArrayList<>();
-        List<TopicTemplate<?>> templates = new ArrayList<>();
         List<EffectiveSettings> effective = new ArrayList<>();
         for (TopicSpec<?> topic : topics.values()) {
             Map<String, Object> values = new LinkedHashMap<>();
@@ -600,12 +588,7 @@ public final class TaskEngineBuilder {
                 }
             });
             try {
-                Object built = build(topic, values, global, allCodecs, fallbackCodecs);
-                if (built instanceof TopicTemplate<?> template) {
-                    templates.add(template);
-                } else {
-                    resolved.add((Topic<?>) built);
-                }
+                resolved.add(build(topic, values, global, allCodecs, fallbackCodecs));
             } catch (IllegalArgumentException e) {
                 problems.add("Topic " + topic.name + " (" + topic.module + "): " + e.getMessage());
             }
@@ -646,7 +629,7 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes)
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withEventRoutes(routes)
             .withRecurring(recurring);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
@@ -720,9 +703,8 @@ public final class TaskEngineBuilder {
         });
     }
 
-    /** A {@link Topic}, or a {@link TopicTemplate} for a pattern. */
     @SuppressWarnings("unchecked")
-    private static <T> Object build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
+    private static <T> Topic<T> build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
                                      @Nullable PayloadCodecs fallback) {
         PayloadCodec<T> codec = (PayloadCodec<T>) codecs.get(topic.type);
         if (codec == null && topic.type == String.class) {
@@ -763,9 +745,7 @@ public final class TaskEngineBuilder {
             setting(values, "breaker", Breaker.class),
             setting(values, "dead-letters", DeadLetterPolicy.class)
         );
-        return topic.pattern
-            ? new TopicTemplate<>(topic.name, topic.type, topic.handler, codec, settings, topic.spec.resources)
-            : new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
+        return new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
 
     private void splitOverrides(Set<String> topics, Set<String> limits,

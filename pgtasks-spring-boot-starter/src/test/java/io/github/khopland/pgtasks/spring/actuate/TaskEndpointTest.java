@@ -47,6 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TaskEndpointTest {
 
     static final TopicRef<String> WORK = TopicRef.of("work", String.class);
+    /** An empty topic for the delete route. */
+    static final TopicRef<String> OLD_WORK = TopicRef.of("old-work", String.class);
 
     /** No database: JDBC is on the test classpath for the other tests. */
     @SpringBootApplication(excludeName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
@@ -59,6 +61,11 @@ class TaskEndpointTest {
                     task.payload().startsWith("flaky") && failedOnce.add(task.payload()) ? Decision.failed("not yet") : Decision.success()),
                 topic -> topic.retry(Retry.none()).limit("register"))
                 .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
+        }
+
+        @Bean
+        TaskConfigurer oldTasks() {
+            return tasks -> tasks.eachTask(OLD_WORK, task -> { });
         }
 
         @Bean
@@ -200,7 +207,6 @@ class TaskEndpointTest {
 
     @Test
     void a_topic_no_longer_used_is_deleted() throws Exception {
-        assertThat(send("POST", "/tasks/topics/old-work/create", "{}").status()).isEqualTo(200);
         Response deleted = send("DELETE", "/tasks/topics/old-work", null);
         assertThat(deleted.status()).isEqualTo(200);
         assertThat(deleted.body().path("deletedTasks").asLong()).isZero();

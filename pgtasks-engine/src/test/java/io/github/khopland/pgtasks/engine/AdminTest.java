@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
@@ -23,6 +22,7 @@ import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.postgres.PostgresNotifier;
 import io.github.khopland.pgtasks.spi.ManualClock;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 
@@ -110,8 +110,12 @@ class AdminTest {
     @Test
     @DisplayName("Topic status: every topic with its pause flag, module and whether this node runs it")
     void topic_status_lists_every_topic() throws Exception {
-        start(new InMemoryTaskStore());
-        engine.admin().createTopic("elsewhere");
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        start(store);
+        try (StoreTransaction transaction = store.begin()) {
+            store.createTopic(transaction, "elsewhere");
+            transaction.commit();
+        }
         engine.admin().pause("elsewhere");
 
         assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::paused,
@@ -237,12 +241,11 @@ class AdminTest {
         InMemoryTaskStore store = new InMemoryTaskStore();
         TopicRef<String> retired = TopicRef.of("retired-2025", String.class);
         try (TaskEngine one = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
+                .eachTask(retired, task -> { }))
                 .build().start();
              TaskEngine other = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
+                .eachTask(retired, task -> { }))
                 .build().start()) {
-            one.admin().createTopic("retired-2025");
             one.tasks().independently().push(retired, "a", "done");
             TaskTester.of(one, other).awaitIdle();
             assertThat(other.processing()).contains("retired-2025");
