@@ -25,6 +25,9 @@ public interface TopicOptions {
 
     TopicOptions resources(BatchResource<?>... resources);
 
+    /** An extension's setting; see {@link SettingKey}. */
+    <T> TopicOptions set(SettingKey<T> key, T value);
+
     /** How long finished tasks with this outcome are kept, counted from completion. */
     TopicOptions retain(Outcome outcome, Period period);
 

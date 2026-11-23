@@ -11,6 +11,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
@@ -20,6 +21,7 @@ import java.util.stream.Collectors;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.Tasks;
+import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
@@ -582,6 +584,16 @@ public final class TaskEngine implements AutoCloseable {
         extensions.add(extension.name());
     }
 
+    /** Extension settings by topic name, then setting name; see {@link SettingKey}. */
+    private Map<String, Map<String, Object>> extensionSettings = Map.of();
+
+    TaskEngine withExtensionSettings(Map<String, Map<String, Object>> settings) {
+        Map<String, Map<String, Object>> copy = new LinkedHashMap<>();
+        settings.forEach((topic, values) -> copy.put(topic, Map.copyOf(values)));
+        this.extensionSettings = Map.copyOf(copy);
+        return this;
+    }
+
     /** Asks every extension channel's reloads to run soon. */
     private void reloadChannels() {
         channels.values().forEach(reloads -> reloads.forEach(Coalesced::request));
@@ -613,6 +625,15 @@ public final class TaskEngine implements AutoCloseable {
         @Override
         public boolean leading() {
             return leadsHousekeeping();
+        }
+
+        @Override
+        public <T> Optional<T> topicSetting(TopicRef<?> topic, SettingKey<T> key) {
+            if (!topicsByName.containsKey(topic.name())) {
+                return Optional.empty();
+            }
+            Object value = extensionSettings.getOrDefault(topic.name(), Map.of()).get(key.name());
+            return Optional.of(value == null ? key.defaultValue() : key.checked(value));
         }
 
         @Override

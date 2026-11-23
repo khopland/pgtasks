@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Period;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -250,6 +251,8 @@ public final class TaskEngineBuilder {
         final Map<String, Object> values = new LinkedHashMap<>();
         final Map<String, Source> sources = new LinkedHashMap<>();
         final List<BatchResource<?>> resources = new ArrayList<>();
+        /** Extension settings set through {@link #set(SettingKey, Object)}, by name. */
+        final Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
         Source layer;
 
         Spec(Source layer) {
@@ -301,6 +304,12 @@ public final class TaskEngineBuilder {
         @Override
         public TopicOptions pollInterval(Duration interval) {
             return set("poll-interval", interval);
+        }
+
+        @Override
+        public <T> TopicOptions set(SettingKey<T> key, T value) {
+            keys.put(key.name(), key);
+            return set(key.name(), key.checked(Objects.requireNonNull(value, key.name())));
         }
 
         @Override
@@ -470,6 +479,7 @@ public final class TaskEngineBuilder {
                         topic.spec.sources.put(key, Source.MODULE_DEFAULTS);
                     }
                 });
+                moduleDefaults.keys.forEach(topic.spec.keys::putIfAbsent);
                 // Global defaults' resources first, then the module's, then the topic's own.
                 topic.spec.resources.addAll(0, moduleDefaults.resources);
                 topic.spec.resources.addAll(0, global.defaults.resources);
@@ -478,13 +488,19 @@ public final class TaskEngineBuilder {
 
         Map<String, Map<String, String>> topicOverrides = new LinkedHashMap<>();
         splitOverrides(topics.keySet(), topicOverrides, problems);
+        Map<String, SettingKey<?>> keys = settingKeys(global, topics.values(), problems);
 
         List<Topic<?>> resolved = new ArrayList<>();
         List<EffectiveSettings> effective = new ArrayList<>();
+        Map<String, Map<String, Object>> extensionSettings = new LinkedHashMap<>();
         for (TopicSpec<?> topic : topics.values()) {
             Map<String, Object> values = new LinkedHashMap<>();
             Map<String, Source> sources = new LinkedHashMap<>();
             layer(values, sources, defaults(), Source.DEFAULT);
+            keys.values().forEach(key -> {
+                values.put(key.name(), key.defaultValue());
+                sources.put(key.name(), Source.DEFAULT);
+            });
             layer(values, sources, global.defaults.values, Source.GLOBAL_DEFAULTS);
             topic.spec.values.forEach((key, value) -> {
                 values.put(key, value);
@@ -492,7 +508,8 @@ public final class TaskEngineBuilder {
             });
             topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
                 try {
-                    Object parsed = parseOverride(key, value, setting(values, "retry", Retry.class));
+                    SettingKey<?> extensionKey = keys.get(key);
+                    Object parsed = extensionKey != null ? extensionKey.parse(value) : parseOverride(key, value, setting(values, "retry", Retry.class));
                     // Each retry.* key changes one part of the retry policy, which is one setting.
                     String setting = key.startsWith("retry.") ? "retry" : key;
                     values.put(setting, parsed);
@@ -501,6 +518,9 @@ public final class TaskEngineBuilder {
                     problems.add("topics." + topic.name + "." + key + ": " + e.getMessage());
                 }
             });
+            Map<String, Object> extensionValues = new LinkedHashMap<>();
+            keys.keySet().forEach(name -> extensionValues.put(name, values.get(name)));
+            extensionSettings.put(topic.name, extensionValues);
             try {
                 resolved.add(build(topic, values, allCodecs, fallbackCodecs));
             } catch (IllegalArgumentException e) {
@@ -543,7 +563,7 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withExtensionSettings(extensionSettings);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         // A codec for every topic modules push to, now rather than at the first push.
@@ -670,6 +690,31 @@ public final class TaskEngineBuilder {
                 problems.add("Unknown override " + key + "; overrides start with topics.");
             }
         }
+    }
+
+    /**
+     * The extension settings: those the extensions declare, and those any topic or defaults set.
+     * One name means one key; an extension's name can't be the engine's own.
+     */
+    private Map<String, SettingKey<?>> settingKeys(Globals global, Collection<TopicSpec<?>> topics, List<String> problems) {
+        Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
+        List<Map<String, SettingKey<?>>> sources = new ArrayList<>();
+        for (Extension extension : extensions) {
+            Map<String, SettingKey<?>> declared = new LinkedHashMap<>();
+            extension.settings().forEach(key -> declared.put(key.name(), key));
+            sources.add(declared);
+        }
+        sources.add(global.defaults.keys);
+        topics.forEach(topic -> sources.add(topic.spec.keys));
+        for (Map<String, SettingKey<?>> source : sources) {
+            source.forEach((name, key) -> {
+                SettingKey<?> other = keys.putIfAbsent(name, key);
+                if (other != null && !other.equals(key)) {
+                    problems.add("Two settings named " + name + ": " + other + " and " + key);
+                }
+            });
+        }
+        return keys;
     }
 
     /** A setting every topic has, from the defaults if nothing else set it. */

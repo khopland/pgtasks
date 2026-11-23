@@ -1,8 +1,10 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.InstantSource;
+import java.util.Optional;
 
 import io.github.khopland.pgtasks.Tasks;
+import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 /**
@@ -23,6 +25,12 @@ public interface ExtensionContext {
 
     /** Whether this node holds the housekeeping lease now, so it runs the cluster-wide jobs. */
     boolean leading();
+
+    /**
+     * A setting's value for a topic this node registers: what was set or overridden, or the key's
+     * default. Empty for a topic this node doesn't register.
+     */
+    <T> Optional<T> topicSetting(TopicRef<?> topic, SettingKey<T> key);
 
     /** Runs a job on a fixed delay while the engine runs. */
     void job(HousekeepingJob job);

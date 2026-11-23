@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -100,6 +101,57 @@ class ExtensionTest {
         }
         assertThatThrownBy(() -> builder(store).extension(context -> context.channel("topic", () -> { })).build())
             .hasMessageContaining("Invalid channel 'topic'");
+    }
+
+    private static final SettingKey<Integer> WINDOW = SettingKey.of("window.size", Integer.class, 10, Integer::valueOf);
+
+    /** Declares a setting and keeps its context, to read it back. */
+    private static final class Windowed implements Extension {
+        ExtensionContext context;
+
+        @Override
+        public List<SettingKey<?>> settings() {
+            return List.of(WINDOW);
+        }
+
+        @Override
+        public void install(ExtensionContext context) {
+            this.context = context;
+        }
+    }
+
+    @Test
+    void an_extensions_setting_layers_like_the_engines_own_and_shows_where_it_came_from() {
+        TopicRef<String> plain = TopicRef.of("plain", String.class), moduled = TopicRef.of("moduled", String.class),
+            own = TopicRef.of("own", String.class), overridden = TopicRef.of("overridden", String.class);
+        Windowed extension = new Windowed();
+        TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore()).extension(extension)
+            .configure("a", tasks -> tasks.eachTask(plain, task -> { }))
+            .configure("b", tasks -> tasks
+                .defaults(options -> options.set(WINDOW, 20))
+                .eachTask(moduled, task -> { })
+                .eachTask(own, task -> { }, options -> options.set(WINDOW, 30))
+                .eachTask(overridden, task -> { }))
+            .overrides(Map.of("topics.overridden.window.size", "40"))
+            .build();
+
+        assertThat(extension.context.topicSetting(plain, WINDOW)).hasValue(10);
+        assertThat(extension.context.topicSetting(moduled, WINDOW)).hasValue(20);
+        assertThat(extension.context.topicSetting(own, WINDOW)).hasValue(30);
+        assertThat(extension.context.topicSetting(overridden, WINDOW)).hasValue(40);
+        assertThat(extension.context.topicSetting(TopicRef.of("elsewhere", String.class), WINDOW)).isEmpty();
+        assertThat(engine.effectiveSettings()).filteredOn(settings -> settings.topic().equals("overridden")).singleElement()
+            .satisfies(settings -> assertThat(settings.get("window.size"))
+                .isEqualTo(new EffectiveSettings.Setting("40", EffectiveSettings.Source.OVERRIDE)));
+        assertThat(engine.effectiveSettings()).filteredOn(settings -> settings.topic().equals("plain")).singleElement()
+            .satisfies(settings -> assertThat(settings.get("window.size").source()).isEqualTo(EffectiveSettings.Source.DEFAULT));
+
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore()).extension(new Windowed())
+            .configure("a", tasks -> tasks.eachTask(plain, task -> { }))
+            .overrides(Map.of("topics.plain.window.size", "wide", "topics.plain.window.other", "1"))
+            .build())
+            .hasMessageContaining("topics.plain.window.size").hasMessageContaining("topics.plain.window.other: unknown setting");
+        assertThatThrownBy(() -> SettingKey.of("nodot", Integer.class, 1, Integer::valueOf)).hasMessageContaining("dotted");
     }
 
     @Test
