@@ -75,6 +75,8 @@ public final class TaskEngine implements AutoCloseable {
     private boolean stopped;
     /** What installed extensions registered; see {@link #install}. */
     private final List<HousekeepingJob> extensionJobs = new ArrayList<>();
+    private final List<ClaimGate> gates = new ArrayList<>();
+    private final List<BatchListener> batchListeners = new ArrayList<>();
     private final List<Runnable> onStart = new ArrayList<>();
     private final List<Runnable> onStop = new ArrayList<>();
     private final List<String> extensions = new ArrayList<>();
@@ -228,7 +230,7 @@ public final class TaskEngine implements AutoCloseable {
         }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, settings.observer());
+            held, () -> !started, settings.observer(), List.copyOf(gates), List.copyOf(batchListeners));
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;
@@ -634,6 +636,16 @@ public final class TaskEngine implements AutoCloseable {
             }
             Object value = extensionSettings.getOrDefault(topic.name(), Map.of()).get(key.name());
             return Optional.of(value == null ? key.defaultValue() : key.checked(value));
+        }
+
+        @Override
+        public void claimGate(ClaimGate gate) {
+            gates.add(Objects.requireNonNull(gate, "gate"));
+        }
+
+        @Override
+        public void batchListener(BatchListener listener) {
+            batchListeners.add(Objects.requireNonNull(listener, "listener"));
         }
 
         @Override

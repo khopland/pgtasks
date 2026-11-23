@@ -155,6 +155,29 @@ class ExtensionTest {
     }
 
     @Test
+    void a_rate_limit_built_on_the_hooks_alone_holds_its_topic_back_and_a_listener_sees_every_result() throws Exception {
+        TopicRef<String> limited = TopicRef.of("limited", String.class);
+        List<BatchListener.Completed> seen = new CopyOnWriteArrayList<>();
+        Extension listening = context -> context.batchListener((topic, tasks) -> seen.addAll(tasks));
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .extension(new NodeRateLimit(), listening)
+            .configure("work", tasks -> tasks.eachTask(limited, task -> { }, options -> options.set(NodeRateLimit.RATE, 20.0)))
+            .build().start()) {
+            long started = System.nanoTime();
+            for (int index = 0; index < 30; index++) {
+                engine.tasks().independently().push(limited, "t" + index, "x");
+            }
+            EngineFixture.await("every task to finish", Duration.ofSeconds(10), () -> seen.size() == 30);
+            Duration took = Duration.ofNanos(System.nanoTime() - started);
+
+            assertThat(took).as("30 tasks at 20/s with a burst of 20 take at least half a second").isGreaterThan(Duration.ofMillis(450));
+            assertThat(seen).extracting(BatchListener.Completed::result).containsOnly(TaskObserver.Result.SUCCEEDED);
+            assertThat(seen).extracting(BatchListener.Completed::identifier).doesNotHaveDuplicates();
+        }
+        assertThatThrownBy(() -> ClaimGate.Permit.atMost(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void a_job_that_throws_runs_again() throws Exception {
         AtomicInteger runs = new AtomicInteger();
         Extension failing = context -> context.job(HousekeepingJob.everyNode("failing", Duration.ofMillis(10), () -> {

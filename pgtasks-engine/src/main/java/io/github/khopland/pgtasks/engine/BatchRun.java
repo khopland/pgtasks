@@ -323,7 +323,7 @@ final class BatchRun<T> {
                     topic.ref(), e.toString());
                 release(claims, List.copyOf(claims.keySet()));
                 observation.released();
-                    return;
+                return;
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
@@ -331,12 +331,14 @@ final class BatchRun<T> {
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
+                tell(topic, failures, claims);
             } catch (Exception recording) {
                 LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
-                }
+            }
             return;
         }
         observation.completed(results(completions));
+        tell(topic, completions, claims);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -429,7 +431,11 @@ final class BatchRun<T> {
 
     /** The claim of a task in this batch. */
     private static ClaimedTask claimOf(Map<Long, ClaimedTask> claims, Task<?> task) {
-        return Objects.requireNonNull(claims.get(task.id()), () -> "Task " + task.id() + " is not in this batch");
+        return claimOf(claims, task.id());
+    }
+
+    private static ClaimedTask claimOf(Map<Long, ClaimedTask> claims, long taskId) {
+        return Objects.requireNonNull(claims.get(taskId), () -> "Task " + taskId + " is not in this batch");
     }
 
     private void release(Map<Long, ClaimedTask> claims, List<Long> ids) {
@@ -476,18 +482,39 @@ final class BatchRun<T> {
     private static Map<TaskObserver.Result, Integer> results(List<Completion> completions) {
         Map<TaskObserver.Result, Integer> results = new EnumMap<>(TaskObserver.Result.class);
         for (Completion completion : completions) {
-            TaskObserver.Result result = switch (completion.resolution()) {
-                case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;
-                case Resolution.Waiting waiting -> switch (waiting.state()) {
-                    case SUSPENDED -> TaskObserver.Result.SUSPENDED;
-                    case SCHEDULED -> TaskObserver.Result.DELAYED;
-                    case RETRYING -> waiting.counted() || waiting.error() == null ? TaskObserver.Result.RETRYING : TaskObserver.Result.UNAVAILABLE;
-                    case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
-                };
-            };
-            results.merge(result, 1, Integer::sum);
+            results.merge(result(completion), 1, Integer::sum);
         }
         return results;
+    }
+
+    private static TaskObserver.Result result(Completion completion) {
+        return switch (completion.resolution()) {
+            case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;
+            case Resolution.Waiting waiting -> switch (waiting.state()) {
+                case SUSPENDED -> TaskObserver.Result.SUSPENDED;
+                case SCHEDULED -> TaskObserver.Result.DELAYED;
+                case RETRYING -> waiting.counted() || waiting.error() == null ? TaskObserver.Result.RETRYING : TaskObserver.Result.UNAVAILABLE;
+                case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
+            };
+        };
+    }
+
+    /** Tells the extensions' batch listeners what became of each task. */
+    private void tell(Topic<T> topic, List<Completion> completions, Map<Long, ClaimedTask> claims) {
+        if (core.listeners().isEmpty()) {
+            return;
+        }
+        List<BatchListener.Completed> results = completions.stream()
+            .map(completion -> new BatchListener.Completed(completion.taskId(), claimOf(claims, completion.taskId()).identifier(),
+                completion.attempt(), result(completion)))
+            .toList();
+        for (BatchListener listener : core.listeners()) {
+            try {
+                listener.completed(topic.ref(), results);
+            } catch (RuntimeException e) {
+                LOGGER.warn("A batch listener failed for {}", topic.ref(), e);
+            }
+        }
     }
 
     private static void closeQuietly(Object value) {

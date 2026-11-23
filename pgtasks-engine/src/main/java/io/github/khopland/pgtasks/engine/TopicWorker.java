@@ -103,11 +103,40 @@ final class TopicWorker<T> {
             boolean dispatched = false;
             long signalsBefore = signal.count();
             long claim = claims.incrementAndGet();
+            int limit = topic.settings().batchSize();
+            Duration gateWait = Duration.ZERO;
+            for (ClaimGate gate : core.gates()) {
+                ClaimGate.Permit permit;
+                try {
+                    permit = gate.permit(topic.ref());
+                } catch (RuntimeException e) {
+                    // A broken gate doesn't stop the topic: it claims as if the gate allowed it.
+                    LOGGER.warn("A claim gate failed for {}; claiming without it", topic.ref(), e);
+                    permit = ClaimGate.Permit.ANY;
+                }
+                if (permit.waits()) {
+                    gateWait = permit.delay().compareTo(gateWait) > 0 ? permit.delay() : gateWait;
+                } else {
+                    limit = Math.min(limit, permit.maxTasks());
+                }
+            }
+            if (!gateWait.isZero()) {
+                // Held back by a gate: counts as having found nothing, so an idle node looks idle.
+                release();
+                signalsAtEmptyClaim = signalsBefore;
+                lastEmptyClaim = claim;
+                try {
+                    signal.await(gateWait.compareTo(topic.settings().pollInterval()) > 0 ? topic.settings().pollInterval() : gateWait);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                continue;
+            }
             // The node-wide permit covers talking to the store, not the handler, which holds no
             // connection: a topic whose handlers hang can't starve the node's other topics.
             boolean nodeHeld = true;
             try {
-                TaskStore.ClaimRequest request = request(topic.settings().batchSize());
+                TaskStore.ClaimRequest request = request(limit);
                 TaskStore.Claim claimed;
                 try {
                     claimed = core.transact(transaction -> core.store().claim(transaction, request));
@@ -116,6 +145,13 @@ final class TopicWorker<T> {
                     nodeHeld = false;
                 }
                 failures = 0;
+                for (ClaimGate gate : core.gates()) {
+                    try {
+                        gate.claimed(topic.ref(), claimed.tasks().size());
+                    } catch (RuntimeException e) {
+                        LOGGER.warn("A claim gate failed for {}", topic.ref(), e);
+                    }
+                }
                 if (!claimed.tasks().isEmpty()) {
                     claimed.tasks().forEach(task -> core.held().put(task.id(), task.attempt()));
                     BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());

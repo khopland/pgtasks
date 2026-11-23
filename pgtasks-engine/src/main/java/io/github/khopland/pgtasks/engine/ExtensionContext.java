@@ -32,6 +32,12 @@ public interface ExtensionContext {
      */
     <T> Optional<T> topicSetting(TopicRef<?> topic, SettingKey<T> key);
 
+    /** Asked before every claim on this node; see {@link ClaimGate}. */
+    void claimGate(ClaimGate gate);
+
+    /** Told each batch's results on this node; see {@link BatchListener}. */
+    void batchListener(BatchListener listener);
+
     /** Runs a job on a fixed delay while the engine runs. */
     void job(HousekeepingJob job);
 
