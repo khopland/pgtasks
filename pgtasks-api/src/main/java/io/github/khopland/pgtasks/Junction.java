@@ -19,7 +19,16 @@ public record Junction(TopicRef<?> topic, Counts counts, Set<String> identifiers
         /** Only a suspended task: the classic "all parts have arrived and are waiting". (1.x: SINGULAR.) */
         SUSPENDED,
 
-        /** Any task, finished or not, except one that was made redundant. (1.x: ETERNAL.) */
+        /**
+         * Any task, finished or not, except one that was made redundant or was cancelled (it never
+         * ran). (1.x: ETERNAL.)
+         *
+         * <p>A finished task counts only while its row exists: once the topic's retention for its
+         * outcome has passed (30 days for succeeded by default, see
+         * {@code TopicSettings.DEFAULT_RETENTION}), housekeeping deletes it and the identifier is
+         * missing again. A group whose parts finish further apart than that never completes. Keep
+         * the target topic's retention longer than the time a group can take to arrive.
+         */
         ANY
     }
 

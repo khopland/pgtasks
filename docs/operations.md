@@ -350,6 +350,8 @@ Finished tasks are deleted by the housekeeping leader, per topic and outcome, co
 completion: succeeded and cancelled after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
+A fan-in with `Junction.Counts.ANY` only sees parts whose rows are still there: keep its target
+topic's retention longer than a group can take to arrive (see [patterns](patterns.md#fan-out-and-fan-in)).
 Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
 backlog after downtime can't hold up housekeeping.
 

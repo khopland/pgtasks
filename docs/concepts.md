@@ -191,8 +191,8 @@ Operators can also act on tasks that are still waiting, not only on dead letters
 
 `cancelled` is an outcome of its own rather than `failed` (which says the task gave up) or
 `redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
-retention, 30 days by default. A cancelled task still counts as present for an `ANY` junction,
-like any task that isn't redundant, and `REPLACE` leaves it in the history as it is.
+retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
+since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
 
 ## The breaker
 
