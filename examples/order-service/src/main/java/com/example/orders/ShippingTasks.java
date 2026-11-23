@@ -80,9 +80,9 @@ class ShippingTasks {
                                 .withDedupKey("notify:" + id + ":feedback"));
                             return Decision.success(tracking);
                         } catch (Throttled throttled) {
-                            return Decision.throttled(throttled.retryAfter());
+                            return Decision.later(throttled.retryAfter());
                         } catch (Unavailable unavailable) {
-                            return Decision.unavailable(unavailable);
+                            return Decision.failed(unavailable);
                         } catch (Declined | Rejected refused) {
                             return Decision.failed(refused);
                         }
@@ -92,7 +92,7 @@ class ShippingTasks {
             });
         }, options -> options
             .resources(writes)
-            .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)))
+            .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)).notCounting(Unavailable.class))
             .concurrency(2)
             .batchSize(32));
     }

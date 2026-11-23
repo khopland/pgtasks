@@ -4,6 +4,7 @@ import java.util.Objects;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 
 import com.example.orders.Partners.Declined;
@@ -29,9 +30,9 @@ class NotificationTasks {
                 try {
                     partners.notify(notice.orderId(), notice.customerId(), notice.kind(), work.idempotencyKey());
                 } catch (Throttled throttled) {
-                    return Decision.throttled(throttled.retryAfter());
+                    return Decision.later(throttled.retryAfter());
                 } catch (Unavailable unavailable) {
-                    return Decision.unavailable(unavailable);
+                    return Decision.failed(unavailable);
                 } catch (Declined | Rejected refused) {
                     return Decision.failed(refused);
                 }
@@ -52,6 +53,7 @@ class NotificationTasks {
             });
         }, options -> options
             .resources(writes)
+            .retry(Retry.standard().notCounting(Unavailable.class))
             .ordering(Ordering.SINGULAR_BY_IDENTIFIER)
             .concurrency(2)
             .batchSize(32));

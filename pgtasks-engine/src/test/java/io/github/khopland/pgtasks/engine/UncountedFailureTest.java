@@ -47,10 +47,10 @@ class UncountedFailureTest {
 
     @Test
     @DisplayName("An outage longer than the attempts allow costs no attempts: the task succeeds afterwards")
-    void unavailable_doesnt_use_up_attempts() throws Exception {
+    void uncounted_failures_dont_use_up_attempts() throws Exception {
         AtomicInteger runs = new AtomicInteger();
-        long id = run(Retry.standard().attempts(3), batch -> batch.decide(task ->
-            runs.incrementAndGet() <= 10 ? Decision.unavailable("downstream is down") : Decision.success()));
+        long id = run(Retry.standard().attempts(3).notCounting(ConnectException.class), batch -> batch.decide(task ->
+            runs.incrementAndGet() <= 10 ? Decision.failed(new ConnectException("downstream is down")) : Decision.success()));
 
         TaskView done = engine.admin().find(id).orElseThrow();
         assertThat(runs).hasValue(11);
@@ -63,7 +63,8 @@ class UncountedFailureTest {
     void the_backoff_grows_through_uncounted_failures() throws Exception {
         engine = TaskEngine.builder()
             .store(new InMemoryTaskStore(clock))
-            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.unavailable("down"))))
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.failed(new ConnectException("down"))),
+                topic -> topic.retry(Retry.standard().notCounting(ConnectException.class))))
             .build()
             .start();
         tester = TaskTester.of(engine);
@@ -106,8 +107,8 @@ class UncountedFailureTest {
     void no_retries_still_back_off_when_not_counted() throws Exception {
         engine = TaskEngine.builder()
             .store(new InMemoryTaskStore(clock))
-            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.unavailable("down")),
-                topic -> topic.retry(Retry.none())))
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.failed(new ConnectException("down"))),
+                topic -> topic.retry(Retry.none().notCounting(ConnectException.class))))
             .build()
             .start();
         tester = TaskTester.of(engine);

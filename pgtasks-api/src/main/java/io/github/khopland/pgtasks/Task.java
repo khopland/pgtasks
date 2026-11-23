@@ -16,7 +16,7 @@ import org.jspecify.annotations.Nullable;
  * @param identifier the application key used for insertion policies and ordering
  * @param payload   the decoded payload, or {@code null} if the task has none
  * @param attempt   the counted attempt this claim belongs to, starting at 1. Suspended, delayed
- *                  and throttled runs don't count
+ *                  runs, and failures the retry policy doesn't count, don't count
  * @param reference an optional correlation value
  * @param parentId  the task that pushed this one, if any
  * @param rootId    the first task of the flow this one belongs to, if it has a parent

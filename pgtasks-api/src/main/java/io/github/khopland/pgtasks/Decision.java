@@ -10,8 +10,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>When several sources decide on the same task (a handler and the batch resources that
  * review it), the most severe decision wins, in this order:
- * {@code failed > unavailable > suspended > throttled > later > filtered > success}. Between two delays of the
- * same kind, the longer one wins.
+ * {@code failed > suspended > later > filtered > success}. Between two delays, the longer one wins.
  */
 public sealed interface Decision {
 
@@ -55,24 +54,6 @@ public sealed interface Decision {
         return new Failed(message, null);
     }
 
-    /**
-     * Not the task's fault: a downstream system is down, a connection failed. The task is retried
-     * with the topic's backoff and its error is kept, but the attempt doesn't count, so an outage
-     * can't use up a task's attempts.
-     */
-    static Decision unavailable(Throwable cause) {
-        return new Unavailable(cause.getMessage(), cause);
-    }
-
-    static Decision unavailable(String message) {
-        return new Unavailable(message, null);
-    }
-
-    /** Downstream pushback: the task is retried after the delay and the attempt doesn't count. */
-    static Decision throttled(Duration retryAfter) {
-        return new Throttled(retryAfter);
-    }
-
     /** Whether downstream work is enqueued. */
     default boolean continues() {
         return this instanceof Success;
@@ -88,7 +69,6 @@ public sealed interface Decision {
         }
         return switch (left) {
             case Later(Duration delay) when right instanceof Later(Duration other) && other.compareTo(delay) > 0 -> right;
-            case Throttled(Duration delay) when right instanceof Throttled(Duration other) && other.compareTo(delay) > 0 -> right;
             default -> left;
         };
     }
@@ -124,13 +104,8 @@ public sealed interface Decision {
         }
     }
 
-    record Throttled(Duration retryAfter) implements Decision {
-        public Throttled {
-            Objects.requireNonNull(retryAfter, "retryAfter");
-            if (retryAfter.isNegative()) {
-                throw new IllegalArgumentException("retryAfter must not be negative");
-            }
-        }
+    record Suspended() implements Decision {
+        static final Suspended INSTANCE = new Suspended();
 
         @Override
         public int severity() {
@@ -138,26 +113,10 @@ public sealed interface Decision {
         }
     }
 
-    record Suspended() implements Decision {
-        static final Suspended INSTANCE = new Suspended();
-
-        @Override
-        public int severity() {
-            return 4;
-        }
-    }
-
-    record Unavailable(@Nullable String message, @Nullable Throwable cause) implements Decision {
-        @Override
-        public int severity() {
-            return 5;
-        }
-    }
-
     record Failed(@Nullable String message, @Nullable Throwable cause) implements Decision {
         @Override
         public int severity() {
-            return 6;
+            return 4;
         }
     }
 }

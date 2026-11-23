@@ -55,15 +55,15 @@ class PaymentTasks {
                 } catch (Rejected rejected) {
                     return Decision.failed(rejected);
                 } catch (Throttled throttled) {
-                    return Decision.throttled(throttled.retryAfter());
+                    return Decision.later(throttled.retryAfter());
                 } catch (Unavailable unavailable) {
-                    return Decision.unavailable(unavailable);
+                    return Decision.failed(unavailable);
                 }
             });
         }, options -> options
             .resources(writes)
             .concurrency(2)
             .batchSize(32)
-            .retry(Retry.standard().withBackoff(Duration.ofSeconds(2), Duration.ofMinutes(1))));
+            .retry(Retry.standard().withBackoff(Duration.ofSeconds(2), Duration.ofMinutes(1)).notCounting(Unavailable.class)));
     }
 }

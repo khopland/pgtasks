@@ -248,7 +248,7 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 |---|---|
 | `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
 | `pgtasks.pushed{topic,status}` | Committed pushes |
-| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, throttled, unavailable, retrying, dead-lettered |
+| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
 | `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
 | `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
 | `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |

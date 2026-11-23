@@ -191,7 +191,7 @@ public final class PostgresTaskStore implements TaskStore {
               AND t.id = done.task_id
             RETURNING t.id
             """);
-        // Non-counted waits (suspended, later, throttled) give the attempt back. That is safe for
+        // Non-counted waits (suspended, later, uncounted failures) give the attempt back. That is safe for
         // fencing: only the current owner can do it, so a stale claim's attempt never comes back.
         wait = sql("""
             WITH d AS (

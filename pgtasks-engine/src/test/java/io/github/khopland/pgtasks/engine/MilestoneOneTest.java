@@ -375,10 +375,6 @@ class MilestoneOneTest {
                         yield Decision.suspended();
                     }
                     case "later" -> Decision.later(Duration.ofHours(1));
-                    case "throttled" -> {
-                        task.push(first, task.identifier(), "never");
-                        yield Decision.throttled(Duration.ofHours(1));
-                    }
                     case "throws" -> throw new IllegalStateException("handler bug for one task");
                     default -> throw new IllegalArgumentException(task.payload());
                 });
@@ -386,7 +382,7 @@ class MilestoneOneTest {
             Topic.of(first, batch -> batch.decide(task -> Decision.success())),
             Topic.of(second, batch -> batch.decide(task -> Decision.success()))
         ), settings -> settings);
-        List<String> kinds = List.of("success-both", "filtered", "success-first", "failed", "suspended", "success-both", "later", "throttled", "success-none", "throws");
+        List<String> kinds = List.of("success-both", "filtered", "success-first", "failed", "suspended", "success-both", "later", "success-none", "throws");
         engine.tasks().independently().push(mixed, Insertion.APPEND, IntStream.range(0, kinds.size())
             .mapToObj(index -> Creation.of(kinds.get(index) + "-" + index, kinds.get(index))).toList());
         engine.start();
@@ -407,7 +403,6 @@ class MilestoneOneTest {
             List.of("suspended", "suspended", 0),
             List.of("success-both", "succeeded", 1),
             List.of("later", "scheduled", 0),
-            List.of("throttled", "retrying", 0),
             List.of("success-none", "succeeded", 1),
             List.of("throws", "retrying", 1)
         );

@@ -16,7 +16,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | `TaskSource.Condition` NONE, SINGULAR_BY_IDENTIFIER, …_SUSPEND_ON_FAILURE, …_SUSPEND_UNTIL_SUCCESS | `Ordering` FIFO, SINGULAR_BY_IDENTIFIER, …_ON_FAILURE, …_UNTIL_SUCCESS, now applied within the topic only, and always |
 | `TaskSource.Order` LAST_IN_FIRST_OUT | Dropped. Use `Creation.withPriority(n)` for work that should jump the queue |
 | `TaskJuncture` SINGULAR, ETERNAL | `Junction.Counts.SUSPENDED`, `Junction.Counts.ANY`, staged with `task.junction(...)` |
-| Results SUCCESS, FILTER, SUSPENSION, FAILURE | `Decision.success()`, `filtered(reason)`, `suspended()` or `later(delay)`, `failed(cause)`; new: `throttled`, `unavailable` |
+| Results SUCCESS, FILTER, SUSPENSION, FAILURE | `Decision.success()`, `filtered(reason)`, `suspended()` or `later(delay)`, `failed(cause)` |
 | FAILED stays failed until `TaskReviver` resets it | A retry policy, then dead letters: revived by an operator, by error type, or on a new version |
 | EXPIRED tasks from dead owners are never requeued | Requeued with backoff once the owner counts as dead; dead-lettered the third time |
 | Contexts and `TaskSupplement` lookups | `BatchResource` (open, review, beforeCommit, afterCommit) and `batch.resource(...)` |

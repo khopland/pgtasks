@@ -454,10 +454,6 @@ final class BatchRun<T> {
             case Decision.Filtered filtered -> new Resolution.Finished(Outcome.FILTERED, filtered.reason());
             case Decision.Suspended ignored -> new Resolution.Waiting(WaitState.SUSPENDED, null, false, null);
             case Decision.Later later -> new Resolution.Waiting(WaitState.SCHEDULED, later.delay(), false, null);
-            case Decision.Throttled throttled -> new Resolution.Waiting(WaitState.RETRYING, throttled.retryAfter(), false, null);
-            // Not the task's fault: back off, keep the error, give the attempt back.
-            case Decision.Unavailable unavailable -> new Resolution.Waiting(WaitState.RETRYING,
-                retry.uncountedBackoff(claim.failures() + 1, core.random()), false, ErrorJson.of(unavailable.message(), unavailable.cause()));
             case Decision.Failed failed -> {
                 String error = ErrorJson.of(failed.message(), failed.cause());
                 // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
@@ -485,8 +481,7 @@ final class BatchRun<T> {
                 case Resolution.Waiting waiting -> switch (waiting.state()) {
                     case SUSPENDED -> TaskObserver.Result.SUSPENDED;
                     case SCHEDULED -> TaskObserver.Result.DELAYED;
-                    case RETRYING -> waiting.counted() ? TaskObserver.Result.RETRYING
-                        : waiting.error() != null ? TaskObserver.Result.UNAVAILABLE : TaskObserver.Result.THROTTLED;
+                    case RETRYING -> waiting.counted() || waiting.error() == null ? TaskObserver.Result.RETRYING : TaskObserver.Result.UNAVAILABLE;
                     case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
                 };
             };

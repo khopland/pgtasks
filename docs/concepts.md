@@ -98,7 +98,7 @@ a later task wait for an earlier one:
 
 | The earlier task is… | `SINGULAR_BY_IDENTIFIER` | `…_ON_FAILURE` | `…_UNTIL_SUCCESS` |
 |---|---|---|---|
-| ready, active, retrying, throttled | waits | waits | waits |
+| ready, active, retrying | waits | waits | waits |
 | suspended or delayed | runs | runs | waits |
 | dead-lettered | runs | waits | waits |
 | finished | runs | runs | runs |
@@ -141,9 +141,7 @@ deciders that wait on a remote call per task.
 | `filtered(reason)` | Done, not needed. Nothing downstream. | — |
 | `later(delay)` | Runs again after the delay. | no |
 | `suspended()` | Waits until a junction or an operator releases it. | no |
-| `throttled(retryAfter)` | Downstream pushback: retried after the delay. | no |
-| `unavailable(cause)` | Not the task's fault: retried with backoff, error kept. | no |
-| `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. | yes |
+| `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
 An exception from a decider fails only that task. One from the handler fails the batch. A task
 the handler leaves without a decision fails too.
