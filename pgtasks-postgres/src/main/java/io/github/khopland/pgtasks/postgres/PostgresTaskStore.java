@@ -58,6 +58,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class PostgresTaskStore implements TaskStore {
 
+    /** The first key of the advisory lock SINGULAR_* claims take per topic; never a topic id, which is positive. */
+    private static final int SINGULAR_CLAIM_LOCK = -0x7067_6c6b;
+
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
@@ -67,6 +70,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
+    private final NamedSql singularClaimLock;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
@@ -164,6 +168,13 @@ public final class PostgresTaskStore implements TaskStore {
                    set_config('enable_sort', 'off', true), set_config('enable_hashjoin', 'off', true),
                    set_config('enable_mergejoin', 'off', true)
             """);
+        // A SINGULAR_* poll checks other tasks for each candidate's identifier in its statement
+        // snapshot, where another node's uncommitted claim still looks ready: with an earlier task
+        // turned ready meanwhile (a promotion, a release), both nodes would claim one identifier.
+        // So SINGULAR_* claims on a topic take turns until commit, and each poll's snapshot shows
+        // the previous claim. The first key is negative and topic ids are positive, so it can't
+        // meet a junction lock (topic, hashtext(identifier)). FIFO claims don't wait.
+        singularClaimLock = sql("SELECT pg_advisory_xact_lock(" + SINGULAR_CLAIM_LOCK + ", :topic::integer)");
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""
             WITH d AS (
@@ -1133,6 +1144,11 @@ public final class PostgresTaskStore implements TaskStore {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = claimPlanning.prepare(connection, NamedSql.parameters())) {
             statement.execute();
+        }
+        if (request.ordering() != Ordering.FIFO) {
+            try (PreparedStatement statement = singularClaimLock.prepare(connection, NamedSql.parameters().set("topic", request.topicId()))) {
+                statement.execute();
+            }
         }
         Admission admission = request.admission();
         int limit = request.limit();

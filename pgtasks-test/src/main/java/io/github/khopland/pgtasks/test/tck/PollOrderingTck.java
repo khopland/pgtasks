@@ -6,6 +6,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import io.github.khopland.pgtasks.Insertion;
@@ -215,14 +217,87 @@ public abstract class PollOrderingTck extends StoreTck {
     void concurrent_claimers_never_take_the_same_identifier(Ordering ordering) throws Exception {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, task("x"), task("x"), task("y"), task("y"));
-        try (StoreTransaction first = fixture.store().begin(); StoreTransaction second = fixture.store().begin()) {
-            List<ClaimedTask> a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
-            List<ClaimedTask> b = fixture.store().claim(second, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+        List<ClaimedTask> a;
+        CompletableFuture<List<ClaimedTask>> b;
+        try (StoreTransaction first = fixture.store().begin()) {
+            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+            b = claimElsewhere(fixture, ordering);
+            Thread.sleep(300);      // let the other claim get as far as it can
             first.commit();
-            second.commit();
-
-            assertThat(a).extracting(ClaimedTask::identifier).containsExactly("x", "y");
-            assertThat(b).isEmpty();
         }
+
+        assertThat(a).extracting(ClaimedTask::identifier).containsExactly("x", "y");
+        assertThat(b.get(10, TimeUnit.SECONDS)).isEmpty();
+    }
+
+    /**
+     * Another node's claim isn't committed yet when an earlier task for its identifier turns
+     * ready. A claim that starts then must not take the earlier task while the later one runs.
+     */
+    @ParameterizedTest
+    @EnumSource(value = Ordering.class, names = {"SINGULAR_BY_IDENTIFIER", "SINGULAR_BY_IDENTIFIER_ON_FAILURE"})
+    void a_claim_sees_a_concurrent_claim_when_an_earlier_task_is_promoted(Ordering ordering) throws Exception {
+        StoreFixture fixture = setUp();
+        long earlier = StoreFixture.id(fixture.push(topic, Insertion.APPEND, StoreFixture.delayed("x", Duration.ofMinutes(1))).getFirst());
+        long later = fixture.push(topic, "x");
+        fixture.advance(Duration.ofMinutes(2));
+        List<ClaimedTask> a;
+        CompletableFuture<List<ClaimedTask>> b;
+        try (StoreTransaction first = fixture.store().begin()) {
+            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+            assertThat(fixture.promoteDue()).containsExactly(topic);
+            b = claimElsewhere(fixture, ordering);
+            Thread.sleep(300);
+            first.commit();
+        }
+
+        assertThat(ids(a)).containsExactly(later);
+        assertThat(b.get(10, TimeUnit.SECONDS)).as("the earlier task waits for the running one").isEmpty();
+        assertThat(fixture.state(earlier)).isEqualTo("ready");
+        assertThat(fixture.counts(topic).active()).isEqualTo(1);
+    }
+
+    /**
+     * An earlier task's push commits after another node claimed a later task for the identifier,
+     * but before that claim commits. A claim that starts then must not take the earlier task.
+     */
+    @ParameterizedTest
+    @EnumSource(value = Ordering.class, names = "SINGULAR.*", mode = EnumSource.Mode.MATCH_ALL)
+    void a_claim_sees_a_concurrent_claim_when_an_earlier_push_commits(Ordering ordering) throws Exception {
+        StoreFixture fixture = setUp();
+        List<ClaimedTask> a;
+        CompletableFuture<List<ClaimedTask>> b;
+        try (StoreTransaction push = fixture.store().begin()) {
+            fixture.store().push(push, topic, Insertion.APPEND, List.of(task("x")));
+            fixture.push(topic, "x");
+            try (StoreTransaction first = fixture.store().begin()) {
+                a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+                push.commit();
+                b = claimElsewhere(fixture, ordering);
+                Thread.sleep(300);
+                first.commit();
+            }
+        }
+
+        assertThat(a).hasSize(1);
+        assertThat(b.get(10, TimeUnit.SECONDS)).as("the other task for x waits for the running one").isEmpty();
+        assertThat(fixture.counts(topic).active()).isEqualTo(1);
+    }
+
+    /** A claim in its own transaction on another thread, as another node's. */
+    private CompletableFuture<List<ClaimedTask>> claimElsewhere(StoreFixture fixture, Ordering ordering) {
+        int other;
+        try {
+            other = fixture.node("node-b");
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return fixture.claim(topic, other, ordering, 10);
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        });
     }
 }
