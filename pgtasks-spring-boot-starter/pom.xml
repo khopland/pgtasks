@@ -13,7 +13,6 @@
     <module.name>io.github.khopland.pgtasks.spring</module.name>
     <spring-boot.version>4.1.3</spring-boot.version>
     <!-- The release line built on Spring Boot 4.1. -->
-    <spring-modulith.version>2.1.3</spring-modulith.version>
   </properties>
   <dependencyManagement>
     <dependencies>
@@ -29,13 +28,6 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-dependencies</artifactId>
         <version>${spring-boot.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-      <dependency>
-        <groupId>org.springframework.modulith</groupId>
-        <artifactId>spring-modulith-bom</artifactId>
-        <version>${spring-modulith.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -112,12 +104,6 @@
       <artifactId>jackson-databind</artifactId>
       <optional>true</optional>
     </dependency>
-    <!-- Module names from Spring Modulith, when the app uses it. -->
-    <dependency>
-      <groupId>org.springframework.modulith</groupId>
-      <artifactId>spring-modulith-core</artifactId>
-      <optional>true</optional>
-    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-configuration-processor</artifactId>
@@ -160,16 +146,6 @@
     <dependency>
       <groupId>org.springframework.security</groupId>
       <artifactId>spring-security-web</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.modulith</groupId>
-      <artifactId>spring-modulith-starter-test</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.modulith</groupId>
-      <artifactId>spring-modulith-runtime</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

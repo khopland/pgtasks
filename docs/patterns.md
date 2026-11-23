@@ -64,20 +64,6 @@ succeeded 31 days before the last one arrives, the group never completes. Set th
 retention for `SUCCEEDED` (and any other outcome that should count) longer than a group can take,
 for example `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`.
 
-## Events instead of direct pushes
-
-A module can turn another module's application event into a task, so the publisher needs no
-dependency on the topic:
-
-```java
-tasks.onEvent(OrderPlaced.class, placed -> new Push<>(SHIPMENTS, Insertion.APPEND, Creation.of(placed.id(), placed.id())));
-```
-
-With Spring, the starter listens to every application event synchronously, on the publisher's
-thread, so the push joins the publisher's transaction: the event's changes and the task commit
-or roll back together. (Spring Modulith's `@ApplicationModuleListener` runs after the commit,
-in a new transaction, which loses that.)
-
 ## Producers and consumers in separate services
 
 A service that only pushes declares the topics it pushes to, so they exist whichever service is

@@ -42,8 +42,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        batch-deadline, retry.max-attempts (a number or forever),
  *                        retry.give-up-after (such as 7d, or never), retry.first-backoff,
  *                        retry.max-backoff, retain.&lt;outcome&gt;
- * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
- *                        Spring Modulith module tests get one without it
+ * @param testing         adds a {@code TaskTester} bean, which records every push, for tests
  * @param version         the application's version, recorded with this node in pgtasks.node;
  *                        by default the build's, from {@code BuildProperties}
  *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)

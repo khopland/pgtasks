@@ -17,7 +17,6 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
@@ -27,7 +26,6 @@ import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
-import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Setting;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
@@ -413,7 +411,6 @@ public final class TaskEngineBuilder {
 
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);
-        List<EventRoute<?>> routes = new ArrayList<>();
         List<Declared> declared = new ArrayList<>();
         for (Named<TaskConfigurer> configurer : configurers) {
             Spec moduleDefaults = new Spec(Source.MODULE_DEFAULTS);
@@ -450,11 +447,6 @@ public final class TaskEngineBuilder {
                     return this;
                 }
 
-                @Override
-                public <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route) {
-                    routes.add(new EventRoute<>(event, route, configurer.name()));
-                    return this;
-                }
 
             });
             for (TopicSpec<?> topic : registered) {
@@ -542,7 +534,7 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withEventRoutes(routes);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         // A codec for every topic modules push to, now rather than at the first push.

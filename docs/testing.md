@@ -45,21 +45,19 @@ globals or codecs.
 ## Spring
 
 `pgtasks.store=memory` runs the application without a database. `pgtasks.testing=true` adds a
-`TaskTester` bean. In a Spring Modulith module test (`@ApplicationModuleTest`) the tester is
-there anyway, only the module's own topics run, and a push to another module's topic is stored
-for assertions instead of failing:
+`TaskTester` bean:
 
 ```java
-@ApplicationModuleTest
-class ShippingModuleTest {
+@SpringBootTest(properties = {"pgtasks.store=memory", "pgtasks.testing=true"})
+class ShippingTest {
+    @Autowired Tasks tasks;
     @Autowired TaskTester tester;
-    @Autowired ApplicationEventPublisher events;
 
     @Test
     void ships_and_invoices() {
-        events.publishEvent(new OrderPlaced("o-1"));
+        tasks.independently().push(SHIPMENTS, "o-1", new Shipment("o-1"));
         tester.awaitIdle();
-        tester.assertPushed(BillingTopics.INVOICES, 1);   // billing's topic: captured, not run
+        tester.assertPushed(BillingTopics.INVOICES, 1);
     }
 }
 ```

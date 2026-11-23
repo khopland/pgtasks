@@ -81,9 +81,8 @@ public class TaskAutoConfiguration {
             }
             builder.dataSource(dataSource).schemaMode(properties.schemaMode()).schema(properties.schema()).transactions(new SpringTransactions(dataSource));
         }
-        Map<String, TaskConfigurer> configurers = beansOfType(beans, TaskConfigurer.class);
-        Map<String, String> modules = ModuleNames.of(beans, List.copyOf(configurers.keySet()));
-        configurers.forEach((name, configurer) -> builder.configure(modules.getOrDefault(name, name), configurer));
+        // Each configurer's module is its bean name.
+        beansOfType(beans, TaskConfigurer.class).forEach(builder::configure);
         beansOfType(beans, TaskGlobals.class).forEach(builder::globals);
         // Every observer bean, such as pgtasks-micrometer's and the application's own, and the MDC keys to carry.
         List<TaskObserver> observers = new ArrayList<>(observer.orderedStream().toList());
@@ -96,8 +95,6 @@ public class TaskAutoConfiguration {
         codecs.ifUnique(builder::codecs);
         builder.version(properties.version() != null ? properties.version()
             : build.getIfAvailable() != null ? build.getIfAvailable().getVersion() : null);
-        // A module test runs one module's topics; pushes to the others' are stored for its assertions.
-        builder.topicsCreatedOnPush(ModuleNames.inModuleTest(beans));
         return builder.build();
     }
 
@@ -142,15 +139,8 @@ public class TaskAutoConfiguration {
         }
     }
 
-    /** Pushes the tasks the configurers' event routes make of application events. */
-    @Bean
-    @ConditionalOnMissingBean
-    public TaskEventBridge taskEventBridge(TaskEngine engine) {
-        return new TaskEventBridge(engine);
-    }
-
     /**
-     * For tests: in a Spring Modulith module test, or with {@code pgtasks.testing=true}. It records
+     * For tests, with {@code pgtasks.testing=true}. It records
      * every push, so it has no place in a running application.
      */
     @Bean
@@ -163,8 +153,7 @@ public class TaskAutoConfiguration {
     static final class Testing implements Condition {
         @Override
         public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
-            return context.getEnvironment().getProperty("pgtasks.testing", Boolean.class, false)
-                || (context.getBeanFactory() != null && ModuleNames.inModuleTest(context.getBeanFactory()));
+            return context.getEnvironment().getProperty("pgtasks.testing", Boolean.class, false);
         }
     }
 

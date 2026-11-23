@@ -2,11 +2,9 @@ package io.github.khopland.pgtasks.engine;
 
 import java.util.List;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.PayloadCodec;
-import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TaskHandler;
 import io.github.khopland.pgtasks.TopicRef;
 
@@ -76,14 +74,4 @@ public interface TaskRegistry {
 
     /** How payloads of this type are stored, for this module's topics and pushes. */
     <T> TaskRegistry codec(Class<T> type, PayloadCodec<T> codec);
-
-    /**
-     * Turns an application event into a task, so the publisher needs no dependency on the topic.
-     * The push happens when the event is published, inside the publisher's transaction, so the
-     * event's changes and the task commit or roll back together; an event published outside a
-     * transaction pushes on its own. With Spring, the starter routes every application event.
-     *
-     * @param route the push for an event, or null to push nothing for it
-     */
-    <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route);
 }
