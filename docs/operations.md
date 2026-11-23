@@ -120,7 +120,6 @@ GET    /actuator/tasks/topics/{topic}                    status, counts, setting
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
-POST   /actuator/tasks/topics/{topic}/pause | resume
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}, or {"identifier": "...", "reference": "...", "state": "...", "header": "name=value", "createdFrom": "...", "createdUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
@@ -158,11 +157,11 @@ management:
 Then open `http://<host>/pgtasks/`. It shows:
 
 - **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
-  task, failing tasks and dead letters, and paused or running.
+  task, failing tasks and dead letters, and whether this node runs it.
   Every registered node with its heartbeat (marked late after the lease term) and what it leads.
 - **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
   list of dead letters to revive or discard by id (or all of them), the topic's effective settings
-  and where each came from, pause and resume, purge and delete.
+  and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed, then run the selected or every matching task now, or cancel them. A
   search runs when you ask and on a page change or after a change, not on every refresh, since
@@ -418,7 +417,7 @@ push with `tasks.push(...)` in a bound transaction instead.
   `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
-- Topic changes (paused, resumed, deleted) reach every node
+- A deleted topic stops on every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another
   node if it stops renewing it.

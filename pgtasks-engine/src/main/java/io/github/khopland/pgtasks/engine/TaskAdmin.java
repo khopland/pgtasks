@@ -35,7 +35,7 @@ import org.slf4j.LoggerFactory;
 /**
  * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
  * cancelled, run now), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
- * only pushes, and acts on the whole cluster: a topic paused here is paused on every node.
+ * only pushes, and acts on the whole cluster.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  *
@@ -94,25 +94,6 @@ public final class TaskAdmin {
         });
     }
 
-    /** Pauses a topic on every node: pushes are still taken, nothing is claimed. Running batches finish. */
-    public void pause(String topic) {
-        setPaused(topic, true);
-    }
-
-    /** Resumes a paused topic on every node. */
-    public void resume(String topic) {
-        setPaused(topic, false);
-    }
-
-    private void setPaused(String topic, boolean paused) {
-        Unchecked.run((paused ? "Pausing " : "Resuming ") + topic, () -> {
-            if (!EngineCore.transact(store, transaction -> store.setPaused(transaction, topic, paused))) {
-                throw new IllegalArgumentException("Unknown topic '" + topic + "'");
-            }
-            engine.reconcileTopics();
-        });
-    }
-
     /** Every topic in the store, by name. */
     public List<TopicStatus> topics() {
         return Unchecked.call("Listing topics", () -> {
@@ -126,7 +107,7 @@ public final class TaskAdmin {
                 .sorted(Comparator.comparing(TaskStore.TopicInfo::name))
                 .map(topic -> {
                     TopicSnapshot snapshot = counts.get(topic.name());
-                    return new TopicStatus(topic.name(), topic.paused(), processing.contains(topic.name()), modules.get(topic.name()),
+                    return new TopicStatus(topic.name(), processing.contains(topic.name()), modules.get(topic.name()),
                         snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt());
                 })
                 .toList();

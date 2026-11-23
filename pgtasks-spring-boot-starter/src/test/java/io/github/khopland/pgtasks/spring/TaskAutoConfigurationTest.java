@@ -173,7 +173,6 @@ class TaskAutoConfigurationTest {
         postgres().withUserConfiguration(Modules.class).withPropertyValues("pgtasks.topics.notify.poll-interval=1h").run(context -> {
             Tasks tasks = context.getBean(Tasks.class);
             TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).admin().pause("notify");
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 tasks.push(NOTIFY, "anna", "rolled back");
@@ -338,7 +337,6 @@ class TaskAutoConfigurationTest {
     void an_event_becomes_a_task_in_the_publishers_transaction() {
         postgres().withUserConfiguration(GreetingRoute.class).withPropertyValues("pgtasks.topics.notify.poll-interval=1h").run(context -> {
             TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).admin().pause("notify");
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 context.publishEvent(new Greeted("anna"));

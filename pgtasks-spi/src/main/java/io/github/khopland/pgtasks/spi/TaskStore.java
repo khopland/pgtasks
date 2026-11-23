@@ -82,14 +82,6 @@ public interface TaskStore {
     List<TopicInfo> topics(StoreTransaction transaction) throws SQLException;
 
     /**
-     * Pauses or resumes a topic on every node: a paused topic still takes pushes, but no node
-     * claims from it. Once committed, every node is notified.
-     *
-     * @return whether the topic exists
-     */
-    boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException;
-
-    /**
      * Pushes all tasks in one step, in order, applying the insertion policy. Other nodes are woken
      * when the transaction commits, whoever commits it.
      */
@@ -392,7 +384,7 @@ public interface TaskStore {
         }
     }
 
-    record TopicInfo(int id, String name, boolean paused) {
+    record TopicInfo(int id, String name) {
     }
 
     record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit) {

@@ -43,8 +43,9 @@ class HousekeepingTest {
     /** Review F1: promotion stopped after one batch of 1,000 unless 1,000 topics were due. */
     @Test
     void one_housekeeping_run_promotes_every_due_task_not_just_one_batch() throws Exception {
-        TaskEngine engine = engines.start("node-a", topic());
-        engine.admin().pause("topic");
+        // A node that doesn't run the topic, so the promoted tasks stay ready.
+        engines.createTopics("topic");
+        TaskEngine engine = engines.start("node-a", List.of());
         engine.tasks().independently().push(TOPIC, Insertion.APPEND, IntStream.range(0, 2_500)
             .mapToObj(index -> Creation.of("t" + index, "ok").withDelay(Duration.ofMinutes(1))).toList());
         TaskTester tester = TaskTester.of(engine);

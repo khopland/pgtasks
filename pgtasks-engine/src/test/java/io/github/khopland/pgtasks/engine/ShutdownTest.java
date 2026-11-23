@@ -34,7 +34,6 @@ class ShutdownTest {
     static PostgresExtension postgres = EngineFixture.extension();
 
     private static final TopicRef<String> SLOW = TopicRef.of("slow", String.class);
-    private static final TopicRef<String> PAUSED = TopicRef.of("paused", String.class);
 
     private final MemoryEngines engines = new MemoryEngines();
     private Map<Long, String> before;
@@ -73,8 +72,7 @@ class ShutdownTest {
                     runs.incrementAndGet();
                     return Decision.success();
                 });
-            }).with(TopicSettings.defaults().withBatchSize(5).withConcurrency(2)),
-            Topic.of(PAUSED, batch -> batch.decide(task -> Decision.success())));
+            }).with(TopicSettings.defaults().withBatchSize(5).withConcurrency(2)));
     }
 
     @Test
@@ -85,8 +83,6 @@ class ShutdownTest {
         TaskEngine nodeA = fixture.create("node-a", busyTopics(runs, running), settings -> settings).start();
         TaskEngine nodeB = fixture.create("node-b", busyTopics(runs, running), settings -> settings).start();
         nodeA.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 200));
-        nodeA.admin().pause(PAUSED.name());
-        nodeB.admin().resume(PAUSED.name());
         assertThat(running.await(5, TimeUnit.SECONDS)).as("batches running on both nodes").isTrue();
         assertThat(threadsLeft()).as("the engines' threads while running").isNotEmpty();
 
@@ -136,7 +132,6 @@ class ShutdownTest {
         CountDownLatch running = new CountDownLatch(1);
         TaskEngine engine = engines.start("node-a", busyTopics(runs, running));
         engine.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 50));
-        engine.admin().pause(PAUSED.name());
         assertThat(running.await(5, TimeUnit.SECONDS)).isTrue();
 
         engine.stop(Duration.ofSeconds(5));

@@ -56,8 +56,6 @@ final class DashboardRoutes {
         examples.put("topic", new String[] {"topic=work", null, null});
         examples.put("failing", new String[] {"topic=work", null, null});
         examples.put("deadLetters", new String[] {"topic=work", "limit=50", null});
-        examples.put("pause", new String[] {"topic=work", null, "{}"});
-        examples.put("resume", new String[] {"topic=work", null, "{}"});
         examples.put("revive", new String[] {"topic=work", null, "{\"ids\": \"999999\"}"});
         examples.put("discard", new String[] {"topic=work", null, "{\"error\": \"java.lang.IllegalStateException\"}"});
         examples.put("tasks", new String[] {"topic=work", "state=scheduled,retrying&identifier=nobody", null});

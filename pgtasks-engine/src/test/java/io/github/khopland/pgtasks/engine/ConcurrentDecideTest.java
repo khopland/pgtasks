@@ -79,12 +79,11 @@ class ConcurrentDecideTest {
                     return Decision.success();
                 })))
             .build()) {
-            engine.start();
-            engine.admin().pause("work");
+            engine.prepare();
             engine.tasks().independently().push(WORK, Insertion.APPEND, IntStream.range(0, 20)
                 .mapToObj(index -> Creation.of("t" + index, index == 7 ? "bad" : "fine")).toList());
             long started = System.nanoTime();
-            engine.admin().resume("work");
+            engine.start();
             TaskTester.of(engine).awaitIdle();
             long millis = (System.nanoTime() - started) / 1_000_000;
 

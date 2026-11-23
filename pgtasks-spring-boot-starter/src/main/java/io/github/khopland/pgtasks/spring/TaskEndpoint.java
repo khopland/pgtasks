@@ -47,7 +47,6 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
  * GET    /actuator/tasks/topics/{topic}/tasks?after=&amp;limit=&amp;identifier=&amp;reference=&amp;state=ready,retrying&amp;header=tenant=north
  *                                                        &amp;createdFrom=&amp;createdUntil=   unfinished tasks, lowest id first
- * POST   /actuator/tasks/topics/{topic}/pause | resume
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}; or {"identifier": "...", "reference": "...",
@@ -184,7 +183,7 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: pause, resume, revive, discard, purge, cancel, run-now. */
+    /** Topic actions: revive, discard, purge, cancel, run-now. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
@@ -209,8 +208,6 @@ public class TaskEndpoint {
         body.put("topic", name);
         body.put("action", action);
         switch (action) {
-            case "pause" -> engine.admin().pause(name);
-            case "resume" -> engine.admin().resume(name);
             case "revive", "discard" -> {
                 DeadLetterQuery query;
                 try {
@@ -372,7 +369,6 @@ public class TaskEndpoint {
         Map<String, Object> topic = new LinkedHashMap<>();
         topic.put("name", status.name());
         topic.put("module", status.module());
-        topic.put("paused", status.paused());
         topic.put("processing", status.processing());
         QueueCounts counts = status.counts();
         if (counts != null) {

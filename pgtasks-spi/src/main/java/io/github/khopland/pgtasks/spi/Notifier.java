@@ -11,7 +11,7 @@ public interface Notifier extends AutoCloseable {
         /** A topic got ready work. */
         void ready(int topicId);
 
-        /** A topic was registered, paused or resumed. */
+        /** A topic was registered or deleted. */
         default void topicChanged(String name) {
         }
 

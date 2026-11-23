@@ -214,11 +214,10 @@ class FailureHandlingTest {
                     return Decision.success();
                 })))
             .build()
-            .start();
+            .prepare();
         engine.tasks().independently().push(MERGE, Insertion.APPEND, List.of(Creation.of("a", "a").asSuspended(), Creation.of("b", "b").asSuspended()));
-        engine.admin().pause("parts");
         engine.tasks().independently().push(PARTS, Insertion.APPEND, List.of(Creation.of("a", "a"), Creation.of("x", "x")));
-        engine.admin().resume("parts");
+        engine.start();
         TaskTester.of(engine).awaitIdle();
 
         assertThat(merged).containsExactlyInAnyOrder("a", "b");

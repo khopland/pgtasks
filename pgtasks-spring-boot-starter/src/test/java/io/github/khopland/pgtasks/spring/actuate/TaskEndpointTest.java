@@ -205,11 +205,7 @@ class TaskEndpointTest {
     }
 
     @Test
-    void a_topic_is_paused_and_resumed() throws Exception {
-        assertThat(send("POST", "/tasks/topics/work/pause", "{}").status()).isEqualTo(200);
-        assertThat(get("/tasks/topics/work").body().path("paused").asBoolean()).isTrue();
-        assertThat(send("POST", "/tasks/topics/work/resume", "{}").status()).isEqualTo(200);
-        assertThat(get("/tasks/topics/work").body().path("paused").asBoolean()).isFalse();
+    void an_unknown_topic_action_is_not_found() throws Exception {
         assertThat(send("POST", "/tasks/topics/work/explode", "{}").status()).isEqualTo(404);
     }
 

@@ -33,9 +33,9 @@ import org.slf4j.LoggerFactory;
  * registers the node, creates every topic registered by name, and starts one poll loop per topic
  * it runs, plus housekeeping.
  *
- * <p>Which topics it runs follows the store: every topic registered by name, unless paused. A
- * topic paused, resumed or deleted on any node is broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
- * so a lost notification delays a change by at most one heartbeat. A paused topic's running
+ * <p>Which topics it runs follows the store: every topic registered by name that the store has. A
+ * topic deleted on any node is broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
+ * so a lost notification delays a change by at most one heartbeat. A deleted topic's running
  * batches finish; nothing is claimed from it until it is resumed.
  *
  * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}
@@ -59,7 +59,7 @@ public final class TaskEngine implements AutoCloseable {
     private final Object topicsLock = new Object();
     /** Serializes reconciles, each from reading the topics to its last change. */
     private final Object reconcileLock = new Object();
-    /** Workers of topics paused or gone, finishing their running batches, and the threads waiting for them. */
+    /** Workers of topics gone, finishing their running batches, and the threads waiting for them. */
     private final Map<TopicWorker<?>, Thread> draining = new ConcurrentHashMap<>();
     private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
     private @Nullable EngineCore core;
@@ -304,13 +304,12 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     /**
-     * Brings the workers in line with the store: starts a worker for every topic this node runs
-     * that isn't paused, and stops the workers of topics paused or gone, letting their running
+     * Brings the workers in line with the store: starts a worker for every topic this node runs,
+     * and stops the workers of topics gone, letting their running
      * batches finish. On start, on every heartbeat, and when a topic changes anywhere.
      */
     void reconcileTopics() throws Exception {
-        // One reconcile at a time, from its read to its last change: otherwise one that read the
-        // topics before a resume committed could retire the worker that resume just started.
+        // One reconcile at a time, from its read to its last change, so two can't act on different reads.
         synchronized (reconcileLock) {
             reconcileTopicsNow();
         }
@@ -329,7 +328,7 @@ public final class TaskEngine implements AutoCloseable {
             }
             Map<String, TaskStore.TopicInfo> wanted = new HashMap<>();
             for (TaskStore.TopicInfo info : registered) {
-                if (!info.paused() && topicsByName.containsKey(info.name())) {
+                if (topicsByName.containsKey(info.name())) {
                     wanted.put(info.name(), info);
                 }
             }

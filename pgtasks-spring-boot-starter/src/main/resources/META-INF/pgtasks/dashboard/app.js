@@ -13,8 +13,6 @@ const ROUTES = {
   topic: ["GET", "/topics/{topic}"],
   failing: ["GET", "/topics/{topic}/failing"],
   deadLetters: ["GET", "/topics/{topic}/dead-letters"],
-  pause: ["POST", "/topics/{topic}/pause"],
-  resume: ["POST", "/topics/{topic}/resume"],
   revive: ["POST", "/topics/{topic}/revive"],
   discard: ["POST", "/topics/{topic}/discard"],
   tasks: ["GET", "/topics/{topic}/tasks"],
@@ -427,7 +425,6 @@ async function overviewView() {
   showNode(data.node);
   const topics = data.topics || [];
   const total = key => topics.reduce((sum, topic) => sum + (topic.queue ? topic.queue[key] || 0 : 0), 0);
-  const paused = topics.filter(topic => topic.paused).length;
   const oldest = topics.map(topic => topic.queue && topic.queue.oldestReadyAt).filter(Boolean).sort()[0];
   const stats = h("div", { class: "stats" },
     stat("Topics", topics.length),
@@ -435,8 +432,7 @@ async function overviewView() {
     stat("Active", total("active")),
     stat("Oldest ready", oldest ? since(oldest) : "—"),
     stat("Failing", total("failing"), total("failing") ? "warn" : null),
-    stat("Dead letters", total("deadLetters"), total("deadLetters") ? "bad" : null),
-    stat("Paused", paused, paused ? "warn" : null));
+    stat("Dead letters", total("deadLetters"), total("deadLetters") ? "bad" : null));
 
   const byName = new Map(topics.map(topic => [topic.name, topic]));
   const modules = Object.entries(data.modules || {});
@@ -463,7 +459,6 @@ function stat(label, val, kind) {
 
 function topicStatus(topic) {
   return h("span", { class: "chips" },
-    topic.paused ? chip("paused", "warn") : null,
     topic.processing ? chip("running", "ok", "This node processes it") : chip("not here", null, "This node doesn't process it"));
 }
 
@@ -538,9 +533,6 @@ async function topicView(name) {
     h("div", { class: "crumbs" }, link("#/", "Overview"), topic.module ? " / " + topic.module : null),
     h("div", { class: "page-head" }, h("h1", null, topic.name), topicStatus(topic),
       h("div", { class: "actions" },
-        topic.paused
-          ? h("button", { type: "button", class: "primary", onclick: () => act(name, "resume", "Resumed " + name) }, "Resume")
-          : h("button", { type: "button", onclick: () => act(name, "pause", "Paused " + name) }, "Pause"),
         h("button", { type: "button", class: "danger", onclick: () => purge(name) }, "Purge…"),
         h("button", { type: "button", class: "danger", onclick: () => deleteTopic(name) }, "Delete topic…"))));
 
@@ -566,16 +558,6 @@ async function topicView(name) {
     tasksPanel(name, search),
     settingsPanel(topic.settings),
   ];
-}
-
-async function act(topic, action, done) {
-  try {
-    await api(action, { topic }, { body: {} });
-    toast(done + ".");
-  } catch (e) {
-    toast(e.message, true);
-  }
-  refresh();
 }
 
 function canFilter(error) {

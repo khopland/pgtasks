@@ -61,7 +61,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
-    private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat;
+    private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
@@ -116,9 +116,7 @@ public final class PostgresTaskStore implements TaskStore {
         // next to 50,000 finished tasks of the same topic.
         createTopic = sql("SELECT pgtasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
-        listTopics = sql("SELECT id, name, paused FROM pgtasks.topic ORDER BY id");
-        // The topic triggers notify every node when paused actually changes (R__notify_topic.sql).
-        pauseTopic = sql("UPDATE pgtasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
+        listTopics = sql("SELECT id, name FROM pgtasks.topic ORDER BY id");
         registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id");
         heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node");
         // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
@@ -966,18 +964,10 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = listTopics.prepare(transaction.connection(), NamedSql.parameters());
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
-                topics.add(new TopicInfo(resultSet.getInt(1), resultSet.getString(2), resultSet.getBoolean(3)));
+                topics.add(new TopicInfo(resultSet.getInt(1), resultSet.getString(2)));
             }
         }
         return topics;
-    }
-
-    @Override
-    public boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException {
-        try (PreparedStatement statement = pauseTopic.prepare(transaction.connection(), NamedSql.parameters().set("name", name).set("paused", paused));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
-        }
     }
 
     @Override

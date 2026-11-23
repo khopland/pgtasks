@@ -108,7 +108,7 @@ class AdminTest {
     }
 
     @Test
-    @DisplayName("Topic status: every topic with its pause flag, module and whether this node runs it")
+    @DisplayName("Topic status: every topic with its module and whether this node runs it")
     void topic_status_lists_every_topic() throws Exception {
         InMemoryTaskStore store = new InMemoryTaskStore();
         start(store);
@@ -116,13 +116,11 @@ class AdminTest {
             store.createTopic(transaction, "elsewhere");
             transaction.commit();
         }
-        engine.admin().pause("elsewhere");
 
-        assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::paused,
-                TopicStatus::processing, TopicStatus::module)
+        assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::processing, TopicStatus::module)
             .containsExactly(
-                Tuple.tuple("elsewhere", true, false, null),
-                Tuple.tuple("work", false, true, "work-module"));
+                Tuple.tuple("elsewhere", false, null),
+                Tuple.tuple("work", true, "work-module"));
     }
 
     @Test
@@ -261,8 +259,7 @@ class AdminTest {
     @Test
     void a_topic_with_unfinished_tasks_is_not_deleted() throws Exception {
         try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
-            .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().start()) {
-            engine.admin().pause("work");
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().prepare()) {
             engine.tasks().independently().push(WORK, "a", "waiting");
 
             assertThatThrownBy(() -> engine.admin().deleteTopic("work")).hasMessageContaining("has 1 unfinished task(s)");

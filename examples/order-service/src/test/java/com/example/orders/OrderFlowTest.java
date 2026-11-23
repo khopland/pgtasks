@@ -16,7 +16,6 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.engine.LocalTransactions;
-import io.github.khopland.pgtasks.engine.TaskAdmin;
 import io.github.khopland.pgtasks.engine.TaskTester;
 import io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs;
 import io.github.khopland.pgtasks.junit.TaskEngineExtension;
@@ -61,26 +60,36 @@ class OrderFlowTest {
     }
 
     private static void place(Tasks tasks, LocalTransactions transactions, String orderId) throws Exception {
+        place(tasks, transactions, orderId, true);
+    }
+
+    /** With {@code stock} false, the stock step is left out, to be pushed later with {@link #reserveStock}. */
+    private static void place(Tasks tasks, LocalTransactions transactions, String orderId, boolean stock) throws Exception {
         OrderRef order = new OrderRef(orderId, "c-1", 2500);
         transactions.inTransaction(() -> {
             tasks.push(PAYMENT, Insertion.APPEND, Creation.of(orderId, order).withDedupKey("pay:" + orderId));
-            tasks.push(STOCK, orderId, order);
+            if (stock) {
+                tasks.push(STOCK, orderId, order);
+            }
             tasks.push(SHIP, Insertion.APPEND, Creation.of(orderId, new ShipRequest(orderId, "c-1", Step.SHIP)).asSuspended());
             return null;
         });
     }
 
+    private static void reserveStock(Tasks tasks, String orderId) {
+        tasks.independently().push(STOCK, orderId, new OrderRef(orderId, "c-1", 2500));
+    }
+
     @Test
-    void ships_once_payment_and_stock_are_done_and_tells_the_customer(Tasks tasks, TaskTester tester, TaskAdmin admin,
+    void ships_once_payment_and_stock_are_done_and_tells_the_customer(Tasks tasks, TaskTester tester,
                                                                        LocalTransactions transactions) throws Exception {
         // drain(topic) waits for one topic, but every topic runs meanwhile: hold stock back to see the fan-in wait.
-        admin.pause(STOCK.name());
-        place(tasks, transactions, "o-1");
+        place(tasks, transactions, "o-1", false);
 
         tester.drain(PAYMENT);
         tester.awaitIdle();
         assertThat(PARTNERS.calls("/shipments")).as("stock isn't reserved yet").isZero();
-        admin.resume(STOCK.name());
+        reserveStock(tasks, "o-1");
         tester.drain(STOCK);
         tester.drain(SHIP);
         tester.drain(NOTIFY);
@@ -92,17 +101,16 @@ class OrderFlowTest {
     }
 
     @Test
-    void a_declined_payment_cancels_the_order_and_releases_its_stock(Tasks tasks, TaskTester tester, TaskAdmin admin,
+    void a_declined_payment_cancels_the_order_and_releases_its_stock(Tasks tasks, TaskTester tester,
                                                                      LocalTransactions transactions) throws Exception {
         PARTNERS.decline.add("o-2");
-        admin.pause(STOCK.name());
-        place(tasks, transactions, "o-2");
+        place(tasks, transactions, "o-2", false);
 
         tester.drain(PAYMENT);
         tester.advance(Duration.ofSeconds(20));   // the cancel keeps waiting (later) for the stock step
         tester.awaitIdle();
         assertThat(WRITES.statements("o-2")).noneMatch(sql -> sql.contains("'CANCELLED'"));
-        admin.resume(STOCK.name());
+        reserveStock(tasks, "o-2");
         tester.drain(STOCK);
         tester.drain(SHIP);
         tester.drain(NOTIFY);
