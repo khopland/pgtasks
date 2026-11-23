@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.random.RandomGenerator;
 
 import io.github.khopland.pgtasks.spi.StaleClaimException;
@@ -18,12 +19,13 @@ import org.slf4j.LoggerFactory;
 
 /**
  * What every worker on this node shares. {@code held} maps the tasks this node is processing to
- * their attempt, so claims it lost track of can be found and released.
+ * their attempt, so claims it lost track of can be found and released. {@code node} gives this
+ * node's id, which changes if the cluster forgot the node and it registered again.
  */
 record EngineCore(
     TaskStore store,
     DefaultTasks tasks,
-    int nodeId,
+    IntSupplier node,
     Semaphore inFlight,
     RandomGenerator random,
     Consumer<String> wake,
@@ -43,6 +45,11 @@ record EngineCore(
 
     <T extends @Nullable Object> T transact(Work<T> work) throws Exception {
         return transact(store, work);
+    }
+
+    /** This node's id now. */
+    int nodeId() {
+        return node.getAsInt();
     }
 
     InstantSource clock() {

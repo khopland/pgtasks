@@ -310,7 +310,7 @@ public final class TaskEngine implements AutoCloseable {
             limits.refresh();
         }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
-        core = new EngineCore(store, tasks, nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
+        core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, limits, settings.observer());
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
@@ -344,7 +344,7 @@ public final class TaskEngine implements AutoCloseable {
                     }
                 });
             }
-            Housekeeper keeper = new Housekeeper(store, settings, nodeId, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
+            Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
                 limits.refresh();
                 reviveSweep();
@@ -621,6 +621,20 @@ public final class TaskEngine implements AutoCloseable {
         return started && running(housekeeper).leading();
     }
 
+    /**
+     * Registers this node again, under a new id, after the cluster forgot it: its heartbeat found
+     * no row. It holds no claims in the store (a node with claims is never forgotten), so whatever
+     * its workers still run under the old id completes as stale and is discarded, and the workers
+     * claim under the new id from their next claim on.
+     */
+    private void rejoin() throws Exception {
+        int forgotten = nodeId;
+        int fresh = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
+        nodeId = fresh;
+        LOGGER.error("The cluster forgot node {} ({}): it was silent for too long, as after a suspended VM or a long network partition. "
+            + "It registered again as node {}; whatever it was still running under the old id is discarded", forgotten, settings.nodeName(), fresh);
+    }
+
     /** Covers claims on their way in: committed, but not yet known to their worker. */
     private Duration orphanGrace() {
         Duration twoHeartbeats = settings.heartbeat().multipliedBy(2);
@@ -634,15 +648,16 @@ public final class TaskEngine implements AutoCloseable {
      * of the database's doesn't release claims still on their way to their worker.
      */
     private void releaseOrphans(Duration grace) throws Exception {
+        int node = nodeId;
         Map<Integer, List<TaskStore.Completion>> orphans = new HashMap<>();
-        for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId, grace))) {
+        for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, node, grace))) {
             if (!held.containsKey(claim.taskId())) {
                 orphans.computeIfAbsent(claim.topicId(), ignored -> new ArrayList<>())
                     .add(new TaskStore.Completion(claim.taskId(), claim.attempt(), claim.claimedAt(), BatchRun.RELEASED));
             }
         }
         for (Map.Entry<Integer, List<TaskStore.Completion>> entry : orphans.entrySet()) {
-            int released = EngineCore.transact(store, transaction -> store.release(transaction, entry.getKey(), nodeId, entry.getValue()));
+            int released = EngineCore.transact(store, transaction -> store.release(transaction, entry.getKey(), node, entry.getValue()));
             if (released > 0) {
                 LOGGER.warn("Released {} task(s) this node held but wasn't processing", released);
                 wakeById(entry.getKey());

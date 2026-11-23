@@ -433,8 +433,9 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
-    void heartbeat_of_an_unknown_node_fails() throws SQLException {
+    void heartbeat_of_an_unknown_node_says_so() throws SQLException {
         StoreFixture fixture = setUp();
-        assertThatThrownBy(() -> fixture.heartbeat(9999)).isInstanceOf(IllegalStateException.class);
+        assertThat(fixture.heartbeat(9999)).isFalse();
+        assertThat(fixture.heartbeat(node)).isTrue();
     }
 }

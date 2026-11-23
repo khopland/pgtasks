@@ -1484,12 +1484,10 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
+    public boolean heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = heartbeat.prepare(connection, NamedSql.parameters().set("node", nodeId))) {
-            if (statement.executeUpdate() != 1) {
-                throw new IllegalStateException("Node " + nodeId + " is not registered");
-            }
+            return statement.executeUpdate() == 1;
         }
     }
 

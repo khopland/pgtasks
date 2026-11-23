@@ -267,7 +267,11 @@ public interface TaskStore {
     /** The last recorded queue counts per topic. */
     List<TopicSnapshot> snapshots(StoreTransaction transaction) throws SQLException;
 
-    void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
+    /**
+     * Records that the node is alive. False if the node isn't registered, such as one
+     * {@link #deleteDeadNodes} forgot while its process was suspended: it must register again.
+     */
+    boolean heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
 
     /**
      * Deletes the rows of nodes whose last heartbeat is older than {@code deadFor} and that hold
