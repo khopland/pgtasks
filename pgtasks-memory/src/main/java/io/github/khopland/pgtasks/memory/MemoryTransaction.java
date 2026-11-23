@@ -36,7 +36,6 @@ final class MemoryTransaction implements StoreTransaction {
     private final InMemoryTaskStore store;
     private final Deque<Runnable> undo = new ArrayDeque<>();
     private final Set<Integer> readyTopics = new LinkedHashSet<>();
-    private final Set<String> changedLimits = new LinkedHashSet<>();
     private final Set<String> changedTopics = new LinkedHashSet<>();
     private boolean done;
 
@@ -93,11 +92,6 @@ final class MemoryTransaction implements StoreTransaction {
         changedTopics.add(name);
     }
 
-    /** Like the rate limit NOTIFY trigger: tell every engine after commit. */
-    void limitChanged(String name) {
-        changedLimits.add(name);
-    }
-
     private void check() {
         if (done) {
             throw new IllegalStateException("The transaction has ended");
@@ -112,7 +106,6 @@ final class MemoryTransaction implements StoreTransaction {
         store.unlock();
         store.notifyReady(readyTopics);
         store.notifyTopics(changedTopics);
-        store.notifyLimits(changedLimits);
     }
 
     @Override
@@ -131,7 +124,6 @@ final class MemoryTransaction implements StoreTransaction {
         check();
         int changes = undo.size();
         Set<Integer> ready = Set.copyOf(readyTopics);
-        Set<String> limits = Set.copyOf(changedLimits);
         Set<String> topics = Set.copyOf(changedTopics);
         return new Savepoint() {
             @Override
@@ -141,7 +133,6 @@ final class MemoryTransaction implements StoreTransaction {
                     undo.pop().run();
                 }
                 readyTopics.retainAll(ready);
-                changedLimits.retainAll(limits);
                 changedTopics.retainAll(topics);
             }
 

@@ -112,7 +112,7 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     public List<ClaimedTask> claim(int topic, int node, Ordering ordering, int limit) throws SQLException {
-        return inTransaction(transaction -> store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit, null)).tasks());
+        return inTransaction(transaction -> store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit)).tasks());
     }
 
     public List<ClaimedTask> claim(int topic, int node) throws SQLException {

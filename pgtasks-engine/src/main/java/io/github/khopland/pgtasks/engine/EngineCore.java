@@ -31,7 +31,6 @@ record EngineCore(
     Consumer<String> wake,
     Map<Long, Integer> held,
     BooleanSupplier stopping,
-    RateLimits limits,
     TaskObserver observer
 ) {
 

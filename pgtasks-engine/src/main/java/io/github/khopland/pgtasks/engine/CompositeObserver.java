@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,11 +42,6 @@ final class CompositeObserver implements TaskObserver {
     @Override
     public void pushed(TopicRef<?> topic, List<Pushed> results) {
         observers.forEach(observer -> observer.pushed(topic, results));
-    }
-
-    @Override
-    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
-        observers.forEach(observer -> observer.limitWait(topic, limit, wait));
     }
 
     @Override

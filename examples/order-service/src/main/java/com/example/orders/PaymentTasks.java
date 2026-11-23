@@ -62,7 +62,6 @@ class PaymentTasks {
             });
         }, options -> options
             .resources(writes)
-            .limit("gateway")
             .concurrency(2)
             .batchSize(32)
             .retry(Retry.standard().withBackoff(Duration.ofSeconds(2), Duration.ofMinutes(1))));

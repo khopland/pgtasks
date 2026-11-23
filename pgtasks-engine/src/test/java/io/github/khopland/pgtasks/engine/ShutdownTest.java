@@ -34,7 +34,6 @@ class ShutdownTest {
     static PostgresExtension postgres = EngineFixture.extension();
 
     private static final TopicRef<String> SLOW = TopicRef.of("slow", String.class);
-    private static final TopicRef<String> LIMITED = TopicRef.of("limited", String.class);
     private static final TopicRef<String> PAUSED = TopicRef.of("paused", String.class);
 
     private final MemoryEngines engines = new MemoryEngines();
@@ -75,8 +74,6 @@ class ShutdownTest {
                     return Decision.success();
                 });
             }).with(TopicSettings.defaults().withBatchSize(5).withConcurrency(2)),
-            Topic.of(LIMITED, batch -> batch.decide(task -> Decision.success()))
-                .with(TopicSettings.defaults().withRateLimit(RateLimit.perSecond("downstream", 50, 5))),
             Topic.of(PAUSED, batch -> batch.decide(task -> Decision.success())));
     }
 
@@ -88,8 +85,6 @@ class ShutdownTest {
         TaskEngine nodeA = fixture.create("node-a", busyTopics(runs, running), settings -> settings).start();
         TaskEngine nodeB = fixture.create("node-b", busyTopics(runs, running), settings -> settings).start();
         nodeA.tasks().independently().push(SLOW, Insertion.APPEND, tasks("s", 200));
-        nodeA.tasks().independently().push(LIMITED, Insertion.APPEND, tasks("l", 50));
-        nodeA.limits().override("downstream", Rate.perSecond(100), null, null, "ops", null);
         nodeA.admin().pause(PAUSED.name());
         nodeB.admin().resume(PAUSED.name());
         assertThat(running.await(5, TimeUnit.SECONDS)).as("batches running on both nodes").isTrue();

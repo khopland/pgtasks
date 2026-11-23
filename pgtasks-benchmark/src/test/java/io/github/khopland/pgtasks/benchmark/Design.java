@@ -24,7 +24,7 @@ interface Design {
     /** Ready tasks; task i (from 1) gets identifier prefix + ((first + i) % identifiers). */
     void ready(int rows, String prefix, long first, int identifiers) throws SQLException;
 
-    List<Claimed> claim(int node, Ordering ordering, int limit, boolean admission) throws SQLException;
+    List<Claimed> claim(int node, Ordering ordering, int limit) throws SQLException;
 
     void complete(int node, List<Claimed> claimed) throws SQLException;
 

@@ -146,7 +146,7 @@ class BreakerTest {
         for (int attempt = 1; attempt <= 2; attempt++) {
             Duration delay = Duration.ofSeconds(attempt == 1 ? 1 : 60);
             TaskStore.ClaimedTask claim = EngineCore.transact(store, transaction -> store.claim(transaction,
-                new TaskStore.ClaimRequest(topicId, other, Ordering.FIFO, 1, null))).tasks().getFirst();
+                new TaskStore.ClaimRequest(topicId, other, Ordering.FIFO, 1))).tasks().getFirst();
             EngineCore.transact(store, transaction -> {
                 store.complete(transaction, topicId, other, List.of(new TaskStore.Completion(claim.id(), claim.attempt(), claim.claimedAt(),
                     new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, delay, true, null))));

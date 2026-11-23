@@ -10,7 +10,6 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EngineFixture;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
@@ -55,7 +54,7 @@ class TaskDashboardApiTest {
         TaskConfigurer workTasks() {
             return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> task.payload().startsWith("flaky")
                 ? Decision.failed(new IllegalStateException("person 12345678901 is unknown")) : Decision.success()),
-                topic -> topic.retry(Retry.none()).limit("register"));
+                topic -> topic.retry(Retry.none()));
         }
 
         @Bean
@@ -63,10 +62,6 @@ class TaskDashboardApiTest {
             return tasks -> tasks.eachTask(SCRATCH, task -> { });
         }
 
-        @Bean
-        TaskGlobals taskGlobals() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(100)).burst(10));
-        }
     }
 
     record Response(int status, String body) {
@@ -117,12 +112,10 @@ class TaskDashboardApiTest {
     @Test
     void every_route_the_page_calls_exists() throws Exception {
         long taskId = tasks.independently().push(WORK, "a", "payload").id();
-        long version = engine.limits().find("register").orElseThrow().version();
-
         DashboardRoutes.callEvery((method, path, body) -> {
             Response response = send(method, path, body);
             return response.status() + " " + response.body();
-        }, "/admin/pgtasks/api", taskId, version);
+        }, "/admin/pgtasks/api", taskId);
     }
 
     @Test
@@ -140,14 +133,10 @@ class TaskDashboardApiTest {
 
     @Test
     void answers_like_the_endpoint() throws Exception {
-        long version = engine.limits().find("register").orElseThrow().version();
-        assertThat(send("POST", "/admin/pgtasks/api/limits/register", "{\"rate\": \"30/s\", \"version\": " + (version + 10) + "}").status())
-            .as("a stale version").isEqualTo(409);
         assertThat(get("/admin/pgtasks/api/topics/missing").status()).isEqualTo(404);
         assertThat(get("/admin/pgtasks/api/nonsense/work/x/y").status()).isEqualTo(404);
         assertThat(send("POST", "/admin/pgtasks/api/topics/work/revive", "{}").status()).as("all only when asked for").isEqualTo(400);
         assertThat(send("POST", "/admin/pgtasks/api/topics/work/revive", "{not json").status()).isEqualTo(400);
-        assertThat(send("POST", "/admin/pgtasks/api/limits/register", "{\"burst\": \"many\"}").status()).isEqualTo(400);
         assertThat(send("PUT", "/admin/pgtasks/api/topics/work", "{}").status()).isEqualTo(405);
         JsonNode topic = json.readTree(get("/admin/pgtasks/api/topics/work").body());
         assertThat(topic.path("settings").path("retry").path("source").asString()).isEqualTo("topic");

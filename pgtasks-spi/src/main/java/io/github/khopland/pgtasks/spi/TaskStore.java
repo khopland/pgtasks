@@ -22,7 +22,6 @@ import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
@@ -133,8 +132,8 @@ public interface TaskStore {
     Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException;
 
     /**
-     * Claims up to {@code request.limit()} ready tasks, honouring the ordering and, if set, the
-     * strict rate admission. Each claim increments the task's attempt.
+     * Claims up to {@code request.limit()} ready tasks, honouring the ordering. Each claim
+     * increments the task's attempt.
      */
     Claim claim(StoreTransaction transaction, ClaimRequest request) throws SQLException;
 
@@ -282,28 +281,6 @@ public interface TaskStore {
 
     /** Every registered node, by id, with the leases whose term hasn't run out. */
     List<NodeView> nodes(StoreTransaction transaction) throws SQLException;
-
-    /** Makes sure the admission state for a strict rate limit exists. */
-    void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException;
-
-    /** Every rate limit override operators have set, reset ones included (plan section 08). */
-    List<LimitOverride> limitOverrides(StoreTransaction transaction) throws SQLException;
-
-    /**
-     * Overrides a rate limit's rate, burst or both, optionally until a time; with both null, resets
-     * it to the configured values. Every change bumps the override's version, which is 0 for a
-     * limit never overridden, so it can serve as an ETag. Once committed, every node is notified.
-     *
-     * @param perSecond       the rate, or null to keep the configured one
-     * @param burst           the burst, or null to keep the configured one
-     * @param until           when the override lapses by itself, or null for never
-     * @param by              who made the change, for the record
-     * @param expectedVersion the version this change is based on, or null to change it regardless
-     * @return the override as changed, or empty if its version isn't {@code expectedVersion}
-     * @throws IllegalArgumentException if no node has configured the limit
-     */
-    Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
-                                          @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException;
 
     /** One task as pgtasks.task_view shows it. */
     Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException;
@@ -466,26 +443,10 @@ public interface TaskStore {
         }
     }
 
-    /**
-     * A strict, cluster-wide rate limit: a token bucket kept in the store. Over any interval of
-     * length t, at most {@code burst + perSecond * t} tasks are claimed, across every node.
-     */
-    record Admission(String name, double perSecond, int burst) {
-        public Admission {
-            Objects.requireNonNull(name, "name");
-            if (!(perSecond > 0)) {
-                throw new IllegalArgumentException("rate must be positive; pausing is a separate switch");
-            }
-            if (burst < 1) {
-                throw new IllegalArgumentException("burst must be at least 1");
-            }
-        }
-    }
-
     record TopicInfo(int id, String name, boolean paused) {
     }
 
-    record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit, @Nullable Admission admission) {
+    record ClaimRequest(int topicId, int nodeId, Ordering ordering, int limit) {
         public ClaimRequest {
             Objects.requireNonNull(ordering, "ordering");
             if (limit < 1) {
@@ -515,12 +476,9 @@ public interface TaskStore {
         }
     }
 
-    /**
-     * @param tasks         the claimed tasks
-     * @param admissionWait if the rate limit allowed nothing, how long until it allows one task
-     */
-    record Claim(List<ClaimedTask> tasks, @Nullable Duration admissionWait) {
-        public static final Claim EMPTY = new Claim(List.of(), null);
+    /** @param tasks the claimed tasks */
+    record Claim(List<ClaimedTask> tasks) {
+        public static final Claim EMPTY = new Claim(List.of());
     }
 
     record Completion(long taskId, int attempt, Instant claimedAt, Resolution resolution) {

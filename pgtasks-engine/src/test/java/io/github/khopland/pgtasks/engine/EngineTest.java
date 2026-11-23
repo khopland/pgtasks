@@ -480,7 +480,7 @@ class EngineTest {
         try (var transaction = engines.store.begin()) {
             int topicId = engines.store.findTopic(transaction, TOPIC.name()).orElseThrow();
             id = engines.store.push(transaction, topicId, Insertion.APPEND, List.of(new TaskStore.NewTask("lost", null, null, null, null, false, 0, null, null, null, Map.of()))).getFirst().id();
-            engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1, null));
+            engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1));
             transaction.commit();
         }
         assertThat(view(tester, id).state()).isEqualTo("active");

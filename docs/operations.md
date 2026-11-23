@@ -30,7 +30,7 @@ migration's user yourself, for instance with `ALTER ROLE migrator SET lock_timeo
 the schema. Use it when `pgtasks` clashes with a schema of your own, or when two applications share a
 database: each needs its own schema. The name must be a plain lowercase identifier
 (`[a-z_][a-z0-9_]*`), at most 50 characters, not starting with `pg_` and not an SQL keyword. The
-notification channels follow it (`<schema>_ready`, `<schema>_limit`, `<schema>_topic`), so
+notification channels follow it (`<schema>_ready`, `<schema>_topic`), so
 applications in one database don't wake each other's workers.
 
 The SQL files write the name as the placeholder `${pgtasks_schema}`. The built-in runner fills it
@@ -115,28 +115,24 @@ of the leading column instead. The store's statements don't rely on that.
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.
 
 ```
-GET    /actuator/tasks                                   topics by module, limits, this node and every node
+GET    /actuator/tasks                                   topics by module, this node and every node
 GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
-POST   /actuator/tasks/topics/{topic}/pause | resume | create
+POST   /actuator/tasks/topics/{topic}/pause | resume
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}, or {"identifier": "...", "reference": "...", "state": "...", "header": "name=value", "createdFrom": "...", "createdUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
-GET    /actuator/tasks/limits/{limit}
-POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
-DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
 ```
 
 Payloads, outputs and error messages often contain personal data, so the endpoint hides them
 unless `management.endpoint.tasks.show-values` allows it: `never` (default), `when-authorized`
 (with `management.endpoint.tasks.roles`), or `always`. Errors keep their exception type, so you
-can still tell failures apart and revive them by type. Limit changes carry the limit's
-`version`, so two operators can't overwrite each other: a stale one gets 409. Everything here is
-also library API, on `engine.admin()` and `engine.limits()`.
+can still tell failures apart and revive them by type. Everything here is also library API, on
+`engine.admin()`.
 
 The `tasks` health indicator is UP while the engine runs and its heartbeat is on time. It is
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
@@ -163,8 +159,7 @@ Then open `http://<host>/pgtasks/`. It shows:
 
 - **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
   task, failing tasks and dead letters, whether this node's breaker is open, and paused or running.
-  Every registered node with its heartbeat (marked late after the lease term) and what it leads,
-  and the rate limits.
+  Every registered node with its heartbeat (marked late after the lease term) and what it leads.
 - **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
   list of dead letters to revive or discard by id (or all of them), the topic's effective settings
   and where each came from, its recurring tasks, pause and resume, purge and delete.
@@ -174,9 +169,6 @@ Then open `http://<host>/pgtasks/`. It shows:
   one without an identifier or reference reads the topic's backlog.
 - **Task**: look one up by id in the header, with its attempts and errors; run a waiting task now
   or cancel it.
-- **Limits**: override a rate, a burst or both, for a while or with no end, and reset. A change
-  sends the version the page loaded; if someone else changed the limit meanwhile, the page says so
-  and shows the current values instead of overwriting them.
 
 Discards, cancels, purges and deletes ask for confirmation, and the ones that can't be undone at
 scale (discarding every dead letter, any cancel, purging, deleting a topic) ask you to type the
@@ -231,7 +223,7 @@ pgtasks:
 The page is at `/admin/pgtasks/` and its API at `/admin/pgtasks/api/...`, with the same paths,
 bodies and answers as `/actuator/tasks` (the tasks endpoint itself needn't be exposed). Values are
 still hidden as `management.endpoint.tasks.show-values` says, with `when-authorized` checking the
-roles of the request's user, and limit changes still need the current version.
+roles of the request's user.
 
 This puts operations that change tasks on the application's port, so the application's own
 security must protect the whole path, and it is off unless you ask for it. With Spring Security,
@@ -245,7 +237,7 @@ one rule covers the page and its API, and CSRF works as above:
 
 Without Spring Security the dashboard logs a warning at startup. Keep the path off your public
 ingress (route it only through an internal one, or reach it with `kubectl port-forward`). Each pod
-shows the same topics, counts, dead letters, limits and nodes, since they come from the database;
+shows the same topics, counts, dead letters and nodes, since they come from the database;
 "running" and breaker state are that pod's own.
 
 ## Metrics and alerts
@@ -262,8 +254,6 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 | `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
 | `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
 | `pgtasks.breaker.open{topic}` | 1 while this node's breaker for the topic is open |
-| `pgtasks.limit.rate{limit,kind}`, `pgtasks.limit.burst{limit,kind}` | A limit's configured and effective values |
-| `pgtasks.limit.wait{topic,limit}` | Time topics waited for their rate limit |
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
@@ -439,7 +429,7 @@ push with `tasks.push(...)` in a bound transaction instead.
   schedules in two steps: add new ones in one release, and remove old ones, if needed, in the
   next. Then no rollout both adds and removes, and a schedule that comes back briefly is one the
   running versions still expect.
-- Topic changes (created, paused, resumed, deleted) and rate limit overrides reach every node
+- Topic changes (paused, resumed, deleted) reach every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another
   node if it stops renewing it.

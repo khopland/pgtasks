@@ -7,19 +7,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.function.ToDoubleFunction;
 
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
-import io.github.khopland.pgtasks.engine.RateLimit;
-import io.github.khopland.pgtasks.engine.RateLimits;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 
 import io.micrometer.core.instrument.Gauge;
@@ -50,9 +46,6 @@ import org.slf4j.LoggerFactory;
  *       none is. Alert on this one rather than on dead letters, which may take days to come.</li>
  *   <li>{@value #SNAPSHOT_AGE}: seconds since the counts were taken. If it grows past a few
  *       snapshot intervals, no node is running housekeeping.</li>
- *   <li>{@value #LIMIT_RATE} and {@value #LIMIT_BURST}, by limit and kind: the configured values
- *       and the effective ones, with an operator's override or a time window applied. Read from
- *       this node, without a query.</li>
  * </ul>
  */
 public final class TaskMetrics implements MeterBinder {
@@ -65,8 +58,6 @@ public final class TaskMetrics implements MeterBinder {
     public static final String FAILING = "pgtasks.queue.failing";
     public static final String OLDEST_FAILING = "pgtasks.queue.oldest.failing";
     public static final String SNAPSHOT_AGE = "pgtasks.queue.snapshot.age";
-    public static final String LIMIT_RATE = "pgtasks.limit.rate";
-    public static final String LIMIT_BURST = "pgtasks.limit.burst";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TaskMetrics.class);
     private static final Map<String, ToDoubleFunction<QueueCounts>> STATES = Map.of(
@@ -79,7 +70,6 @@ public final class TaskMetrics implements MeterBinder {
         "due", QueueCounts::due);
 
     private final Callable<List<TopicSnapshot>> snapshots;
-    private final Supplier<List<RateLimits.Limit>> limits;
     private final BooleanSupplier readable;
     private final Duration refresh;
     private final InstantSource clock;
@@ -90,24 +80,16 @@ public final class TaskMetrics implements MeterBinder {
 
     /** Reads the engine's snapshots at most every 10 seconds, once the engine has prepared the store. */
     public TaskMetrics(TaskEngine engine) {
-        this(engine.admin()::snapshots, () -> engine.limits().list(), engine::prepared, Duration.ofSeconds(10), InstantSource.system());
+        this(engine.admin()::snapshots, engine::prepared, Duration.ofSeconds(10), InstantSource.system());
     }
 
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Duration refresh, InstantSource clock) {
-        this(snapshots, List::of, refresh, clock);
+        this(snapshots, () -> true, refresh, clock);
     }
 
-    /** @param limits this node's rate limits, read on every scrape */
-    public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Supplier<List<RateLimits.Limit>> limits, Duration refresh,
-                       InstantSource clock) {
-        this(snapshots, limits, () -> true, refresh, clock);
-    }
-
-    private TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Supplier<List<RateLimits.Limit>> limits, BooleanSupplier readable,
-                        Duration refresh, InstantSource clock) {
+    private TaskMetrics(Callable<List<TopicSnapshot>> snapshots, BooleanSupplier readable, Duration refresh, InstantSource clock) {
         this.readable = readable;
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
-        this.limits = Objects.requireNonNull(limits, "limits");
         this.refresh = Objects.requireNonNull(refresh, "refresh");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -123,31 +105,6 @@ public final class TaskMetrics implements MeterBinder {
             .strongReference(true)
             .register(registry);
         refresh(true);
-        // The limits a node uses are its configuration's, known from the start.
-        for (RateLimits.Limit limit : limits.get()) {
-            for (String kind : List.of("configured", "effective")) {
-                Gauge.builder(LIMIT_RATE, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::perSecond))
-                    .description("Claims per second the rate limit allows")
-                    .baseUnit("tasks/s")
-                    .tag("limit", limit.name())
-                    .tag("kind", kind)
-                    .strongReference(true)
-                    .register(registry);
-                Gauge.builder(LIMIT_BURST, this, metrics -> metrics.limit(limit.name(), kind, RateLimit::burst))
-                    .description("Claims the rate limit allows at once")
-                    .baseUnit("tasks")
-                    .tag("limit", limit.name())
-                    .tag("kind", kind)
-                    .strongReference(true)
-                    .register(registry);
-            }
-        }
-    }
-
-    private double limit(String name, String kind, ToDoubleFunction<RateLimit> value) {
-        return limits.get().stream().filter(limit -> limit.name().equals(name)).findFirst()
-            .flatMap(limit -> Optional.ofNullable(kind.equals("configured") ? limit.configured() : limit.effective()))
-            .map(value::applyAsDouble).orElse(Double.NaN);
     }
 
     private @Nullable TopicSnapshot snapshot(String topic) {

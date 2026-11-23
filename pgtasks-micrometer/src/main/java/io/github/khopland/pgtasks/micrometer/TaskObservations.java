@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.micrometer;
 
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -17,7 +16,6 @@ import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.transport.Kind;
@@ -64,7 +62,6 @@ public final class TaskObservations implements TaskObserver {
     public static final String PUSHED = "pgtasks.pushed";
     public static final String COMPLETED = "pgtasks.completed";
     public static final String BREAKER = "pgtasks.breaker.open";
-    public static final String LIMIT_WAIT = "pgtasks.limit.wait";
     public static final String MDC_TOPIC = "task.topic";
     public static final String MDC_ID = "task.id";
     public static final String MDC_IDENTIFIER = "task.identifier";
@@ -221,20 +218,6 @@ public final class TaskObservations implements TaskObserver {
                 .register(meters);
             return state;
         }).set(open ? 1 : 0);
-    }
-
-    /** {@value #LIMIT_WAIT}: how long topics waited for their rate limit, by topic and limit. */
-    @Override
-    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
-        if (meters == null) {
-            return;
-        }
-        Timer.builder(LIMIT_WAIT)
-            .description("Time a topic waited because its rate limit was spent")
-            .tag("topic", topic.name())
-            .tag("limit", limit)
-            .register(meters)
-            .record(wait);
     }
 
     @Override

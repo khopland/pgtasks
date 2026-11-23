@@ -144,7 +144,4 @@ final class Rows {
     record Attempt(int topicId, long taskId, int attempt, @Nullable Integer nodeId, Instant startedAt, Instant finishedAt, String result,
                    @Nullable String error) {
     }
-
-    record Bucket(String name, double tokens, Instant refilledAt) {
-    }
 }

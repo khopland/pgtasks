@@ -17,7 +17,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * LISTENs for the notifications that the queue triggers send when tasks become ready, and that
- * changes to topics and rate limit overrides send. Uses one
+ * changes to topics send. Uses one
  * long-lived connection; on any error it reconnects with backoff and reports
  * {@link Listener#missed()}, so the engine polls every topic once.
  *
@@ -41,7 +41,6 @@ public final class PostgresNotifier implements Notifier {
     private final ConnectionFactory connections;
     // The schema's channels, so two schemas in one database don't wake each other's nodes.
     private final String ready;
-    private final String limit;
     private final String topic;
     private final Duration livenessInterval;
     private final Duration livenessTimeout;
@@ -54,7 +53,7 @@ public final class PostgresNotifier implements Notifier {
         this(connections, TaskSchema.DEFAULT_SCHEMA);
     }
 
-    /** Listens to the given schema's channels: {@code <schema>_ready}, {@code <schema>_limit} and {@code <schema>_topic}. */
+    /** Listens to the given schema's channels: {@code <schema>_ready} and {@code <schema>_topic}. */
     public PostgresNotifier(ConnectionFactory connections, String schema) {
         this(connections, schema, Duration.ofSeconds(LIVENESS_SECONDS), LIVENESS_TIMEOUT);
     }
@@ -66,7 +65,6 @@ public final class PostgresNotifier implements Notifier {
         this.connections = Objects.requireNonNull(connections);
         TaskSchema.validName(schema);
         this.ready = schema + "_ready";
-        this.limit = schema + "_limit";
         this.topic = schema + "_topic";
     }
 
@@ -90,7 +88,6 @@ public final class PostgresNotifier implements Notifier {
                 connection.setNetworkTimeout(Runnable::run, Math.toIntExact(livenessTimeout.toMillis()));
                 try (Statement statement = connection.createStatement()) {
                     statement.execute("LISTEN " + ready);
-                    statement.execute("LISTEN " + limit);
                     statement.execute("LISTEN " + topic);
                 }
                 connected = true;
@@ -113,10 +110,6 @@ public final class PostgresNotifier implements Notifier {
                         continue;
                     }
                     for (PGNotification notification : notifications) {
-                        if (limit.equals(notification.getName())) {
-                            listener.limitChanged(notification.getParameter());
-                            continue;
-                        }
                         if (topic.equals(notification.getName())) {
                             listener.topicChanged(notification.getParameter());
                             continue;

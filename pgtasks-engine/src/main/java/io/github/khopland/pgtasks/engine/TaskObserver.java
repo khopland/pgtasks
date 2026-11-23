@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -71,13 +70,6 @@ public interface TaskObserver {
 
     /** This node's breaker for a topic opened or closed. */
     default void breaker(TopicRef<?> topic, boolean open) {
-    }
-
-    /**
-     * A claim found the topic's rate limit spent: the topic waits this long, or until the limit
-     * changes, before it claims again on this node.
-     */
-    default void limitWait(TopicRef<?> topic, String limit, Duration wait) {
     }
 
     /** What became of a task when its batch completed. */

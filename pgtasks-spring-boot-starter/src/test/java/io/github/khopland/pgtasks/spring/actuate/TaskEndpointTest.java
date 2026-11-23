@@ -17,7 +17,6 @@ import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.Cron;
 import io.github.khopland.pgtasks.engine.EngineFixture;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
@@ -59,7 +58,7 @@ class TaskEndpointTest {
             Set<String> failedOnce = ConcurrentHashMap.newKeySet();
             return tasks -> tasks.topic(WORK, batch -> batch.decide(task ->
                     task.payload().startsWith("flaky") && failedOnce.add(task.payload()) ? Decision.failed("not yet") : Decision.success()),
-                topic -> topic.retry(Retry.none()).limit("register"))
+                topic -> topic.retry(Retry.none()))
                 .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
         }
 
@@ -68,10 +67,6 @@ class TaskEndpointTest {
             return tasks -> tasks.eachTask(OLD_WORK, task -> { });
         }
 
-        @Bean
-        TaskGlobals taskGlobals() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(100)).burst(10));
-        }
     }
 
     record Response(int status, JsonNode body) {
@@ -118,13 +113,12 @@ class TaskEndpointTest {
     }
 
     @Test
-    void the_overview_lists_topics_by_module_and_limits() throws Exception {
+    void the_overview_lists_topics_by_module() throws Exception {
         Response overview = get("/tasks");
 
         assertThat(overview.status()).isEqualTo(200);
         assertThat(overview.body().path("modules").path("workTasks").get(0).asString()).isEqualTo("work");
         assertThat(overview.body().path("topics").get(0).path("processing").asBoolean()).isTrue();
-        assertThat(overview.body().path("limits").get(0).path("name").asString()).isEqualTo("register");
         assertThat(overview.body().path("node").path("running").asBoolean()).isTrue();
         long self = overview.body().path("node").path("id").asLong();
         JsonNode nodes = overview.body().path("nodes");
@@ -221,27 +215,6 @@ class TaskEndpointTest {
         assertThat(send("POST", "/tasks/topics/work/resume", "{}").status()).isEqualTo(200);
         assertThat(get("/tasks/topics/work").body().path("paused").asBoolean()).isFalse();
         assertThat(send("POST", "/tasks/topics/work/explode", "{}").status()).isEqualTo(404);
-    }
-
-    @Test
-    void limit_changes_are_versioned_so_a_stale_change_is_refused() throws Exception {
-        long version = get("/tasks/limits/register").body().path("version").asLong();
-
-        Response changed = send("POST", "/tasks/limits/register", "{\"rate\": \"20/s\", \"until\": \"PT2H\", \"version\": " + version + "}");
-        assertThat(changed.status()).isEqualTo(200);
-        assertThat(changed.body().path("effective").path("rate").asString()).isEqualTo(Rate.perSecond(20).toString());
-        assertThat(changed.body().path("override").path("updatedBy").asString()).isEqualTo("actuator");
-        long next = changed.body().path("version").asLong();
-        assertThat(next).isGreaterThan(version);
-
-        Response stale = send("POST", "/tasks/limits/register", "{\"rate\": \"30/s\", \"version\": " + version + "}");
-        assertThat(stale.status()).isEqualTo(409);
-        assertThat(send("POST", "/tasks/limits/register", "{\"rate\": \"0/s\"}").status()).isEqualTo(400);
-
-        Response reset = send("DELETE", "/tasks/limits/register?version=" + next, null);
-        assertThat(reset.status()).isEqualTo(200);
-        assertThat(reset.body().path("effective").path("rate").asString()).isEqualTo(Rate.perSecond(100).toString());
-        assertThat(get("/tasks/limits/unknown").status()).isEqualTo(404);
     }
 
     @Test

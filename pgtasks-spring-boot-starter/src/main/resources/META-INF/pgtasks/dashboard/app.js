@@ -23,9 +23,6 @@ const ROUTES = {
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
-  limit: ["GET", "/limits/{limit}"],
-  overrideLimit: ["POST", "/limits/{limit}"],
-  resetLimit: ["DELETE", "/limits/{limit}"],
 };
 // routes:end
 
@@ -456,7 +453,7 @@ async function overviewView() {
     stale ? h("div", { class: "notice warn" }, "The counts are ", since(counted),
       " old: is any node running housekeeping? (", h("code", null, "pgtasks.queue.snapshot.age"), ")") : null,
     topicPanels,
-    h("div", { class: "grid" }, nodesPanel(data.node, data.nodes || []), limitsPanel(data.limits || [])),
+    nodesPanel(data.node, data.nodes || []),
     counted ? h("p", { class: "muted" }, "Counts as of ", time(counted), ", from the housekeeping leader's snapshot.") : null,
   ];
 }
@@ -514,114 +511,6 @@ function nodesPanel(self, nodes) {
     { label: "Started", value: node => time(node.startedAt) },
     { label: "Leads", value: node => node.leases && node.leases.length ? h("span", { class: "chips" }, node.leases.map(lease => chip(lease, "info"))) : "—" },
   ], nodes, "No nodes registered."));
-}
-
-function rateText(rate) {
-  return rate ? rate.rate + (rate.burst !== null && rate.burst !== undefined ? ", burst " + rate.burst : "") : "—";
-}
-
-function limitsPanel(limits) {
-  return panel("Rate limits", {
-    note: "An override applies on every node. Changes carry the version you saw, so two people can't overwrite each other.",
-  }, table([
-    { label: "Limit", value: limit => h("td", { class: "wrap" }, h("strong", null, limit.name)) },
-    { label: "Configured", value: limit => rateText(limit.configured) },
-    { label: "Effective", value: limit => h("td", null, rateText(limit.effective), limit.override ? [" ", chip("overridden", "warn")] : null) },
-    { label: "Override", value: limit => limit.override ? h("span", null, limit.override.until ? ["until ", time(limit.override.until)] : "no end",
-      limit.override.updatedBy ? [h("br"), h("span", { class: "muted" }, "by " + limit.override.updatedBy)] : null) : "—" },
-    { label: "", value: limit => h("td", { class: "nowrap" }, h("span", { class: "actions" },
-      h("button", { type: "button", class: "small", onclick: () => editLimit(limit.name) }, "Override…"),
-      limit.override ? h("button", { type: "button", class: "small", onclick: () => resetLimit(limit) }, "Reset") : null)) },
-  ], limits, "No rate limits."));
-}
-
-const UNTIL = [["", "No end"], ["PT15M", "15 minutes"], ["PT1H", "1 hour"], ["PT2H", "2 hours"], ["PT8H", "8 hours"], ["P1D", "1 day"]];
-
-async function editLimit(name) {
-  let limit;
-  try {
-    limit = await api("limit", { limit: name });
-  } catch (e) {
-    toast(e.message, true);
-    return;
-  }
-  const changed = await dialog(({ fail }) => {
-    const rate = h("input", { name: "rate", placeholder: limit.configured ? limit.configured.rate : "400/s", autocomplete: "off" });
-    const burst = h("input", { name: "burst", type: "number", min: "1", step: "1", placeholder: limit.configured ? String(limit.configured.burst) : "" });
-    const until = h("select", { name: "until" }, UNTIL.map(([val, text]) => h("option", { value: val }, text)));
-    const current = h("p", { class: "muted" });
-    const show = fill => {
-      current.replaceChildren("Now ", rateText(limit.effective), " (configured ", rateText(limit.configured), "), version " + limit.version + ".");
-      if (!fill) {
-        return;
-      }
-      rate.value = limit.override && limit.override.rate ? limit.override.rate : "";
-      burst.value = limit.override && limit.override.burst !== null && limit.override.burst !== undefined ? String(limit.override.burst) : "";
-    };
-    show(true);
-    const submit = h("button", { type: "submit", class: "primary" }, "Override");
-    return {
-      body: [h("h2", null, "Override " + limit.name), current,
-        h("div", { class: "row" },
-          h("label", { class: "field" }, h("span", null, "Rate, such as 20/s, 100/min, 5000/h"), rate),
-          h("label", { class: "field" }, h("span", null, "Burst"), burst)),
-        h("label", { class: "field" }, h("span", null, "For"), until),
-        h("p", { class: "muted" }, "Leave a field empty to keep its configured value.")],
-      submit,
-      valid: () => {
-        if (!rate.value.trim() && !burst.value.trim()) {
-          fail("Give a rate, a burst, or both.");
-          return false;
-        }
-        return true;
-      },
-      onsubmit: async () => {
-        const body = { version: limit.version };
-        if (rate.value.trim()) body.rate = rate.value.trim();
-        if (burst.value.trim()) body.burst = Number(burst.value);
-        if (until.value) body.until = until.value;
-        try {
-          return await api("overrideLimit", { limit: limit.name }, { body });
-        } catch (e) {
-          if (e.status === 409) {
-            limit = await api("limit", { limit: limit.name });
-            show(false);
-            fail("Someone changed this limit since you opened it: it is now " + rateText(limit.effective)
-              + (limit.override && limit.override.updatedBy ? ", by " + limit.override.updatedBy : "")
-              + ". Your values are kept; override again to replace it.");
-            return undefined;
-          }
-          throw e;
-        }
-      },
-    };
-  });
-  if (changed) {
-    toast("Overrode " + changed.name + ": now " + rateText(changed.effective) + ".");
-    refresh();
-  }
-}
-
-async function resetLimit(limit) {
-  const reset = await ask({
-    title: "Reset " + limit.name,
-    message: "Back to the configured " + rateText(limit.configured) + " on every node.",
-    action: "Reset",
-    run: async () => {
-      try {
-        return await api("resetLimit", { limit: limit.name }, { query: { version: limit.version } });
-      } catch (e) {
-        if (e.status === 409) {
-          throw new Error("Someone changed this limit since the page loaded. Close this, look at the current values, and try again.");
-        }
-        throw e;
-      }
-    },
-  });
-  if (reset) {
-    toast("Reset " + reset.name + " to " + rateText(reset.effective) + ".");
-  }
-  refresh();
 }
 
 // --- Topic

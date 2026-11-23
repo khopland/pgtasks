@@ -1,19 +1,20 @@
 package io.github.khopland.pgtasks.spring;
 
 import java.time.Duration;
+import java.time.Period;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
 import io.github.khopland.pgtasks.engine.EngineFixture;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
@@ -91,12 +92,12 @@ class TaskAutoConfigurationTest {
         @Bean
         TaskConfigurer assessmentTasks() {
             return tasks -> tasks.defaults(options -> options.concurrency(8))
-                .topic(ASSESSMENT, batch -> batch.decide(task -> Decision.success()), options -> options.limit("register"));
+                .topic(ASSESSMENT, batch -> batch.decide(task -> Decision.success()));
         }
 
         @Bean
         TaskGlobals taskSettings() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(200)));
+            return globals -> globals.housekeeping(housekeeping -> housekeeping.retain(Outcome.SUCCEEDED, Period.ofDays(90)));
         }
     }
 
@@ -120,14 +121,13 @@ class TaskAutoConfigurationTest {
     void task_properties_override_what_the_code_sets() {
         postgres().withUserConfiguration(Modules.class)
             .withPropertyValues("pgtasks.topics.assessment.concurrency=3", "pgtasks.topics.assessment.retry.max-attempts=2",
-                "pgtasks.topics.notify.poll-interval=5s", "pgtasks.limits.register.rate=40/s", "pgtasks.node=pod-1")
+                "pgtasks.topics.notify.poll-interval=5s", "pgtasks.node=pod-1")
             .run(context -> {
                 assertThat(context).hasNotFailed();
                 TaskEngine engine = context.getBean(TaskEngine.class);
                 assertThat(setting(engine, "assessment", "concurrency")).isEqualTo(new EffectiveSettings.Setting("3", EffectiveSettings.Source.OVERRIDE));
                 assertThat(setting(engine, "assessment", "retry").value()).startsWith("2 attempts");
                 assertThat(setting(engine, "notify", "poll-interval")).isEqualTo(new EffectiveSettings.Setting("PT5S", EffectiveSettings.Source.OVERRIDE));
-                assertThat(engine.limits().find("register")).hasValueSatisfying(limit -> assertThat(limit.configured().perSecond()).isEqualTo(40.0));
                 assertThat(database.rows("SELECT name FROM pgtasks.node")).containsExactly(List.of("pod-1"));
             });
     }

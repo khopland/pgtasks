@@ -3,7 +3,6 @@ package io.github.khopland.pgtasks.engine;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -21,7 +20,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The poll loop of one topic on this node. Takes a topic permit and a node permit, claims at
- * most a batch (and at most what the rate limit admits), and runs the batch on its own virtual
+ * most a batch, and runs the batch on its own virtual
  * thread. Waits for a wake-up or the poll interval when the topic is empty, and backs off when
  * polling fails (finding #3).
  */
@@ -39,7 +38,6 @@ final class TopicWorker<T> {
     private final EngineCore core;
     private final Semaphore permits;
     private final Signal signal = new Signal();
-    private final Signal limitSignal = new Signal();
     private final Signal stopSignal = new Signal();
     private final ExecutorService batches;
     private volatile boolean running, stopping;
@@ -116,21 +114,8 @@ final class TopicWorker<T> {
         signal.signal();
     }
 
-    /** The topic's rate limit changed: a wait for permits ends, and the next claim uses the new values. */
-    void limitChanged() {
-        limitSignal.signal();
-    }
-
-    /** The claim, with the rate limit's current values: an operator can change them at any time. */
     private TaskStore.ClaimRequest request(int size) {
-        RateLimit limit = topic.settings().rateLimit() == null ? null : core.limits().effective(topic.settings().rateLimit());
-        return new TaskStore.ClaimRequest(
-            topicId,
-            core.nodeId(),
-            topic.settings().ordering(),
-            size,
-            limit == null ? null : new TaskStore.Admission(limit.name(), limit.perSecond(), limit.burst())
-        );
+        return new TaskStore.ClaimRequest(topicId, core.nodeId(), topic.settings().ordering(), size);
     }
 
     private void loop() {
@@ -229,17 +214,9 @@ final class TopicWorker<T> {
                 }
                 permits.release();
                 dispatched = true;
-                Duration admissionWait = claimed.admissionWait();
-                if (admissionWait != null) {
-                    // New work doesn't shorten a wait for the rate limit; a changed limit does.
-                    RateLimit limit = Objects.requireNonNull(topic.settings().rateLimit(), "an admission wait without a rate limit");
-                    core.observer().limitWait(topic.ref(), limit.name(), admissionWait);
-                    limitSignal.await(admissionWait);
-                } else {
-                    signalsAtEmptyClaim = signalsBefore;
-                    lastEmptyClaim = claim;
-                    signal.await(topic.settings().pollInterval());
-                }
+                signalsAtEmptyClaim = signalsBefore;
+                lastEmptyClaim = claim;
+                signal.await(topic.settings().pollInterval());
             } catch (InterruptedException e) {
                 return;
             } catch (Exception | Error e) {
@@ -312,7 +289,6 @@ final class TopicWorker<T> {
     void stopPolling() {
         running = false;
         signal.signal();
-        limitSignal.signal();
         stopSignal.signal();
         batches.shutdown();
     }

@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.spring;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -18,7 +17,6 @@ import java.util.regex.Pattern;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
@@ -26,11 +24,7 @@ import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
-import io.github.khopland.pgtasks.engine.Rate;
-import io.github.khopland.pgtasks.engine.RateLimit;
-import io.github.khopland.pgtasks.engine.RateLimits;
 import io.github.khopland.pgtasks.engine.TaskEngine;
-import io.github.khopland.pgtasks.engine.VersionConflictException;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
@@ -43,11 +37,11 @@ import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse;
 import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
 
 /**
- * {@code /actuator/tasks}: the topics, their settings and dead letters, and the rate limits,
- * with the operator's changes. Everything here is also library API, on {@link TaskEngine#admin()} and {@link TaskEngine#limits()}.
+ * {@code /actuator/tasks}: the topics, their settings and dead letters, with the operator's
+ * changes. Everything here is also library API, on {@link TaskEngine#admin()}.
  *
  * <pre>
- * GET    /actuator/tasks                                   topics by module, limits, this node and every node
+ * GET    /actuator/tasks                                   topics by module, this node and every node
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
@@ -61,17 +55,10 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  *                                                        "createdFrom": "...", "createdUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
- * GET    /actuator/tasks/limits/{limit}
- * POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
- * DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
  * </pre>
  *
- * Limit changes are optimistic: a limit's {@code version} works as its ETag, and a change that
- * passes one works as If-Match. A change based on an older version gets 409 Conflict, so two
- * operators can't overwrite each other unknowingly. (Actuator endpoints can't read or set
- * headers, so the version travels in the body.) Without a version, a change applies
- * regardless. Request bodies are flat JSON objects of strings and numbers, as Actuator reads them,
+ * Request bodies are flat JSON objects of strings and numbers, as Actuator reads them,
  * so a list of ids is one comma-separated string.
  *
  * <p>Payloads, outputs and error messages often hold personal data, so they are shown only as
@@ -120,7 +107,6 @@ public class TaskEndpoint {
         }).toList();
         body.put("modules", modules);
         body.put("topics", topics);
-        body.put("limits", engine.limits().list().stream().map(TaskEndpoint::limit).toList());
         body.put("node", node());
         body.put("nodes", engine.admin().nodes().stream().map(TaskEndpoint::node).toList());
         return body;
@@ -137,7 +123,6 @@ public class TaskEndpoint {
                 body.put("recurring", schedules(name));
                 return body;
             }));
-            case "limits" -> found(engine.limits().find(name).map(TaskEndpoint::limit));
             case "tasks" -> found(number(name).flatMap(this::task).map(view -> {
                 Map<String, Object> body = task(view, shown);
                 body.put("attempts", engine.admin().attempts(view.id()).stream().map(attempt -> attempt(attempt, shown)).toList());
@@ -272,49 +257,15 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Overrides a rate limit on every node. */
-    @WriteOperation
-    public WebEndpointResponse<Object> override(@Selector String kind, @Selector String name, @Nullable String rate, @Nullable Integer burst,
-                                                @Nullable String until, @Nullable Long version, SecurityContext security) throws Exception {
-        if (!kind.equals("limits")) {
-            return notFound();
-        }
-        if (engine.limits().find(name).isEmpty()) {
-            return notFound();
-        }
-        try {
-            return new WebEndpointResponse<>(limit(engine.limits().override(name, rate == null ? null : Rate.parse(rate), burst,
-                until == null ? null : Duration.parse(until), who(security), version)));
-        } catch (VersionConflictException e) {
-            return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
-        } catch (IllegalArgumentException | DateTimeParseException e) {
-            return badRequest(e.getMessage());
-        }
-    }
-
-    /**
-     * Resets a rate limit to its configured values on every node; or deletes a topic no longer
-     * used, with its history (409 while it has unfinished tasks).
-     */
+    /** Deletes a topic no longer used, with its history (409 while it has unfinished tasks). */
     @DeleteOperation
-    public WebEndpointResponse<Object> delete(@Selector String kind, @Selector String name, @Nullable Long version, SecurityContext security)
-        throws Exception {
-        if (kind.equals("topics")) {
-            if (status(name).isEmpty()) {
-                return notFound();
-            }
-            try {
-                return new WebEndpointResponse<>(Map.of("topic", name, "deletedTasks", engine.admin().deleteTopic(name)));
-            } catch (IllegalStateException e) {
-                return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
-            }
-        }
-        if (!kind.equals("limits") || engine.limits().find(name).isEmpty()) {
+    public WebEndpointResponse<Object> delete(@Selector String kind, @Selector String name) throws Exception {
+        if (!kind.equals("topics") || status(name).isEmpty()) {
             return notFound();
         }
         try {
-            return new WebEndpointResponse<>(limit(engine.limits().reset(name, who(security), version)));
-        } catch (VersionConflictException e) {
+            return new WebEndpointResponse<>(Map.of("topic", name, "deletedTasks", engine.admin().deleteTopic(name)));
+        } catch (IllegalStateException e) {
             return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
         }
     }
@@ -465,39 +416,6 @@ public class TaskEndpoint {
         return values;
     }
 
-    static Map<String, Object> limit(RateLimits.Limit limit) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("name", limit.name());
-        body.put("configured", rate(limit.configured()));
-        if (limit.configured() != null && !limit.configured().windows().isEmpty()) {
-            body.put("windows", limit.configured().windows().stream().map(window -> Map.of(
-                "from", window.from().expression(), "zone", window.from().zone().getId(), "rate", window.rate().toString())).toList());
-        }
-        body.put("effective", rate(limit.effective()));
-        LimitOverride override = limit.override();
-        if (override != null && (override.perSecond() != null || override.burst() != null)) {
-            Map<String, Object> changed = new LinkedHashMap<>();
-            changed.put("rate", override.perSecond() == null ? null : Rate.perSecond(override.perSecond()).toString());
-            changed.put("burst", override.burst());
-            changed.put("until", text(override.until()));
-            changed.put("updatedAt", text(override.updatedAt()));
-            changed.put("updatedBy", override.updatedBy());
-            body.put("override", changed);
-        }
-        body.put("version", limit.version());
-        return body;
-    }
-
-    private static @Nullable Map<String, Object> rate(@Nullable RateLimit limit) {
-        if (limit == null) {
-            return null;
-        }
-        Map<String, Object> rate = new LinkedHashMap<>();
-        rate.put("rate", Rate.perSecond(limit.perSecond()).toString());
-        rate.put("burst", limit.burst());
-        return rate;
-    }
-
     private static Map<String, Object> task(TaskView view, boolean shown) {
         Map<String, Object> task = new LinkedHashMap<>();
         task.put("id", view.id());
@@ -534,10 +452,6 @@ public class TaskEndpoint {
 
     private static @Nullable String text(@Nullable Instant instant) {
         return instant == null ? null : instant.toString();
-    }
-
-    private static String who(SecurityContext security) {
-        return security != null && security.getPrincipal() != null ? security.getPrincipal().getName() : "actuator";
     }
 
     private static Optional<Long> number(String text) {

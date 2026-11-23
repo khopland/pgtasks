@@ -261,44 +261,6 @@ class MilestoneOneTest {
         }
     }
 
-    @Test
-    @DisplayName("5. The hard rate ceiling holds across several workers and pods")
-    void rate_ceiling_holds_across_pods() throws Exception {
-        TopicRef<String> topic = TopicRef.of("limited", String.class);
-        double rate = 20;
-        int burst = 5;
-        List<Instant> claims = new CopyOnWriteArrayList<>();
-        Set<String> nodes = ConcurrentHashMap.newKeySet();
-        for (String node : List.of("pod-a", "pod-b", "pod-c")) {
-            fixture.start(node, List.of(Topic.of(topic, batch -> {
-                nodes.add(node);
-                batch.tasks().forEach(task -> claims.add(task.claimedAt()));
-                return Decisions.all(batch.tasks(), Decision.success());
-            }).with(TopicSettings.defaults().withConcurrency(3).withBatchSize(10).withRateLimit(RateLimit.perSecond("downstream", rate, burst)))));
-        }
-        int total = 70;
-        fixture.engines().getFirst().tasks().independently().push(topic, Insertion.APPEND,
-            IntStream.range(0, total).mapToObj(index -> Creation.of("t" + index, "x")).toList());
-
-        fixture.awaitQueueEmpty(Duration.ofSeconds(30));
-
-        List<Instant> sorted = new ArrayList<>(claims);
-        Collections.sort(sorted);
-        assertThat(sorted).hasSize(total);
-        // Over any window from claim i to claim j: j - i + 1 <= burst + rate * (t_j - t_i), with 50 ms for clock reads.
-        for (int i = 0; i < sorted.size(); i++) {
-            for (int j = i; j < sorted.size(); j++) {
-                double seconds = Duration.between(sorted.get(i), sorted.get(j)).toNanos() / 1e9;
-                assertThat((double) (j - i + 1))
-                    .as("claims %d..%d within %.3f s", i, j, seconds)
-                    .isLessThanOrEqualTo(burst + rate * (seconds + 0.05));
-            }
-        }
-        double elapsed = Duration.between(sorted.getFirst(), sorted.getLast()).toNanos() / 1e9;
-        assertThat(elapsed).as("70 claims at 20/s with a burst of 5 need at least 3.25 s").isGreaterThan((total - burst) / rate - 0.05);
-        assertThat(nodes).as("several pods took part").hasSizeGreaterThan(1);
-    }
-
     /** Vetoes notices for blocked persons during review, without writing anything. */
     private static final class Compliance implements BatchResource<Void> {
 

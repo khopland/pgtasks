@@ -3,7 +3,7 @@
 A task queue in the Postgres database you already run. You push a task in the same transaction
 as the data change it reacts to, so there is no outbox table and no two-phase commit. Workers on
 any number of nodes claim batches with `SKIP LOCKED`, and the engine takes care of retries, dead
-letters, rate limits, recurring tasks, housekeeping, metrics and tracing.
+letters, recurring tasks, housekeeping, metrics and tracing.
 
 ```java
 // Push, in the transaction that saves the tax return
@@ -51,7 +51,7 @@ Import the BOM, then add modules without versions:
 | Module | What it is |
 |---|---|
 | `pgtasks-spring-boot-starter` | Spring Boot: one engine from every `TaskConfigurer` bean, YAML overrides, Spring transactions, Actuator endpoint and health, Micrometer, Spring Modulith. Most applications need only this. |
-| `pgtasks-engine` | The engine, without Spring: builder, configurers, retries, rate limits, housekeeping, `TaskTester`. |
+| `pgtasks-engine` | The engine, without Spring: builder, configurers, retries, housekeeping, `TaskTester`. |
 | `pgtasks-postgres` | The Postgres store, its schema and the 1.x importer. |
 | `pgtasks-memory` | An in-memory store for local runs and fast tests. It passes the same TCK as Postgres. |
 | `pgtasks-micrometer` | Metrics and tracing through Micrometer Observation. |
@@ -100,11 +100,9 @@ Only what differs per environment goes in YAML:
 pgtasks:
   topics:
     assessment: { concurrency: 16, retry.give-up-after: 2d }
-  limits:
-    folkeregister: { rate: 400/s }
 ```
 
-A topic, limit or setting that no code defines fails startup, so a typo can't go unnoticed.
+A topic or setting that no code defines fails startup, so a typo can't go unnoticed.
 
 ### In Kotlin
 
@@ -151,7 +149,7 @@ engine.close();                                // drains running batches, then s
 
 ## Further reading
 
-- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion, retries, limits and recurring tasks.
+- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion, retries and recurring tasks.
 - [Patterns](docs/patterns.md): effects that must happen exactly once, fan-out and fan-in, producers and consumers in separate services.
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
 - [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.

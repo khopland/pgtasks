@@ -92,7 +92,6 @@ class ShippingTasks {
             });
         }, options -> options
             .resources(writes)
-            .limit("carrier")
             .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)))
             .concurrency(2)
             .batchSize(32));

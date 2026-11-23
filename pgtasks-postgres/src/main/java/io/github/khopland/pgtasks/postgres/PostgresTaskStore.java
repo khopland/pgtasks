@@ -34,7 +34,6 @@ import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.Schedule;
@@ -52,8 +51,7 @@ import org.jspecify.annotations.Nullable;
  * The task store on the pgtasks schema, {@value TaskSchema#DEFAULT_SCHEMA} unless named otherwise
  * (see {@link TaskSchema}). Every operation is one
  * statement, except a claim: it first pins its plan with transaction-local planner settings, and
- * under a strict rate limit also reads and charges the limit's token bucket in the same
- * transaction. When an engine starts, the store migrates or
+ * a SINGULAR_* claim takes the topic's advisory lock. When an engine starts, the store migrates or
  * validates the schema according to its {@link SchemaMode}.
  */
 public final class PostgresTaskStore implements TaskStore {
@@ -64,12 +62,12 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
-    private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
+    private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
-    private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
+    private final NamedSql lead, resign, setRetention, retention, junctionLocks;
     private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -124,29 +122,6 @@ public final class PostgresTaskStore implements TaskStore {
         pauseTopic = sql("UPDATE pgtasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
         registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id");
         heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node");
-        ensureAdmission = sql("""
-            INSERT INTO pgtasks.rate_admission (name, tokens, refilled_at)
-            VALUES (:name, :burst, clock_timestamp())
-            ON CONFLICT (name) DO NOTHING
-            """);
-        // Locks the bucket, so claims under one limit are serialized across nodes. The estimate
-        // may use a clock reading from before the lock was granted; that only underestimates.
-        admissionLock = sql("""
-            SELECT least(:burst::double precision,
-                         tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
-            FROM pgtasks.rate_admission
-            WHERE name = :name
-            FOR UPDATE
-            """);
-        // Runs after the poll while the lock is held, so the refill is exact; refilled_at never moves back.
-        admissionCharge = sql("""
-            UPDATE pgtasks.rate_admission
-            SET tokens = greatest(0, least(:burst::double precision,
-                                           tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
-                                     - :claimed::integer),
-                refilled_at = greatest(refilled_at, clock_timestamp())
-            WHERE name = :name
-            """);
         // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
         // most often: a producer may push one task per transaction. The others look up older tasks.
         for (Insertion insertion : Insertion.values()) {
@@ -637,27 +612,6 @@ public final class PostgresTaskStore implements TaskStore {
             CROSS JOIN LATERAL jsonb_each_text(t.retention) AS r
             ORDER BY t.id
             """);
-        limitOverrides = sql("""
-            SELECT name, rate, burst, until, version, updated_at, updated_by
-            FROM pgtasks.rate_limit
-            ORDER BY name
-            """);
-        // Only a limit some node configured (it has a token bucket) can be overridden. A first
-        // override is based on version 0; two at once serialize on the primary key, and the second
-        // then finds version 1 and changes nothing.
-        overrideLimit = sql("""
-            INSERT INTO pgtasks.rate_limit AS l (name, rate, burst, until, updated_by)
-            SELECT a.name, :rate::double precision, :burst::integer, :until::timestamptz, :by::text
-            FROM pgtasks.rate_admission a
-            WHERE a.name = :name
-              AND (coalesce(:expected::bigint, 0) = 0 OR EXISTS (SELECT 1 FROM pgtasks.rate_limit e WHERE e.name = :name))
-            ON CONFLICT (name) DO UPDATE
-            SET rate = excluded.rate, burst = excluded.burst, until = excluded.until,
-                version = l.version + 1, updated_at = now(), updated_by = excluded.updated_by
-            WHERE :expected::bigint IS NULL OR l.version = :expected::bigint
-            RETURNING l.name, l.rate, l.burst, l.until, l.version, l.updated_at, l.updated_by
-            """);
-        limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
             INSERT INTO pgtasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
                                            oldest_ready_at, failing, oldest_failing_at)
@@ -1180,22 +1134,11 @@ public final class PostgresTaskStore implements TaskStore {
                 statement.execute();
             }
         }
-        Admission admission = request.admission();
-        int limit = request.limit();
-        if (admission != null) {
-            double available = available(connection, admission);
-            int permits = (int) Math.min(limit, Math.floor(available));
-            if (permits < 1) {
-                long waitNanos = (long) Math.ceil((1 - available) / admission.perSecond() * 1_000_000_000L);
-                return new Claim(List.of(), Duration.ofNanos(Math.max(waitNanos, 1_000_000L)));
-            }
-            limit = permits;
-        }
         List<ClaimedTask> tasks = new ArrayList<>();
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", request.topicId())
             .set("node", request.nodeId())
-            .set("limit", limit);
+            .set("limit", request.limit());
         try (PreparedStatement statement = Objects.requireNonNull(polls.get(request.ordering())).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
@@ -1217,34 +1160,7 @@ public final class PostgresTaskStore implements TaskStore {
                 ));
             }
         }
-        if (admission != null && !tasks.isEmpty()) {
-            NamedSql.Parameters charge = NamedSql.parameters()
-                .set("name", admission.name())
-                .set("burst", admission.burst())
-                .set("rate", admission.perSecond())
-                .set("claimed", tasks.size());
-            try (PreparedStatement statement = admissionCharge.prepare(connection, charge)) {
-                statement.executeUpdate();
-            }
-        }
-        return tasks.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(tasks), null);
-    }
-
-    private double available(Connection connection, Admission admission) throws SQLException {
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("name", admission.name())
-            .set("burst", admission.burst())
-            .set("rate", admission.perSecond());
-        for (int round = 0; round < 2; round++) {
-            try (PreparedStatement statement = admissionLock.prepare(connection, parameters);
-                 ResultSet resultSet = statement.executeQuery()) {
-                if (resultSet.next()) {
-                    return resultSet.getDouble(1);
-                }
-            }
-            insertAdmission(connection, admission.name(), admission.burst());
-        }
-        throw new IllegalStateException("No admission state for rate limit " + admission.name());
+        return tasks.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(tasks));
     }
 
     @Override
@@ -1530,17 +1446,6 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException {
-        insertAdmission(transaction.connection(), name, burst);
-    }
-
-    private void insertAdmission(Connection connection, String name, int burst) throws SQLException {
-        try (PreparedStatement statement = ensureAdmission.prepare(connection, NamedSql.parameters().set("name", name).set("burst", (double) burst))) {
-            statement.executeUpdate();
-        }
-    }
-
-    @Override
     public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {
         List<Object> numbers = new ArrayList<>(), identifiers = new ArrayList<>();
         int group = 0;
@@ -1570,58 +1475,6 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return released;
-    }
-
-    @Override
-    public List<LimitOverride> limitOverrides(StoreTransaction transaction) throws SQLException {
-        List<LimitOverride> overrides = new ArrayList<>();
-        try (PreparedStatement statement = limitOverrides.prepare(transaction.connection(), NamedSql.parameters());
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                overrides.add(limitOverride(resultSet));
-            }
-        }
-        return overrides;
-    }
-
-    @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
-                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException {
-        // Validates the values the way the row will hold them, before touching the database.
-        new LimitOverride(name, perSecond, burst, until, 0, Instant.EPOCH, by);
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("name", name)
-            .set("rate", perSecond)
-            .set("burst", burst)
-            .set("until", until == null ? null : OffsetDateTime.ofInstant(until, ZoneOffset.UTC))
-            .set("by", by)
-            .set("expected", expectedVersion);
-        try (PreparedStatement statement = overrideLimit.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            if (resultSet.next()) {
-                return Optional.of(limitOverride(resultSet));
-            }
-        }
-        try (PreparedStatement statement = limitConfigured.prepare(transaction.connection(), NamedSql.parameters().set("name", name));
-             ResultSet resultSet = statement.executeQuery()) {
-            resultSet.next();
-            if (!resultSet.getBoolean(1)) {
-                throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static LimitOverride limitOverride(ResultSet resultSet) throws SQLException {
-        return new LimitOverride(
-            resultSet.getString("name"),
-            resultSet.getObject("rate", Double.class),
-            resultSet.getObject("burst", Integer.class),
-            instant(resultSet, "until"),
-            resultSet.getLong("version"),
-            requiredInstant(resultSet, "updated_at"),
-            resultSet.getString("updated_by")
-        );
     }
 
     @Override

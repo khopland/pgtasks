@@ -151,37 +151,33 @@ class SchemaBenchmark {
         }
         Drainer drainer = new Drainer(design, history, url, results);
         design.ready(TASKS, "p", 0, 5_000);
-        drainer.drain("FIFO", Ordering.FIFO, TASKS, false);
+        drainer.drain("FIFO", Ordering.FIFO, TASKS);
         // Statistics decide the claim plans, so both SINGULAR runs fix them instead of leaving
         // them to autovacuum's timing: first taken with the tasks queued, then taken right
         // after a drain, which is what autovacuum usually sees on a queue.
         design.ready(TASKS, "s", 0, 5_000);
         design.analyze();
-        drainer.drain("SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, TASKS, false);
+        drainer.drain("SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, TASKS);
         design.analyze();
         design.ready(TASKS, "e", 0, 5_000);
-        drainer.drain("SINGULAR after analyzing an empty queue", Ordering.SINGULAR_BY_IDENTIFIER, TASKS, false);
+        drainer.drain("SINGULAR after analyzing an empty queue", Ordering.SINGULAR_BY_IDENTIFIER, TASKS);
         design.deadLetters(100_000);
         design.vacuum();
         design.ready(TASKS, "f", 0, 5_000);
-        drainer.drain("ON_FAILURE, 100k dead letters", Ordering.SINGULAR_BY_IDENTIFIER_ON_FAILURE, TASKS, false);
+        drainer.drain("ON_FAILURE, 100k dead letters", Ordering.SINGULAR_BY_IDENTIFIER_ON_FAILURE, TASKS);
         design.ready(2_000, "hot", 0, 1);
-        drainer.drain("one hot identifier, SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, 2_000, false);
-        if (design instanceof QueueDesign) {
-            design.ready(TASKS, "r", 0, 5_000);
-            drainer.drain("FIFO with strict admission", Ordering.FIFO, TASKS, true);
-        }
+        drainer.drain("one hot identifier, SINGULAR", Ordering.SINGULAR_BY_IDENTIFIER, 2_000);
         return results;
     }
 
     /** Drains the ready tasks of a scenario if it is selected, and otherwise just clears them, so later scenarios start from the same state. */
     private record Drainer(Design design, long history, String url, List<Result> results) {
 
-        void drain(String scenario, Ordering ordering, int tasks, boolean admission) throws Exception {
+        void drain(String scenario, Ordering ordering, int tasks) throws Exception {
             if (selected(scenario)) {
-                results.add(SchemaBenchmark.drain(design, history, url, scenario, ordering, tasks, admission));
+                results.add(SchemaBenchmark.drain(design, history, url, scenario, ordering, tasks));
             } else {
-                SchemaBenchmark.drain(design, history, null, scenario, ordering, tasks, admission);
+                SchemaBenchmark.drain(design, history, null, scenario, ordering, tasks);
             }
         }
     }
@@ -192,7 +188,7 @@ class SchemaBenchmark {
         long started = System.nanoTime();
         for (int poll = 0; poll < 1_000; poll++) {
             long before = System.nanoTime();
-            design.claim(1, Ordering.SINGULAR_BY_IDENTIFIER, 100, false);
+            design.claim(1, Ordering.SINGULAR_BY_IDENTIFIER, 100);
             latencies.add((System.nanoTime() - before) / 1e6);
         }
         double seconds = (System.nanoTime() - started) / 1e9;
@@ -200,7 +196,7 @@ class SchemaBenchmark {
     }
 
     /** @param url the benchmark database, to sample when diagnosing; null for a run that only clears the tasks */
-    private static Result drain(Design design, long history, String url, String scenario, Ordering ordering, int tasks, boolean admission) throws Exception {
+    private static Result drain(Design design, long history, String url, String scenario, Ordering ordering, int tasks) throws Exception {
         AtomicInteger completed = new AtomicInteger();
         AtomicInteger empty = new AtomicInteger();
         List<Double> latencies = Collections.synchronizedList(new ArrayList<>());
@@ -231,7 +227,7 @@ class SchemaBenchmark {
                 futures.add(workers.submit(() -> {
                     while (completed.get() < tasks && System.nanoTime() < deadline) {
                         long before = System.nanoTime();
-                        List<Design.Claimed> claimed = design.claim(1, ordering, 100, admission);
+                        List<Design.Claimed> claimed = design.claim(1, ordering, 100);
                         latencies.add((System.nanoTime() - before) / 1e6);
                         if (claimed.isEmpty()) {
                             empty.incrementAndGet();

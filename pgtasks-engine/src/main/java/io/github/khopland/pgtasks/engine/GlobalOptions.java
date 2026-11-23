@@ -22,31 +22,7 @@ public interface GlobalOptions {
     /** Defaults for every topic, below each module's own defaults. */
     GlobalOptions defaults(Consumer<TopicOptions> defaults);
 
-    /** A rate limit any topic can use, named after the topic or the downstream system it protects. */
-    GlobalOptions limit(String name, Consumer<LimitOptions> limit);
-
     GlobalOptions housekeeping(Consumer<HousekeepingOptions> housekeeping);
-
-    interface LimitOptions {
-
-        LimitOptions rate(Rate rate);
-
-        LimitOptions burst(int permits);
-
-        /**
-         * From each time {@code from} fires, the limit runs at {@code rate} until another window
-         * fires: give one window for each change, as in
-         * {@code .window(Cron.parse("0 7 * * MON-FRI", oslo), Rate.perSecond(50)).window(Cron.parse("0 17 * * MON-FRI", oslo), Rate.perSecond(200))}.
-         * Operators' overrides still win over windows. Every node works out the same rate from
-         * its clock, so the cluster-wide bucket sees one rate.
-         */
-        LimitOptions window(Cron from, Rate rate);
-
-        /** A window whose cron is in UTC. */
-        default LimitOptions window(String from, Rate rate) {
-            return window(Cron.parse(from), rate);
-        }
-    }
 
     interface HousekeepingOptions {
 

@@ -149,9 +149,7 @@ public final class TaskEngineBuilder {
      * {@code topics.<topic>.batch-size}, {@code ordering}, {@code poll-interval},
      * {@code batch-deadline}, {@code retry.max-attempts} (a number or {@code forever}),
      * {@code retry.give-up-after} (such as 7d, or {@code never}), {@code retry.first-backoff},
-     * {@code retry.max-backoff}, {@code retain.<outcome>};
-     * {@code limits.<limit>.rate} (such as 400/s) and {@code limits.<limit>.burst}. An unknown
-     * topic, limit or key fails the build.
+     * {@code retry.max-backoff}, {@code retain.<outcome>}. An unknown topic or key fails the build.
      */
     public TaskEngineBuilder overrides(Map<String, String> overrides) {
         this.overrides = Map.copyOf(overrides);
@@ -301,11 +299,6 @@ public final class TaskEngineBuilder {
         }
 
         @Override
-        public TopicOptions limit(String name) {
-            return set("limit", name);
-        }
-
-        @Override
         public TopicOptions resources(BatchResource<?>... resources) {
             this.resources.addAll(List.of(resources));
             return this;
@@ -339,38 +332,9 @@ public final class TaskEngineBuilder {
         }
     }
 
-    private static final class LimitSpec implements GlobalOptions.LimitOptions {
-        @Nullable Rate rate;
-        @Nullable Integer burst;
-        final List<RateWindow> windows = new ArrayList<>();
-
-        @Override
-        public GlobalOptions.LimitOptions window(Cron from, Rate rate) {
-            windows.add(new RateWindow(from, rate));
-            return this;
-        }
-
-        @Override
-        public GlobalOptions.LimitOptions rate(Rate rate) {
-            this.rate = Objects.requireNonNull(rate);
-            return this;
-        }
-
-        @Override
-        public GlobalOptions.LimitOptions burst(int permits) {
-            if (permits < 1) {
-                throw new IllegalArgumentException("burst must be at least 1");
-            }
-            this.burst = permits;
-            return this;
-        }
-
-    }
-
     private final class Globals implements GlobalOptions, GlobalOptions.HousekeepingOptions {
         EngineSettings settings = EngineSettings.defaults(node);
         final Spec defaults = new Spec(Source.GLOBAL_DEFAULTS);
-        final Map<String, LimitSpec> limits = new LinkedHashMap<>();
 
         @Override
         public GlobalOptions node(String name) {
@@ -399,19 +363,6 @@ public final class TaskEngineBuilder {
         @Override
         public GlobalOptions defaults(Consumer<TopicOptions> defaults) {
             this.defaults.apply(Source.GLOBAL_DEFAULTS, defaults);
-            return this;
-        }
-
-        @Override
-        public GlobalOptions limit(String name, Consumer<LimitOptions> limit) {
-            LimitSpec spec = new LimitSpec();
-            limit.accept(spec);
-            if (spec.rate == null) {
-                throw new IllegalArgumentException("Limit " + name + " needs a rate");
-            }
-            if (limits.putIfAbsent(name, spec) != null) {
-                throw new IllegalArgumentException("Limit " + name + " is defined twice");
-            }
             return this;
         }
 
@@ -551,19 +502,7 @@ public final class TaskEngineBuilder {
         }
 
         Map<String, Map<String, String>> topicOverrides = new LinkedHashMap<>();
-        Map<String, Map<String, String>> limitOverrides = new LinkedHashMap<>();
-        splitOverrides(topics.keySet(), global.limits.keySet(), topicOverrides, limitOverrides, problems);
-        limitOverrides.forEach((name, values) -> values.forEach((key, value) -> {
-            try {
-                switch (key) {
-                    case "rate" -> limitSpec(global, name).rate = Rate.parse(value);
-                    case "burst" -> limitSpec(global, name).burst(Integer.parseInt(value.trim()));
-                    default -> problems.add("Unknown limit setting limits." + name + "." + key + "; known: rate, burst");
-                }
-            } catch (IllegalArgumentException e) {
-                problems.add("limits." + name + "." + key + ": " + e.getMessage());
-            }
-        }));
+        splitOverrides(topics.keySet(), topicOverrides, problems);
 
         List<Topic<?>> resolved = new ArrayList<>();
         List<EffectiveSettings> effective = new ArrayList<>();
@@ -588,7 +527,7 @@ public final class TaskEngineBuilder {
                 }
             });
             try {
-                resolved.add(build(topic, values, global, allCodecs, fallbackCodecs));
+                resolved.add(build(topic, values, allCodecs, fallbackCodecs));
             } catch (IllegalArgumentException e) {
                 problems.add("Topic " + topic.name + " (" + topic.module + "): " + e.getMessage());
             }
@@ -704,7 +643,7 @@ public final class TaskEngineBuilder {
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> Topic<T> build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
+    private static <T> Topic<T> build(TopicSpec<T> topic, Map<String, Object> values, Map<Class<?>, PayloadCodec<?>> codecs,
                                      @Nullable PayloadCodecs fallback) {
         PayloadCodec<T> codec = (PayloadCodec<T>) codecs.get(topic.type);
         if (codec == null && topic.type == String.class) {
@@ -715,17 +654,6 @@ public final class TaskEngineBuilder {
         }
         if (codec == null) {
             throw new IllegalArgumentException("no payload codec for " + topic.type.getName() + "; register one with codec(...), or give the builder codecs(...)");
-        }
-        RateLimit rateLimit = null;
-        if (values.containsKey("limit")) {
-            String name = (String) values.get("limit");
-            LimitSpec limit = global.limits.get(name);
-            if (limit == null) {
-                throw new IllegalArgumentException("unknown limit '" + name + "'; define it in TaskGlobals; known: " + global.limits.keySet());
-            }
-            Rate rate = Objects.requireNonNull(limit.rate, "rate");
-            int burst = limit.burst != null ? limit.burst : (int) Math.max(1, Math.ceil(rate.perSecond()));
-            rateLimit = new RateLimit(name, rate.perSecond(), burst, limit.windows);
         }
         Map<Outcome, Period> retention = new EnumMap<>(Outcome.class);
         for (Outcome outcome : Outcome.values()) {
@@ -740,7 +668,6 @@ public final class TaskEngineBuilder {
             setting(values, "retry", Retry.class),
             setting(values, "batch-deadline", Duration.class),
             setting(values, "poll-interval", Duration.class),
-            rateLimit,
             retention,
             setting(values, "breaker", Breaker.class),
             setting(values, "dead-letters", DeadLetterPolicy.class)
@@ -748,9 +675,7 @@ public final class TaskEngineBuilder {
         return new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
 
-    private void splitOverrides(Set<String> topics, Set<String> limits,
-                                Map<String, Map<String, String>> topicOverrides, Map<String, Map<String, String>> limitOverrides,
-                                List<String> problems) {
+    private void splitOverrides(Set<String> topics, Map<String, Map<String, String>> topicOverrides, List<String> problems) {
         for (Map.Entry<String, String> override : new TreeMap<>(overrides).entrySet()) {
             String key = override.getKey();
             if (key.startsWith("topics.")) {
@@ -761,16 +686,8 @@ public final class TaskEngineBuilder {
                 } else {
                     topicOverrides.computeIfAbsent(topic, ignored -> new LinkedHashMap<>()).put(rest.substring(topic.length() + 1), override.getValue());
                 }
-            } else if (key.startsWith("limits.")) {
-                String rest = key.substring("limits.".length());
-                String limit = longestPrefix(limits, rest);
-                if (limit == null) {
-                    problems.add("Override " + key + " names an unknown limit; known limits: " + limits);
-                } else {
-                    limitOverrides.computeIfAbsent(limit, ignored -> new LinkedHashMap<>()).put(rest.substring(limit.length() + 1), override.getValue());
-                }
             } else {
-                problems.add("Unknown override " + key + "; overrides start with topics. or limits.");
+                problems.add("Unknown override " + key + "; overrides start with topics.");
             }
         }
     }
@@ -778,10 +695,6 @@ public final class TaskEngineBuilder {
     /** A setting every topic has, from the defaults if nothing else set it. */
     private static <V> V setting(Map<String, Object> values, String key, Class<V> type) {
         return type.cast(Objects.requireNonNull(values.get(key), key));
-    }
-
-    private static LimitSpec limitSpec(Globals global, String name) {
-        return Objects.requireNonNull(global.limits.get(name), name);
     }
 
     private static @Nullable String longestPrefix(Set<String> names, String key) {

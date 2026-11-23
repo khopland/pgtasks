@@ -26,7 +26,7 @@ TaskConfigurer notifyTasks = tasks -> tasks
 ```
 
 All configurers are merged and validated before anything starts, so bean order doesn't matter.
-Two configurers registering one topic, an unknown limit, an override for a topic nobody defines,
+Two configurers registering one topic, an override for a topic nobody defines,
 or a payload type without a codec all fail the build with a message that names the module.
 
 ## Tasks and identifiers
@@ -208,23 +208,6 @@ count, and the first probe that succeeds closes the breaker. Failures the policy
 once (`deadLetterAt`) don't count, since bad input isn't an outage. Change it with
 `options.breaker(Breaker.standard().opensAt(0.5, 20))`, or turn it off with `Breaker.off()`.
 
-## Rate limits
-
-A limit caps how many tasks are claimed per second across every node, with one token bucket in
-the database. Define it once and use it from any topic:
-
-```java
-TaskGlobals globals = g -> g
-    .limit("folkeregister", limit -> limit.rate(Rate.perSecond(200)).burst(20)
-        .window(Cron.parse("0 7 * * MON-FRI", oslo), Rate.perSecond(50))     // office hours: gentler
-        .window(Cron.parse("0 17 * * MON-FRI", oslo), Rate.perSecond(200)));
-...
-options.limit("folkeregister");
-```
-
-Operators override a limit at runtime through the endpoint or `engine.limits().override(...)`,
-optionally for a while. Every node picks it up within about a second.
-
 ## Recurring tasks
 
 ```java
@@ -251,7 +234,7 @@ Each layer overrides the one before it:
 5. Overrides: `pgtasks.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
    are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`, `breaker`
    (on or off), `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
-   `retry.max-backoff` and `retain.<outcome>`. Limits take `limits.<limit>.rate` and `.burst`.
+   `retry.max-backoff` and `retain.<outcome>`.
 
 `engine.effectiveSettings()`, and the endpoint, show each topic's values and the layer each one
 came from.

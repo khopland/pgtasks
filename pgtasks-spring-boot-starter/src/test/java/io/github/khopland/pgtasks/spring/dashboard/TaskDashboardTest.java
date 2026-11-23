@@ -11,7 +11,6 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.Cron;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
@@ -51,7 +50,7 @@ class TaskDashboardTest {
     static class App {
         @Bean
         TaskConfigurer workTasks() {
-            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> topic.limit("register"))
+            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> { })
                 .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
         }
 
@@ -60,10 +59,6 @@ class TaskDashboardTest {
             return tasks -> tasks.eachTask(SCRATCH, task -> { });
         }
 
-        @Bean
-        TaskGlobals taskGlobals() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(100)).burst(10));
-        }
     }
 
     record Response(int status, HttpResponse<String> raw) {
@@ -157,12 +152,11 @@ class TaskDashboardTest {
     @Test
     void every_route_the_page_calls_exists() throws Exception {
         long taskId = tasks.independently().push(WORK, "a", "payload").id();
-        long version = engine.limits().find("register").orElseThrow().version();
         String endpoint = json.readTree(get("/app/ops/tasks/config.json").body()).path("endpoint").asString();
 
         DashboardRoutes.callEvery((method, path, body) -> {
             Response response = send(method, path, body);
             return response.status() + " " + response.body();
-        }, endpoint, taskId, version);
+        }, endpoint, taskId);
     }
 }

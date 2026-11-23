@@ -34,7 +34,6 @@ import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.Schedule;
@@ -52,7 +51,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * Tasks in memory, for running an app locally without a database and for fast tests. It passes
  * the same TCK as the Postgres store, so ordering, insertion policies, fencing, junctures,
- * retries and rate admission behave the same way. Several engines in one JVM can share one
+ * and retries behave the same way. Several engines in one JVM can share one
  * instance; {@link #notifier()} gives each of them in-process wake-ups.
  *
  * <p>Limits: nothing survives a restart; wake-ups only reach engines in this JVM; and the store
@@ -80,8 +79,6 @@ public final class InMemoryTaskStore implements TaskStore {
     private final TreeMap<Long, Rows.Task> tasks = new TreeMap<>();
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
     private final List<Rows.Attempt> attempts = new ArrayList<>();
-    private final Map<String, Rows.Bucket> buckets = new HashMap<>();
-    private final Map<String, LimitOverride> limitOverrides = new TreeMap<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
     private final Map<String, Held> leases = new HashMap<>();
     private int nextTopic = 1, nextNode = 1;
@@ -140,12 +137,6 @@ public final class InMemoryTaskStore implements TaskStore {
     void notifyTopics(Set<String> names) {
         for (String name : names) {
             listeners.forEach(listener -> listener.topicChanged(name));
-        }
-    }
-
-    void notifyLimits(Set<String> names) {
-        for (String name : names) {
-            listeners.forEach(listener -> listener.limitChanged(name));
         }
     }
 
@@ -318,25 +309,12 @@ public final class InMemoryTaskStore implements TaskStore {
     public Claim claim(StoreTransaction transaction, ClaimRequest request) {
         MemoryTransaction memory = memory(transaction);
         Instant now = now();
-        Admission admission = request.admission();
-        int limit = request.limit();
-        double available = 0;
-        if (admission != null) {
-            Rows.Bucket bucket = bucket(memory, admission.name(), admission.burst());
-            available = refilled(bucket, admission, now);
-            int permits = (int) Math.min(limit, Math.floor(available));
-            if (permits < 1) {
-                long waitNanos = (long) Math.ceil((1 - available) / admission.perSecond() * 1_000_000_000L);
-                return new Claim(List.of(), Duration.ofNanos(Math.max(waitNanos, 1_000_000L)));
-            }
-            limit = permits;
-        }
         Set<State> blocking = blocking(request.ordering());
         List<Rows.Queued> picked = queue.values().stream()
             .filter(row -> row.topicId() == request.topicId() && row.state() == State.READY)
             .filter(row -> blocking == null || !blocked(row, blocking))
             .sorted(Comparator.comparingInt(Rows.Queued::priority).reversed().thenComparingLong(Rows.Queued::taskId))
-            .limit(limit)
+            .limit(request.limit())
             .toList();
         List<ClaimedTask> claimed = new ArrayList<>(picked.size());
         for (Rows.Queued row : picked) {
@@ -346,12 +324,7 @@ public final class InMemoryTaskStore implements TaskStore {
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
                 task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.headers(), row.failures(), row.firstFailedAt()));
         }
-        if (admission != null && !claimed.isEmpty()) {
-            Rows.Bucket bucket = Objects.requireNonNull(buckets.get(admission.name()), "bucket");
-            Instant refilledAt = bucket.refilledAt().isAfter(now) ? bucket.refilledAt() : now;
-            memory.put(buckets, admission.name(), new Rows.Bucket(admission.name(), Math.max(0, available - claimed.size()), refilledAt));
-        }
-        return claimed.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(claimed), null);
+        return claimed.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(claimed));
     }
 
     private static @Nullable Set<State> blocking(Ordering ordering) {
@@ -369,20 +342,6 @@ public final class InMemoryTaskStore implements TaskStore {
             && other.identifier().equals(candidate.identifier())
             && other.taskId() != candidate.taskId()
             && (other.state() == State.ACTIVE || (other.taskId() < candidate.taskId() && blocking.contains(other.state()))));
-    }
-
-    private Rows.Bucket bucket(MemoryTransaction memory, String name, int burst) {
-        Rows.Bucket bucket = buckets.get(name);
-        if (bucket == null) {
-            bucket = new Rows.Bucket(name, burst, now());
-            memory.put(buckets, name, bucket);
-        }
-        return bucket;
-    }
-
-    private static double refilled(Rows.Bucket bucket, Admission admission, Instant now) {
-        double elapsed = Math.max(0, Duration.between(bucket.refilledAt(), now).toNanos() / 1e9);
-        return Math.min(admission.burst(), bucket.tokens() + admission.perSecond() * elapsed);
     }
 
     @Override
@@ -631,35 +590,6 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         memory.put(nodes, nodeId, node.beat(now()));
         return true;
-    }
-
-    @Override
-    public void ensureAdmission(StoreTransaction transaction, String name, int burst) {
-        bucket(memory(transaction), name, burst);
-    }
-
-    @Override
-    public List<LimitOverride> limitOverrides(StoreTransaction transaction) {
-        memory(transaction);
-        return List.copyOf(limitOverrides.values());
-    }
-
-    @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
-                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) {
-        MemoryTransaction memory = memory(transaction);
-        if (!buckets.containsKey(name)) {
-            throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
-        }
-        LimitOverride current = limitOverrides.get(name);
-        long version = current == null ? 0 : current.version();
-        if (expectedVersion != null && expectedVersion != version) {
-            return Optional.empty();
-        }
-        LimitOverride changed = new LimitOverride(name, perSecond, burst, until, version + 1, now(), by);
-        memory.put(limitOverrides, name, changed);
-        memory.limitChanged(name);
-        return Optional.of(changed);
     }
 
     /** A task that must exist, such as the task of a queued row. */

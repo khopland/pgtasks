@@ -64,7 +64,7 @@ class OrderingLocksTest {
     void a_fifo_claim_takes_no_lock() throws SQLException {
         fixture.push(topic, "x");
         try (StoreTransaction transaction = fixture.store().begin()) {
-            fixture.store().claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10, null));
+            fixture.store().claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10));
 
             assertThat(advisoryLocks(transaction)).isZero();
         }
@@ -75,12 +75,12 @@ class OrderingLocksTest {
     void a_singular_claim_locks_its_topic(Ordering ordering) throws SQLException {
         int other = fixture.topic("other");
         try (StoreTransaction transaction = fixture.store().begin()) {
-            fixture.store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, 10, null));
+            fixture.store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, 10));
 
             assertThat(advisoryLocks(transaction)).isOne();
             // Another topic's claims don't wait for this one.
             try (StoreTransaction elsewhere = fixture.store().begin()) {
-                fixture.store().claim(elsewhere, new TaskStore.ClaimRequest(other, node, ordering, 10, null));
+                fixture.store().claim(elsewhere, new TaskStore.ClaimRequest(other, node, ordering, 10));
                 assertThat(advisoryLocks(elsewhere)).isOne();
             }
         }

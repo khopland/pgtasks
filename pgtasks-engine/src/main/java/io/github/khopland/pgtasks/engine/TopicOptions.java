@@ -23,9 +23,6 @@ public interface TopicOptions {
 
     TopicOptions pollInterval(Duration interval);
 
-    /** Takes claim permits from a limit defined in {@link TaskGlobals}. */
-    TopicOptions limit(String name);
-
     TopicOptions resources(BatchResource<?>... resources);
 
     /** How long finished tasks with this outcome are kept, counted from completion. */

@@ -200,8 +200,8 @@ public abstract class PollOrderingTck extends StoreTck {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, StoreFixture.many("t", 50));
         try (StoreTransaction first = fixture.store().begin(); StoreTransaction second = fixture.store().begin()) {
-            List<ClaimedTask> a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 30, null)).tasks();
-            List<ClaimedTask> b = fixture.store().claim(second, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 30, null)).tasks();
+            List<ClaimedTask> a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 30)).tasks();
+            List<ClaimedTask> b = fixture.store().claim(second, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 30)).tasks();
             first.commit();
             second.commit();
 
@@ -220,7 +220,7 @@ public abstract class PollOrderingTck extends StoreTck {
         List<ClaimedTask> a;
         CompletableFuture<List<ClaimedTask>> b;
         try (StoreTransaction first = fixture.store().begin()) {
-            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10)).tasks();
             b = claimElsewhere(fixture, ordering);
             Thread.sleep(300);      // let the other claim get as far as it can
             first.commit();
@@ -244,7 +244,7 @@ public abstract class PollOrderingTck extends StoreTck {
         List<ClaimedTask> a;
         CompletableFuture<List<ClaimedTask>> b;
         try (StoreTransaction first = fixture.store().begin()) {
-            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+            a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10)).tasks();
             assertThat(fixture.promoteDue()).containsExactly(topic);
             b = claimElsewhere(fixture, ordering);
             Thread.sleep(300);
@@ -271,7 +271,7 @@ public abstract class PollOrderingTck extends StoreTck {
             fixture.store().push(push, topic, Insertion.APPEND, List.of(task("x")));
             fixture.push(topic, "x");
             try (StoreTransaction first = fixture.store().begin()) {
-                a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10, null)).tasks();
+                a = fixture.store().claim(first, new TaskStore.ClaimRequest(topic, node, ordering, 10)).tasks();
                 push.commit();
                 b = claimElsewhere(fixture, ordering);
                 Thread.sleep(300);

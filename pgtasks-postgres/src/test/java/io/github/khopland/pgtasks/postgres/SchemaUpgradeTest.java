@@ -150,7 +150,7 @@ class SchemaUpgradeTest {
             int topic = store.findTopic(transaction, "from-0.1.0").orElseThrow();
             int node = store.registerNode(transaction, "new-node", "current");
 
-            List<ClaimedTask> claimed = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10, null)).tasks();
+            List<ClaimedTask> claimed = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10)).tasks();
             assertThat(claimed).extracting(ClaimedTask::identifier).containsExactly("person-1", "person-2", "person-3");
             assertThat(claimed.getFirst().payload()).isEqualTo("payload-1");
             assertThat(claimed.getFirst().reference()).isEqualTo("ref-1");
@@ -168,10 +168,8 @@ class SchemaUpgradeTest {
                 assertThat(view.state()).isEqualTo("succeeded");
                 assertThat(view.output()).isEqualTo("ok");
             });
-            assertThat(store.limitOverrides(transaction)).singleElement().satisfies(override -> {
-                assertThat(override.name()).isEqualTo("old-limit");
-                assertThat(override.perSecond()).isEqualTo(10.0);
-            });
+            // Rate limits are gone from the code; their 0.1.0 tables stay, unread, until a schema version drops them.
+            assertThat(database.count("SELECT count(*) FROM pgtasks.rate_limit")).isOne();
             assertThat(store.schedules(transaction)).extracting(schedule -> schedule.name()).containsExactly("nightly");
             assertThat(store.promoteDue(transaction, 100).tasks()).as("the delayed task stays delayed").isZero();
 

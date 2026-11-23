@@ -20,10 +20,10 @@ orders.reconcile: recurring every minute, once per cluster, counts orders in fli
 
 | Topic | Handler | Settings |
 |---|---|---|
-| `orders.payment` | gateway call per task, `decideConcurrently(16)`; 5xx/timeout → `unavailable`, 429 → `throttled`, 402 → cancel | limit `gateway` 150/s, dedup key `pay:<id>`, backoff 2 s..1 min, gives up after 1 h (YAML) |
+| `orders.payment` | gateway call per task, `decideConcurrently(16)`; 5xx/timeout → `unavailable`, 429 → `throttled`, 402 → cancel | dedup key `pay:<id>`, backoff 2 s..1 min, gives up after 1 h (YAML) |
 | `orders.stock` | stock reservation in our own tables, staged in a `BatchResource` (`StagedWrites`) | |
-| `orders.ship` | carrier call for the order; markers are filtered; 422 → `failed` (3 attempts, then dead letter) | limit `carrier` 150/s |
-| `customer.notify` | mailer call | `SINGULAR_BY_IDENTIFIER` per customer, limit `mailer` 300/s, dedup keys |
+| `orders.ship` | carrier call for the order; markers are filtered; 422 → `failed` (3 attempts, then dead letter) | |
+| `customer.notify` | mailer call | `SINGULAR_BY_IDENTIFIER` per customer, dedup keys |
 | `orders.reconcile` | recurring `* * * * *` | |
 
 Every write to our own tables from a handler goes through `StagedWrites`, a `BatchResource` that

@@ -103,7 +103,7 @@ final class SingleTableDesign implements Design {
     }
 
     @Override
-    public List<Claimed> claim(int node, Ordering ordering, int limit, boolean admission) throws SQLException {
+    public List<Claimed> claim(int node, Ordering ordering, int limit) throws SQLException {
         String blocking = switch (ordering) {
             case FIFO -> null;
             case SINGULAR_BY_IDENTIFIER -> "'ready', 'retrying'";

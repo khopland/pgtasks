@@ -47,10 +47,9 @@ final class DashboardRoutes {
 
     /**
      * Calls every route against an endpoint and expects success. The app has topic {@code work},
-     * an empty topic {@code scratch} to delete, and limit {@code register} at {@code version}. A
-     * route added to the script without an example here fails.
+     * and an empty topic {@code scratch} to delete. A route added to the script without an example here fails.
      */
-    static void callEvery(Sender http, String endpoint, long taskId, long version) throws Exception {
+    static void callEvery(Sender http, String endpoint, long taskId) throws Exception {
         Map<String, String[]> examples = new LinkedHashMap<>();
         // name -> param, query, body
         examples.put("overview", new String[] {"", null, null});
@@ -67,9 +66,6 @@ final class DashboardRoutes {
         examples.put("purge", new String[] {"topic=work", null, "{\"outcome\": \"succeeded\", \"before\": \"2000-01-01T00:00:00Z\"}"});
         examples.put("deleteTopic", new String[] {"topic=scratch", null, null});
         examples.put("task", new String[] {"id=" + taskId, null, null});
-        examples.put("limit", new String[] {"limit=register", null, null});
-        examples.put("overrideLimit", new String[] {"limit=register", null, "{\"rate\": \"20/s\", \"until\": \"PT1H\", \"version\": " + version + "}"});
-        examples.put("resetLimit", new String[] {"limit=register", "version=" + (version + 1), null});
 
         Map<String, String[]> routes = routes();
         assertThat(routes.keySet()).as("every route has an example").containsExactlyInAnyOrderElementsOf(examples.keySet());

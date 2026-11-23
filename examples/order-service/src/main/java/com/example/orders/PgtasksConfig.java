@@ -3,7 +3,6 @@ package com.example.orders;
 import java.time.Duration;
 import java.util.Map;
 
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 
 import org.flywaydb.core.Flyway;
@@ -12,17 +11,14 @@ import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/** Limits and node settings shared by every module, and how the pgtasks schema gets migrated. */
+/** Node settings shared by every module, and how the pgtasks schema gets migrated. */
 @Configuration
 class PgtasksConfig {
 
     @Bean
     TaskGlobals globals(@Value("${orders.heartbeat:5s}") Duration heartbeat, @Value("${orders.heartbeat-expiry:2m}") Duration expiry) {
         return globals -> globals
-            .heartbeat(heartbeat, expiry)
-            .limit("gateway", limit -> limit.rate(Rate.perSecond(150)).burst(30))
-            .limit("carrier", limit -> limit.rate(Rate.perSecond(150)).burst(30))
-            .limit("mailer", limit -> limit.rate(Rate.perSecond(300)).burst(50));
+            .heartbeat(heartbeat, expiry);
     }
 
     /**

@@ -86,7 +86,7 @@ final class Housekeeper {
      * @param wake         wakes this node's worker for a topic id
      * @param sweepOrphans releases tasks this node holds but isn't processing
      * @param reconcile    brings this node in line with the store, in case a notification was
-     *                     lost: the topics it runs and paused, the rate limit overrides
+     *                     lost: the topics it runs and paused
      */
     Housekeeper(TaskStore store, EngineSettings settings, IntSupplier nodeId, Job rejoin, IntConsumer wake, Job sweepOrphans, Job reconcile,
                 Duration purgeBudget) {

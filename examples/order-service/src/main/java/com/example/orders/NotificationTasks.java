@@ -52,7 +52,6 @@ class NotificationTasks {
             });
         }, options -> options
             .resources(writes)
-            .limit("mailer")
             .ordering(Ordering.SINGULAR_BY_IDENTIFIER)
             .concurrency(2)
             .batchSize(32));

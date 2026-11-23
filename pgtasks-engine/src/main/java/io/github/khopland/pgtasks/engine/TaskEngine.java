@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
  * batches finish; nothing is claimed from it until it is resumed.
  *
  * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}
- * and {@link #limits()}. Every method throws only unchecked exceptions.
+ * Every method throws only unchecked exceptions.
  */
 public final class TaskEngine implements AutoCloseable {
 
@@ -67,7 +67,6 @@ public final class TaskEngine implements AutoCloseable {
     private final Coalesced reconcileSoon = new Coalesced("topics", "topics", this::reconcileTopics);
     private @Nullable EngineCore core;
     private @Nullable Housekeeper housekeeper;
-    private final RateLimits limits;
     private @Nullable Notifier notifier;
     private volatile int nodeId = -1;
     private List<EffectiveSettings> effectiveSettings = List.of();
@@ -94,8 +93,6 @@ public final class TaskEngine implements AutoCloseable {
         }
         this.directory = new TopicDirectory(store);
         this.admin = new TaskAdmin(this, store);
-        // Known from the configuration, so limits() works before the store is prepared.
-        this.limits = new RateLimits(store, configuredLimits(), this::limitChanged);
         this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wakeById,
             settings.observer());
     }
@@ -228,7 +225,7 @@ public final class TaskEngine implements AutoCloseable {
     /**
      * Readies the store for this engine without processing anything: applies the schema (as the
      * store's schema mode says), registers the configured topics with their retention and
-     * recurring tasks, the topics its modules push to, and the rate limits. Enough for a node that only pushes, such as the
+     * recurring tasks, and the topics its modules push to. Enough for a node that only pushes, such as the
      * Spring starter's {@code pgtasks.enabled=false}: its pushes work whichever node starts first,
      * and the nodes that process the topics pick them up. {@link #start()} does this first.
      */
@@ -242,7 +239,6 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         store.prepare();
-        List<RateLimit> configured = configuredLimits();
         for (Topic<?> topic : topics) {
             int id = EngineCore.transact(store, transaction -> {
                 int created = store.createTopic(transaction, topic.ref().name());
@@ -258,13 +254,6 @@ public final class TaskEngine implements AutoCloseable {
                 directory.register(topic, EngineCore.transact(store, transaction -> store.createTopic(transaction, topic)));
             }
         }
-        EngineCore.transact(store, transaction -> {
-            for (RateLimit limit : configured) {
-                store.ensureAdmission(transaction, limit.name(), limit.burst());
-            }
-            return null;
-        });
-        limits.refresh();
         prepared = true;
     }
 
@@ -297,15 +286,12 @@ public final class TaskEngine implements AutoCloseable {
         prepare();
         if (stopped) {
             // Started again after a stop, as Spring does on context.stop() and start(): the
-            // reloads that stop() switched off take notifications again, and the overrides
-            // changed while this node was stopped are read now. It registers as a new node.
+            // reloads that stop() switched off take notifications again. It registers as a new node.
             reconcileSoon.restart();
-            limits.resumeRefreshing();
-            limits.refresh();
         }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, limits, settings.observer());
+            held, () -> !started, settings.observer());
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;
@@ -326,21 +312,14 @@ public final class TaskEngine implements AutoCloseable {
                     }
 
                     @Override
-                    public void limitChanged(String name) {
-                        limits.refreshSoon();
-                    }
-
-                    @Override
                     public void missed() {
                         workersById.values().forEach(TopicWorker::wake);
                         reconcileSoon.request();
-                        limits.refreshSoon();
                     }
                 });
             }
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
-                limits.refresh();
                 revivePending();
                 reviveSweep();
             }, purgeBudget);
@@ -603,25 +582,6 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /**
-     * The rate limits of this node's topics, and operators' runtime overrides of them. Overrides
-     * are read once the engine is prepared or started.
-     */
-    public RateLimits limits() {
-        return limits;
-    }
-
-    private List<RateLimit> configuredLimits() {
-        return topics.stream().map(topic -> topic.settings().rateLimit()).filter(Objects::nonNull).toList();
-    }
-
-    /** Tells the workers using a limit that it changed, so a wait for permits ends early. */
-    private void limitChanged(String name) {
-        workersById.values().stream()
-            .filter(worker -> worker.topic().settings().rateLimit() != null && worker.topic().settings().rateLimit().name().equals(name))
-            .forEach(TopicWorker::limitChanged);
-    }
-
     /** Whether this node holds the housekeeping lease and runs the cluster-wide jobs. */
     public boolean leadsHousekeeping() {
         return started && running(housekeeper).leading();
@@ -708,7 +668,6 @@ public final class TaskEngine implements AutoCloseable {
                 wakeUps.close();
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
-            limits.stopRefreshing(TopicWorker.PATIENCE);
             List<TopicWorker<?>> all = new ArrayList<>();
             List<Thread> drains;
             synchronized (topicsLock) {
