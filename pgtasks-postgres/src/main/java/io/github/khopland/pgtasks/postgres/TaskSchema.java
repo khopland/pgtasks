@@ -83,6 +83,7 @@ public final class TaskSchema {
     /** The files, in the order a DBA pipeline runs them: versioned by version, then repeatable by name. */
     static final List<String> FILES = List.of(
         "V001__tasks_schema.sql",
+        "V002__cancelled_outcome.sql",
         "R__create_topic.sql",
         "R__notify_limit.sql",
         "R__notify_ready.sql",
@@ -91,7 +92,7 @@ public final class TaskSchema {
     );
 
     /** The schema version this library is built for. */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     /** What the schema's {@code meta} table records. */
     public record Meta(int version, int compatibleFrom) {

@@ -3,6 +3,7 @@ package io.github.khopland.pgtasks.test.tck;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -54,6 +55,25 @@ public abstract class PushTck extends StoreTck {
             assertThat(view.finished()).isFalse();
             assertThat(view.createdAt()).isNotNull();
         }
+    }
+
+    @Test
+    void a_push_with_a_run_time_waits_until_then_by_the_stores_clock() throws Exception {
+        StoreFixture fixture = setUp();
+        Instant now = fixture.store().clock().instant().truncatedTo(ChronoUnit.MILLIS);
+        long later = StoreFixture.id(fixture.push(topic, Insertion.APPEND, StoreFixture.at("later", now.plus(Duration.ofHours(1)))).getFirst());
+        long past = StoreFixture.id(fixture.push(topic, Insertion.APPEND, StoreFixture.at("past", now.minus(Duration.ofHours(1)))).getFirst());
+
+        TaskView waiting = fixture.view(later).orElseThrow();
+        assertThat(waiting.state()).isEqualTo("scheduled");
+        assertThat(waiting.runAt()).as("the time given, not one counted from the push").isEqualTo(now.plus(Duration.ofHours(1)));
+        assertThat(fixture.state(past)).as("a time that has come is ready at once").isEqualTo("ready");
+        assertThat(fixture.view(past).orElseThrow().runAt()).isNull();
+        assertThat(fixture.promoteDue()).isEmpty();
+
+        fixture.advance(Duration.ofMinutes(61));
+        assertThat(fixture.promoteDue()).containsExactly(topic);
+        assertThat(fixture.state(later)).isEqualTo("ready");
     }
 
     @Test

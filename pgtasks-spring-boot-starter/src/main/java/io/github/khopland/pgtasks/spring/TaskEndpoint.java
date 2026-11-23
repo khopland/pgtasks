@@ -21,6 +21,8 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
+import io.github.khopland.pgtasks.admin.QueueState;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
@@ -49,9 +51,14 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
+ * GET    /actuator/tasks/topics/{topic}/tasks?after=&amp;limit=&amp;identifier=&amp;reference=&amp;state=ready,retrying&amp;header=tenant=north
+ *                                                        &amp;createdFrom=&amp;createdUntil=   unfinished tasks, lowest id first
  * POST   /actuator/tasks/topics/{topic}/pause | resume | create
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
+ * POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}; or {"identifier": "...", "reference": "...",
+ *                                                        "state": "scheduled,retrying", "header": "tenant=north",
+ *                                                        "createdFrom": "...", "createdUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
  * GET    /actuator/tasks/limits/{limit}
@@ -79,6 +86,7 @@ public class TaskEndpoint {
     static final int CONFLICT = 409;
     static final String HIDDEN = "******";
     private static final int DEAD_LETTER_PAGE = 50;
+    private static final int TASK_PAGE = 50;
     /**
      * An exception type, as errors are grouped by, or an expiry: shown even when values are
      * hidden. A message, which may hold personal data, doesn't look like one.
@@ -139,15 +147,36 @@ public class TaskEndpoint {
         };
     }
 
+    /**
+     * A topic's dead letters, what is failing, or its unfinished tasks that match the parameters
+     * ({@code state} a comma-separated list, {@code header} one {@code name=value}).
+     */
     @ReadOperation
     public WebEndpointResponse<Object> readPart(@Selector String kind, @Selector String name, @Selector String part,
-                                                @Nullable Long after, @Nullable Integer limit, @Nullable SecurityContext security) throws Exception {
+                                                @Nullable Long after, @Nullable Integer limit, @Nullable String identifier,
+                                                @Nullable String reference, @Nullable String state, @Nullable String header,
+                                                @Nullable String createdFrom, @Nullable String createdUntil,
+                                                @Nullable SecurityContext security) throws Exception {
         boolean shown = show.isShown(security == null ? SecurityContext.NONE : security, roles);
-        if (!kind.equals("topics") || !Set.of("dead-letters", "failing").contains(part)) {
+        if (!kind.equals("topics") || !Set.of("dead-letters", "failing", "tasks").contains(part)) {
             return notFound();
         }
         if (status(name).isEmpty()) {
             return notFound();
+        }
+        if (part.equals("tasks")) {
+            TaskQuery query;
+            try {
+                query = filter(TaskQuery.ALL, identifier, reference, state, header, createdFrom, createdUntil).after(after == null ? 0 : after);
+            } catch (IllegalArgumentException | DateTimeParseException e) {
+                return badRequest(e.getMessage());
+            }
+            int size = limit == null ? TASK_PAGE : Math.clamp(limit, 1, 1_000);
+            List<TaskView> page = engine.admin().tasks(name, query, size);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("tasks", page.stream().map(view -> task(view, shown)).toList());
+            body.put("next", page.size() == size ? page.getLast().id() : null);
+            return new WebEndpointResponse<>(body);
         }
         if (part.equals("failing")) {
             Map<String, Object> body = new LinkedHashMap<>();
@@ -171,12 +200,14 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: pause, resume, create, revive, discard, purge. */
+    /** Topic actions: pause, resume, create, revive, discard, purge, cancel, run-now. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
                                            @Nullable String error, @Nullable String failedFrom, @Nullable String failedUntil,
-                                           @Nullable String all) throws Exception {
+                                           @Nullable String all, @Nullable String identifier, @Nullable String reference,
+                                           @Nullable String state, @Nullable String header, @Nullable String createdFrom,
+                                           @Nullable String createdUntil) throws Exception {
         if (!kind.equals("topics")) {
             return notFound();
         }
@@ -207,9 +238,23 @@ public class TaskEndpoint {
                 body.put(action.equals("revive") ? "revived" : "discarded",
                     action.equals("revive") ? engine.admin().revive(name, query) : engine.admin().discard(name, query));
             }
+            case "cancel", "run-now" -> {
+                TaskQuery query;
+                try {
+                    query = taskQuery(taskIds, identifier, reference, state, header, createdFrom, createdUntil, all);
+                } catch (IllegalArgumentException | DateTimeParseException e) {
+                    return badRequest(e.getMessage());
+                }
+                int done = action.equals("cancel") ? engine.admin().cancel(name, query) : engine.admin().runNow(name, query);
+                body.put(action.equals("cancel") ? "cancelled" : "madeReady", done);
+                if (taskIds != null) {
+                    // Active tasks aren't cancelled, and only delayed or retrying ones are made ready.
+                    body.put("skipped", taskIds.size() - done);
+                }
+            }
             case "purge" -> {
                 if (outcome == null || before == null) {
-                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant or recreated) and a time to purge before");
+                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant, recreated or cancelled) and a time to purge before");
                 }
                 Outcome purged;
                 Instant until;
@@ -290,6 +335,47 @@ public class TaskEndpoint {
         }
         return DeadLetterQuery.ALL.withError(error)
             .failedBetween(failedFrom == null ? null : Instant.parse(failedFrom), failedUntil == null ? null : Instant.parse(failedUntil));
+    }
+
+    /**
+     * Ids, or a filter, or all of them, but only when asked for in so many words, as for dead
+     * letters: one stray call with an empty body would otherwise cancel a topic's whole backlog.
+     */
+    private static TaskQuery taskQuery(@Nullable List<Long> taskIds, @Nullable String identifier, @Nullable String reference,
+                                       @Nullable String state, @Nullable String header, @Nullable String createdFrom,
+                                       @Nullable String createdUntil, @Nullable String all) {
+        TaskQuery query = filter(TaskQuery.ALL, identifier, reference, state, header, createdFrom, createdUntil);
+        if (taskIds != null) {
+            return query.withIds(taskIds);
+        }
+        if (!query.filtered() && !"true".equalsIgnoreCase(all)) {
+            throw new IllegalArgumentException("Name the tasks: \"ids\", or any of \"identifier\", \"reference\", \"state\", \"header\", "
+                + "\"createdFrom\" and \"createdUntil\", or \"all\": \"true\" for every one");
+        }
+        return query;
+    }
+
+    /** The query narrowed by the request's parameters; blank ones are left out. */
+    private static TaskQuery filter(TaskQuery query, @Nullable String identifier, @Nullable String reference, @Nullable String state,
+                                    @Nullable String header, @Nullable String createdFrom, @Nullable String createdUntil) {
+        String from = blankToNull(createdFrom), until = blankToNull(createdUntil), states = blankToNull(state), pair = blankToNull(header);
+        TaskQuery narrowed = query.withIdentifier(blankToNull(identifier)).withReference(blankToNull(reference))
+            .createdBetween(from == null ? null : Instant.parse(from.strip()), until == null ? null : Instant.parse(until.strip()));
+        if (states != null) {
+            narrowed = narrowed.inStates(Arrays.stream(states.split(",")).map(String::strip).filter(each -> !each.isEmpty()).map(QueueState::of).toList());
+        }
+        if (pair != null) {
+            int equals = pair.indexOf('=');
+            if (equals < 1) {
+                throw new IllegalArgumentException("header is name=value, such as \"tenant=north\"");
+            }
+            narrowed = narrowed.withHeader(pair.substring(0, equals).strip(), pair.substring(equals + 1));
+        }
+        return narrowed;
+    }
+
+    private static @Nullable String blankToNull(@Nullable String text) {
+        return text == null || text.isBlank() ? null : text;
     }
 
     private Map<String, Object> node() throws Exception {

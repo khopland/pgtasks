@@ -5,11 +5,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 
+import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.Cron;
@@ -161,6 +164,38 @@ class TaskEndpointTest {
         assertThat(revived.body().path("revived").asInt()).isEqualTo(1);
         EngineFixture.await("the revived task succeeded", Duration.ofSeconds(5),
             () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + id).body().path("state").asString())));
+    }
+
+    @Test
+    void unfinished_tasks_are_searched_run_now_and_cancelled() throws Exception {
+        long later = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("search-a", "later").withDelay(Duration.ofHours(1))
+            .withHeader("tenant", "north")).id();
+        long tomorrow = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("search-b", "tomorrow")
+            .withRunAt(Instant.now().plus(Duration.ofDays(1)))).id();
+
+        Response found = get("/tasks/topics/work/tasks?state=scheduled&header=tenant=north");
+        assertThat(found.status()).isEqualTo(200);
+        assertThat(found.body().path("tasks").size()).isOne();
+        assertThat(found.body().path("tasks").get(0).path("id").asLong()).isEqualTo(later);
+        assertThat(found.body().path("tasks").get(0).path("runAt").asString()).isNotEmpty();
+        assertThat(get("/tasks/topics/work/tasks?identifier=search-b").body().path("tasks").get(0).path("id").asLong()).isEqualTo(tomorrow);
+        assertThat(get("/tasks/topics/work/tasks?state=waiting").status()).isEqualTo(400);
+        assertThat(get("/tasks/topics/work/tasks?header=tenant").status()).isEqualTo(400);
+        assertThat(get("/tasks/topics/work/tasks?createdFrom=yesterday").status()).isEqualTo(400);
+        assertThat(get("/tasks/topics/missing/tasks").status()).isEqualTo(404);
+
+        assertThat(send("POST", "/tasks/topics/work/cancel", "{}").status()).as("all of them only when asked for").isEqualTo(400);
+        assertThat(send("POST", "/tasks/topics/work/run-now", "{}").status()).isEqualTo(400);
+        Response cancelled = send("POST", "/tasks/topics/work/cancel", "{\"identifier\": \"search-b\"}");
+        assertThat(cancelled.status()).isEqualTo(200);
+        assertThat(cancelled.body().path("cancelled").asInt()).isOne();
+        assertThat(get("/tasks/tasks/" + tomorrow).body().path("state").asString()).isEqualTo("cancelled");
+
+        Response ran = send("POST", "/tasks/topics/work/run-now", "{\"ids\": \"" + later + "," + tomorrow + "\"}");
+        assertThat(ran.body().path("madeReady").asInt()).isOne();
+        assertThat(ran.body().path("skipped").asInt()).as("a finished task isn't waiting").isOne();
+        EngineFixture.await("the task made ready succeeded", Duration.ofSeconds(5),
+            () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + later).body().path("state").asString())));
     }
 
     @Test

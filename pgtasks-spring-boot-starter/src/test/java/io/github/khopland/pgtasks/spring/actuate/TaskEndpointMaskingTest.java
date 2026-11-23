@@ -57,10 +57,15 @@ class TaskEndpointMaskingTest {
         TaskTester.of(engine).awaitIdle();
 
         TaskEndpoint hidden = new TaskEndpoint(engine);
-        Map<String, Object> dead = first(hidden.readPart("topics", "work", "dead-letters", null, null, SecurityContext.NONE).getBody(), "deadLetters");
+        Map<String, Object> dead = first(hidden.readPart("topics", "work", "dead-letters", null, null, null, null, null, null, null, null, SecurityContext.NONE).getBody(), "deadLetters");
         assertThat(dead.get("payload")).isEqualTo("******");
         assertThat((String) dead.get("error")).contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
-        Map<String, Object> group = first(hidden.readPart("topics", "work", "failing", null, null, SecurityContext.NONE).getBody(), "failing");
+        Map<String, Object> found = first(hidden.readPart("topics", "work", "tasks", null, null, "a", null, "failed", null, null, null, SecurityContext.NONE)
+            .getBody(), "tasks");
+        assertThat(found.get("payload")).as("a search masks like the dead letters").isEqualTo("******");
+        assertThat(found.get("headers")).isEqualTo(Map.of("korrelasjonsid", "******"));
+        assertThat((String) found.get("error")).contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
+        Map<String, Object> group = first(hidden.readPart("topics", "work", "failing", null, null, null, null, null, null, null, null, SecurityContext.NONE).getBody(), "failing");
         assertThat(group.get("error")).as("a type is shown").isEqualTo("java.lang.IllegalArgumentException");
         assertThat(group.get("exampleMessage")).isEqualTo("******");
         @SuppressWarnings("unchecked")
@@ -72,10 +77,12 @@ class TaskEndpointMaskingTest {
             .contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
 
         TaskEndpoint shown = new TaskEndpoint(engine, Show.ALWAYS, Set.of());
-        Map<String, Object> visible = first(shown.readPart("topics", "work", "dead-letters", null, null, SecurityContext.NONE).getBody(), "deadLetters");
+        Map<String, Object> visible = first(shown.readPart("topics", "work", "dead-letters", null, null, null, null, null, null, null, null, SecurityContext.NONE).getBody(), "deadLetters");
         assertThat(visible.get("payload")).isEqualTo("type: fnr 12345678901");
         assertThat((String) visible.get("error")).contains("person 12345678901 is unknown");
         assertThat(visible.get("headers")).isEqualTo(Map.of("korrelasjonsid", "k-12345678901"));
+        assertThat(first(shown.readPart("topics", "work", "tasks", null, null, null, null, null, "korrelasjonsid=k-12345678901", null, null,
+            SecurityContext.NONE).getBody(), "tasks").get("payload")).isEqualTo("type: fnr 12345678901");
         assertThat((String) first(shown.read("tasks", "1", SecurityContext.NONE).getBody(), "attempts").get("error"))
             .contains("person 12345678901 is unknown");
     }

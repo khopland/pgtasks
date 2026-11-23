@@ -32,8 +32,8 @@ or a payload type without a codec all fail the build with a message that names t
 ## Tasks and identifiers
 
 A task has an identifier: the application's key, such as a person or a tax return. Ordering and
-insertion policies work per identifier within a topic. A push can also give a delay, a
-suspension, a priority, a reference for correlation, a dedup key, and headers:
+insertion policies work per identifier within a topic. A push can also give a delay or a run
+time, a suspension, a priority, a reference for correlation, a dedup key, and headers:
 
 ```java
 tasks.push(ASSESSMENT, Insertion.SUPERSEDE, Creation.of(returnId, request)
@@ -49,6 +49,13 @@ headers, and the MDC keys named in `pgtasks.mdc-headers`, such as a correlation 
 [operations](operations.md#tracing-and-correlation)). A creation's own headers win over theirs.
 The reference is one indexed value to look a task up by; headers are context that travels with
 it.
+
+`withDelay(duration)` waits that long from the push; `withRunAt(instant)` waits until a moment,
+such as the start of the next business day. The run time is compared with the store's clock (the
+database's, on Postgres), so nodes with skewed clocks agree on it, and a time that has already
+come, the past included, makes the task ready at once. Delay, run time and suspension exclude each
+other: each of the three builders replaces the others. Downstream work pushed from a handler
+(`work.push`) takes the same creation. Recurring tasks don't take one: their cron is the time.
 
 `push` returns one `Pushed` per creation: `QUEUED`, `REDUNDANT` (a later creation in the same
 push has the same identifier), `DUPLICATE` (an unfinished task has the dedup key), or `PENDING`
@@ -153,6 +160,26 @@ A task whose node dies under it is requeued with backoff once the node counts as
 minutes without a heartbeat by default). The third time, it is dead-lettered whatever the
 policy says, so a task that crashes the JVM can't take down node after node.
 
+## Operator actions on unfinished tasks
+
+Operators can also act on tasks that are still waiting, not only on dead letters
+(`engine.admin()`, the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)):
+
+- **Search** a topic's unfinished tasks by identifier, reference, state, one header's value and
+  when they were pushed, a page at a time, lowest id first.
+- **Run now** makes delayed and retrying tasks ready at once. Their attempts and failures stay, so
+  a further failure backs off as it would have.
+- **Cancel** takes ready, delayed, retrying, suspended and dead-lettered tasks out of the queue.
+  They finish with the outcome `cancelled` and never run; like a discarded dead letter, a
+  cancelled task stops holding back later tasks under a `SINGULAR_…` ordering. An **active** task
+  is never cancelled: its node is running it and can't be stopped, so the cancel skips it and it
+  runs to its end with its own outcome. Cancel it again if it comes back to wait.
+
+`cancelled` is an outcome of its own rather than `failed` (which says the task gave up) or
+`redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
+retention, 30 days by default. A cancelled task still counts as present for an `ANY` junction,
+like any task that isn't redundant, and `REPLACE` leaves it in the history as it is.
+
 ## The breaker
 
 When most of a topic's recent tasks fail (80 % of the last 50, from at least 5 different tasks),
@@ -193,7 +220,7 @@ Each layer overrides the one before it:
 
 1. Built-in defaults: 100 tasks per batch, 2 batches per topic per node, FIFO, the standard
    retry, a 30 minute batch deadline, a 30 s poll as a fallback for notifications. Succeeded
-   tasks are kept for 30 days; filtered, redundant and recreated for 7; failed forever.
+   tasks are kept for 30 days, cancelled ones too; filtered, redundant and recreated for 7; failed forever.
 2. `TaskGlobals.defaults(...)`, for every topic.
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.

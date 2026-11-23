@@ -17,6 +17,9 @@ const ROUTES = {
   resume: ["POST", "/topics/{topic}/resume"],
   revive: ["POST", "/topics/{topic}/revive"],
   discard: ["POST", "/topics/{topic}/discard"],
+  tasks: ["GET", "/topics/{topic}/tasks"],
+  cancel: ["POST", "/topics/{topic}/cancel"],
+  runNow: ["POST", "/topics/{topic}/run-now"],
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
@@ -28,11 +31,15 @@ const ROUTES = {
 
 const HIDDEN = "******";
 const REFRESH_MS = 10000;
-const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated"];
+const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated", "cancelled"];
+const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "failed"];
 
 const state = {
   config: null,
   deadLetters: {}, // per topic: { cursors: [0], selected: Set }
+  // per topic: { filter: null (no search yet) or the search's fields, cursors: [0], selected: Set, page, stale }. A search can
+  // read a topic's whole backlog, so it runs when asked for, on a page change and after a change, not on every refresh.
+  searches: {},
   timer: null,
   seq: 0, // the latest render wins
 };
@@ -212,6 +219,11 @@ async function api(name, params, options) {
   }
   const [method] = ROUTES[name];
   const body = options && options.body;
+  if (method !== "GET") {
+    Object.values(state.searches).forEach(search => {
+      search.stale = true;
+    });
+  }
   const target = url(name, params || {}, options && options.query);
   const headers = { Accept: "application/json" };
   if (method !== "GET") {
@@ -624,11 +636,13 @@ function deadLetterState(topic) {
 async function topicView(name) {
   const paging = deadLetterState(name);
   const after = paging.cursors[paging.cursors.length - 1];
+  const search = searchState(name);
   const [topic, failing, dead, overview] = await Promise.all([
     api("topic", { topic: name }),
     api("failing", { topic: name }),
     api("deadLetters", { topic: name }, { query: { after: after || null, limit: 50 } }),
     api("overview").catch(() => null),
+    loadSearch(name, search),
   ]);
   if (overview) {
     showNode(overview.node);
@@ -663,6 +677,7 @@ async function topicView(name) {
     queue && queue.countedAt ? h("p", { class: "muted" }, "Counts as of ", time(queue.countedAt), ".") : null,
     failingPanel(name, failing.failing || []),
     deadLettersPanel(name, dead, paging),
+    tasksPanel(name, search),
     h("div", { class: "grid" }, settingsPanel(topic.settings), recurringPanel(topic.recurring || [])),
   ];
 }
@@ -826,6 +841,243 @@ async function everyDeadLetter(topic, action) {
   }
 }
 
+// --- Unfinished tasks: search, run now, cancel
+
+function searchState(topic) {
+  if (!state.searches[topic]) {
+    state.searches[topic] = { filter: null, cursors: [0], selected: new Set(), page: null, stale: true };
+  }
+  return state.searches[topic];
+}
+
+/** The search's fields as the endpoint takes them, as query parameters or in a body. */
+function filterFields(filter) {
+  const fields = {};
+  for (const key of ["identifier", "reference", "header", "createdFrom", "createdUntil"]) {
+    if (filter[key]) fields[key] = filter[key];
+  }
+  if (filter.state && filter.state.length) fields.state = filter.state.join(",");
+  return fields;
+}
+
+async function loadSearch(topic, search) {
+  if (!search.filter || (!search.stale && search.page)) {
+    return;
+  }
+  const after = search.cursors[search.cursors.length - 1];
+  search.page = await api("tasks", { topic }, { query: Object.assign({ after: after || null, limit: 50 }, filterFields(search.filter)) });
+  search.stale = false;
+}
+
+function filterChips(filter) {
+  const fields = filterFields(filter);
+  const names = { identifier: "identifier", reference: "reference", state: "state", header: "header", createdFrom: "created from",
+    createdUntil: "created before" };
+  const chips = Object.entries(fields).map(([key, val]) => chip(names[key] + ": " + val, "info"));
+  return h("span", { class: "chips" }, chips.length ? chips : chip("every unfinished task", "info"));
+}
+
+function tasksPanel(topic, search) {
+  const open = h("button", { type: "button", class: "small", onclick: () => searchTasks(topic) }, search.filter ? "Change search…" : "Search…");
+  if (!search.filter) {
+    return panel("Unfinished tasks", {
+      actions: [open, h("button", { type: "button", class: "small", onclick: () => setSearch(topic, {}) }, "List all")],
+      note: "Find tasks by identifier, reference, state, a header or when they were pushed, then run them now or cancel them. "
+        + "Without an identifier or a reference a search reads the topic's whole backlog, so it runs when you ask, not on every refresh.",
+    }, h("div", { class: "empty" }, "No search yet."));
+  }
+  const tasks = (search.page && search.page.tasks) || [];
+  const visible = new Set(tasks.map(task => task.id));
+  for (const id of search.selected) {
+    if (!visible.has(id)) search.selected.delete(id);
+  }
+  const selectedCount = () => search.selected.size;
+  const runSelected = h("button", { type: "button", class: "small", disabled: !selectedCount(), onclick: () => tasksByIds(topic, "runNow") },
+    "Run selected now");
+  const cancelSelected = h("button", { type: "button", class: "small danger", disabled: !selectedCount(),
+    onclick: () => tasksByIds(topic, "cancel") }, "Cancel selected…");
+  const all = h("input", { type: "checkbox", "aria-label": "Select all on this page", disabled: !tasks.length });
+  const update = () => {
+    runSelected.disabled = cancelSelected.disabled = !selectedCount();
+    all.checked = tasks.length > 0 && selectedCount() === tasks.length;
+  };
+  all.addEventListener("change", () => {
+    tasks.forEach(task => all.checked ? search.selected.add(task.id) : search.selected.delete(task.id));
+    main().querySelectorAll("input[data-task]").forEach(box => {
+      box.checked = all.checked;
+    });
+    update();
+  });
+  all.checked = tasks.length > 0 && selectedCount() === tasks.length;
+  const rows = table([
+    { label: all, value: task => {
+      const box = h("input", { type: "checkbox", "data-task": "", checked: search.selected.has(task.id), "aria-label": "Select task " + task.id });
+      box.addEventListener("change", () => {
+        box.checked ? search.selected.add(task.id) : search.selected.delete(task.id);
+        update();
+      });
+      return box;
+    } },
+    { label: "Task", value: task => taskLink(task.id) },
+    { label: "Identifier", value: task => h("td", { class: "wrap mono" }, task.identifier) },
+    { label: "State", value: task => chip(task.state, task.state === "failed" ? "bad" : task.state === "retrying" ? "warn" : "info") },
+    { label: "Attempt", num: true, value: task => count(task.attempt) },
+    { label: "Runs at", value: task => time(task.runAt) },
+    { label: "Created", value: task => time(task.createdAt) },
+    { label: "Reference", value: task => h("td", { class: "wrap mono" }, task.reference || "—") },
+  ], tasks, search.cursors.length > 1 ? "No more tasks." : "No unfinished task matches.");
+  const page = search.page || {};
+  const go = cursors => {
+    search.cursors = cursors;
+    search.selected.clear();
+    search.stale = true;
+    refresh();
+  };
+  const pager = h("div", { class: "pager" },
+    h("button", { type: "button", class: "small", disabled: search.cursors.length <= 1, onclick: () => go([0]) }, "First"),
+    h("button", { type: "button", class: "small", disabled: search.cursors.length <= 1, onclick: () => go(search.cursors.slice(0, -1)) }, "Previous"),
+    h("button", { type: "button", class: "small", disabled: page.next === null || page.next === undefined,
+      onclick: () => go(search.cursors.concat([page.next])) }, "Next"),
+    h("button", { type: "button", class: "small ghost", onclick: () => go(search.cursors) }, "Reload"),
+    h("span", { class: "muted" }, "Page " + search.cursors.length + ", lowest id first"));
+  return panel("Unfinished tasks", {
+    meta: filterChips(search.filter),
+    actions: [open, h("button", { type: "button", class: "small ghost", onclick: () => setSearch(topic, null) }, "Clear"),
+      runSelected, cancelSelected,
+      h("button", { type: "button", class: "small", onclick: () => tasksByFilter(topic, "runNow") }, "Run matching now…"),
+      h("button", { type: "button", class: "small danger", onclick: () => tasksByFilter(topic, "cancel") }, "Cancel matching…")],
+    note: "Run now makes delayed and retrying tasks ready, keeping their attempts. Cancel takes tasks out of the queue as cancelled, "
+      + "dead letters included; active tasks are skipped, since a node runs them.",
+  }, rows, pager);
+}
+
+function setSearch(topic, filter) {
+  const search = searchState(topic);
+  search.filter = filter;
+  search.cursors = [0];
+  search.selected.clear();
+  search.page = null;
+  search.stale = true;
+  refresh();
+}
+
+async function searchTasks(topic) {
+  const current = searchState(topic).filter || {};
+  const filter = await dialog(({ fail }) => {
+    const identifier = h("input", { name: "identifier", autocomplete: "off", spellcheck: "false", value: current.identifier || "" });
+    const reference = h("input", { name: "reference", autocomplete: "off", spellcheck: "false", value: current.reference || "" });
+    const header = h("input", { name: "header", autocomplete: "off", spellcheck: "false", placeholder: "name=value", value: current.header || "" });
+    const from = h("input", { name: "createdFrom", type: "datetime-local",
+      value: current.createdFrom ? localInput(new Date(current.createdFrom)) : "" });
+    const until = h("input", { name: "createdUntil", type: "datetime-local",
+      value: current.createdUntil ? localInput(new Date(current.createdUntil)) : "" });
+    const states = STATES.map(name => h("input", { type: "checkbox", value: name, checked: (current.state || []).includes(name),
+      "aria-label": name }));
+    const submit = h("button", { type: "submit", class: "primary" }, "Search");
+    return {
+      body: [h("h2", null, "Search unfinished tasks"),
+        h("p", { class: "muted" }, "Every field you fill in must match; leave them all empty to list every unfinished task."),
+        h("div", { class: "row" },
+          h("label", { class: "field" }, h("span", null, "Identifier"), identifier),
+          h("label", { class: "field" }, h("span", null, "Reference"), reference)),
+        h("fieldset", { class: "field" }, h("legend", null, "State (any of)"),
+          h("div", { class: "chips" }, states.map(box => h("label", { class: "toggle" }, box, box.value)))),
+        h("label", { class: "field" }, h("span", null, "Header"), header),
+        h("div", { class: "row" },
+          h("label", { class: "field" }, h("span", null, "Created from (your time)"), from),
+          h("label", { class: "field" }, h("span", null, "Created before (your time)"), until))],
+      submit,
+      valid: () => {
+        if (header.value.trim() && header.value.indexOf("=") < 1) {
+          fail("A header is name=value.");
+          return false;
+        }
+        for (const input of [from, until]) {
+          if (input.value && isNaN(new Date(input.value).getTime())) {
+            fail("Pick a time, or leave it empty.");
+            return false;
+          }
+        }
+        return true;
+      },
+      onsubmit: () => ({
+        identifier: identifier.value.trim() || null,
+        reference: reference.value.trim() || null,
+        header: header.value.trim() || null,
+        state: states.filter(box => box.checked).map(box => box.value),
+        createdFrom: from.value ? new Date(from.value).toISOString() : null,
+        createdUntil: until.value ? new Date(until.value).toISOString() : null,
+      }),
+    };
+  });
+  if (filter) {
+    setSearch(topic, filter);
+  }
+}
+
+function doneText(action, result) {
+  const skipped = result.skipped ? " (" + number(result.skipped) + " skipped)" : "";
+  return action === "cancel" ? "Cancelled " + number(result.cancelled) + " task(s)" + skipped + "."
+    : "Made " + number(result.madeReady) + " task(s) ready" + skipped + ".";
+}
+
+async function tasksByIds(topic, action, ids) {
+  const search = searchState(topic);
+  const chosen = ids || [...search.selected].sort((a, b) => a - b);
+  if (!chosen.length) {
+    return null;
+  }
+  const run = () => api(action, { topic }, { body: { ids: chosen.join(",") } });
+  let result;
+  if (action === "runNow") {
+    try {
+      result = await run();
+    } catch (e) {
+      toast(e.message, true);
+      return null;
+    }
+  } else {
+    result = await ask({
+      title: "Cancel " + chosen.length + " task(s)",
+      message: ["Take tasks ", chosen.map(id => "#" + id).join(", "), " out of the queue. They finish as cancelled and never run; ",
+        "active ones are skipped. This can't be undone."],
+      action: "Cancel tasks",
+      danger: true,
+      typed: topic,
+      run,
+    });
+  }
+  if (result) {
+    search.selected.clear();
+    toast(doneText(action, result));
+    refresh();
+  }
+  return result;
+}
+
+async function tasksByFilter(topic, action) {
+  const search = searchState(topic);
+  const fields = filterFields(search.filter || {});
+  const every = !Object.keys(fields).length;
+  const cancel = action === "cancel";
+  const result = await ask({
+    title: (cancel ? "Cancel" : "Run now") + (every ? " every unfinished task" : " every matching task"),
+    message: [cancel ? "Take every " : "Make every delayed and retrying ", every ? "unfinished task of " : "task of ", h("strong", null, topic),
+      every ? "" : " that matches ", every ? "" : filterChips(search.filter),
+      cancel ? " out of the queue. They finish as cancelled and never run; active ones are skipped. This can't be undone."
+        : " ready now, keeping their attempts. Tasks in other states are left alone."],
+    action: cancel ? "Cancel tasks" : "Run now",
+    danger: cancel,
+    typed: cancel ? topic : null,
+    run: () => api(action, { topic }, { body: every ? { all: "true" } : fields }),
+  });
+  if (result) {
+    search.cursors = [0];
+    toast(doneText(action, result));
+    refresh();
+  }
+}
+
 function localInput(date) {
   const pad = n => String(n).padStart(2, "0");
   return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
@@ -984,9 +1236,13 @@ async function taskView(idText) {
     ["Payload type", task.payloadType ? h("span", { class: "mono" }, task.payloadType) : "—"],
   ];
   const headers = Object.entries(task.headers || {});
+  const waits = task.state === "scheduled" || task.state === "retrying";
+  const actions = task.finished || task.state === "active" ? null : h("div", { class: "actions" },
+    waits ? h("button", { type: "button", onclick: () => tasksByIds(task.topic, "runNow", [task.id]) }, "Run now") : null,
+    h("button", { type: "button", class: "danger", onclick: () => tasksByIds(task.topic, "cancel", [task.id]) }, "Cancel…"));
   return [
     h("div", { class: "crumbs" }, link("#/", "Overview"), " / ", topicLink(task.topic)),
-    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id)),
+    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id), actions),
     hidden ? h("div", { class: "notice" }, "Payloads, outputs and error messages are hidden by ",
       h("code", null, "management.endpoint.tasks.show-values"), ". Error types are still shown.") : null,
     h("div", { class: "grid" },

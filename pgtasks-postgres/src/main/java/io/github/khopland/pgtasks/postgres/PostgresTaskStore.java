@@ -35,7 +35,9 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
+import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.spi.Notifier;
@@ -61,6 +63,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
+    private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
@@ -363,6 +366,98 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE t.id = ANY (ARRAY(SELECT task_id FROM gone))
               AND t.id = gone.task_id
             RETURNING t.id
+            """);
+        // An operator's search of a topic's unfinished tasks, and the actions on what it finds. Each
+        // condition is a parameter that is either null, which the plan made for these values folds
+        // away, or a value. The candidates come from the queue alone, into an array of row
+        // addresses: by the topic, in queue_identifier_idx (narrowed by the identifier if given), or
+        // by the ids, or by the tasks with the reference (task_reference_idx). The task's conditions are checked per candidate by primary key, fenced with
+        // OFFSET 0 as in the poll. The rows are then read by address (a TID scan), checked again as
+        // locked, and sorted by id; the search reads their tasks only after the limit.
+        //
+        // While the queue's statistics say it is empty (DrainedQueue), every plan looks free, and
+        // anything else let the planner walk every topic's tasks: a join of queue and task, the
+        // queue's primary key in id order for a merge join; "task_id > :after" or "ORDER BY task_id",
+        // the primary key from there or in order; the state as an enum rather than text,
+        // queue_due_idx or queue_active_idx, which aren't by topic. Without an identifier or ids
+        // this reads the topic's backlog, as counting it does, once per page or batch of 1,000; an
+        // index on (topic_id, task_id) for this alone would slow every push and claim. A row that a concurrent commit moved is
+        // skipped, which only delays acting on it, and a task claimed meanwhile fails the recheck.
+        String candidates = """
+            o.ctid = ANY (ARRAY(
+                SELECT c.ctid FROM pgtasks.queue c
+                WHERE c.topic_id = :topic::integer AND c.task_id + 0 > :after::bigint
+                  AND (:all::boolean OR c.task_id = ANY (:ids::bigint[]))
+                  AND (:identifier::text IS NULL OR c.identifier = :identifier::text)
+                  AND (:reference::text IS NULL OR c.task_id = ANY (ARRAY(
+                      SELECT r.id FROM pgtasks.task r WHERE r.reference = :reference::text)))
+                  AND (:any_state::boolean OR c.state::text = ANY (:states::text[]))
+                  AND %1$s
+                  AND (:any_task::boolean OR EXISTS (
+                      SELECT 1 FROM pgtasks.task t
+                      WHERE t.id = c.task_id
+                        AND (:reference::text IS NULL OR t.reference = :reference::text)
+                        AND (:header::text IS NULL OR t.headers @> jsonb_build_object(:header::text, :header_value::text))
+                        AND (:from::timestamptz IS NULL OR t.created_at >= :from::timestamptz)
+                        AND (:until::timestamptz IS NULL OR t.created_at < :until::timestamptz)
+                      OFFSET 0))))
+              AND o.task_id + 0 > :after::bigint
+              AND (:any_state::boolean OR o.state::text = ANY (:states::text[]))
+              AND %2$s
+            """;
+        searchTasks = sql("""
+            WITH found AS MATERIALIZED (
+                SELECT o.task_id, o.state, o.attempt, o.run_at, o.priority, o.node_id, o.failures, o.first_failed_at
+                FROM pgtasks.queue o
+                WHERE
+            """ + candidates.formatted("true", "true") + """
+                ORDER BY o.task_id + 0
+                LIMIT :limit::integer
+            )
+            SELECT (SELECT name FROM pgtasks.topic WHERE id = :topic::integer) AS topic, t.id, t.identifier, o.state::text AS state,
+                   false AS finished, o.attempt, o.run_at, o.priority, o.node_id, o.failures, o.first_failed_at,
+                   t.reference, t.parent_id, t.root_id, t.payload, t.payload_type, t.output, t.error::text AS error,
+                   t.previous_outcome::text AS previous_outcome, t.created_at, t.completed_at, t.headers::text AS headers
+            FROM found o
+            JOIN pgtasks.task t ON t.id = o.task_id
+            ORDER BY o.task_id
+            """);
+        // Active tasks are never picked: a node runs them, and its completion must still find them.
+        cancel = sql("""
+            WITH picked AS MATERIALIZED (
+                SELECT o.ctid AS row FROM pgtasks.queue o
+                WHERE
+            """ + candidates.formatted("c.state::text <> 'active'", "o.state::text <> 'active'") + """
+                ORDER BY o.task_id + 0
+                LIMIT :limit::integer
+                FOR UPDATE OF o SKIP LOCKED
+            ),
+            gone AS (
+                DELETE FROM pgtasks.queue q
+                WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+                RETURNING q.task_id, q.attempt
+            )
+            UPDATE pgtasks.task t
+            SET outcome = 'cancelled', attempts = gone.attempt, completed_at = now()
+            FROM gone
+            WHERE t.id = ANY (ARRAY(SELECT task_id FROM gone))
+              AND t.id = gone.task_id
+            RETURNING t.id
+            """);
+        // The update trigger on pgtasks.queue wakes the workers.
+        runNow = sql("""
+            WITH picked AS MATERIALIZED (
+                SELECT o.ctid AS row FROM pgtasks.queue o
+                WHERE
+            """ + candidates.formatted("c.state::text IN ('scheduled', 'retrying')", "o.state::text IN ('scheduled', 'retrying')") + """
+                ORDER BY o.task_id + 0
+                LIMIT :limit::integer
+                FOR UPDATE OF o SKIP LOCKED
+            )
+            UPDATE pgtasks.queue q
+            SET state = 'ready', run_at = NULL
+            WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+            RETURNING q.task_id
             """);
         // The topic's rows become exactly the given ones. An unchanged cron and zone keep the next run.
         syncSchedules = sql("""
@@ -714,17 +809,21 @@ public final class PostgresTaskStore implements TaskStore {
                 SELECT nextval('pgtasks.task_id_seq') AS id, i.*
                 FROM unnest(:identifiers::text[], :payloads::text[], :types::text[], :references::text[],
                             :parents::bigint[], :roots::bigint[], :states::text[], :delays::bigint[],
-                            :priorities::integer[], :dedup::text[], :headers::text[])
+                            :priorities::integer[], :dedup::text[], :headers::text[], :run_ats::text[])
                     WITH ORDINALITY AS i(identifier, payload, payload_type, reference, parent_id, root_id,
-                                         state, delay_ms, priority, dedup_key, headers, ord)""" + quiet + """
+                                         state, delay_ms, priority, dedup_key, headers, run_at, ord)""" + quiet + """
 
             ),
+            -- A delayed task waits for its run time: given, or the delay from now. One that has come,
+            -- by the clock of the database, is ready at once.
             queued AS (
                 INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
-                SELECT id, :topic::integer, identifier, state::pgtasks.queue_state, priority,
-                       CASE WHEN state = 'scheduled' THEN now() + delay_ms * interval '1 millisecond' END,
+                SELECT id, :topic::integer, identifier,
+                       CASE WHEN state = 'scheduled' AND due <= now() THEN 'ready' ELSE state END::pgtasks.queue_state, priority,
+                       CASE WHEN state = 'scheduled' AND due > now() THEN due END,
                        dedup_key
                 FROM input
+                CROSS JOIN LATERAL (SELECT coalesce(run_at::timestamptz, now() + delay_ms * interval '1 millisecond') AS due) AS d
                 WHERE state IS NOT NULL
                 ORDER BY ord
                 ON CONFLICT (topic_id, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
@@ -908,12 +1007,12 @@ public final class PostgresTaskStore implements TaskStore {
                 continue;
             }
             stored.add(task);
-            states.add(superseded ? null : task.suspended() ? "suspended" : task.delay() != null && !task.delay().isZero() ? "scheduled" : "ready");
+            states.add(superseded ? null : task.suspended() ? "suspended" : task.delayed() ? "scheduled" : "ready");
         }
         int size = stored.size();
         @Nullable Object[] identifiers = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], references = new @Nullable Object[size];
         @Nullable Object[] parents = new @Nullable Object[size], roots = new @Nullable Object[size], delays = new @Nullable Object[size], priorities = new @Nullable Object[size], dedup = new @Nullable Object[size];
-        @Nullable Object[] headers = new @Nullable Object[size];
+        @Nullable Object[] headers = new @Nullable Object[size], runAts = new @Nullable Object[size];
         for (int index = 0; index < size; index++) {
             NewTask task = stored.get(index);
             identifiers[index] = task.identifier();
@@ -926,6 +1025,7 @@ public final class PostgresTaskStore implements TaskStore {
             priorities[index] = task.priority();
             dedup[index] = task.dedupKey();
             headers[index] = HeaderJson.write(task.headers());
+            runAts[index] = task.runAt() == null ? null : task.runAt().toString();
         }
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", topicId)
@@ -939,7 +1039,8 @@ public final class PostgresTaskStore implements TaskStore {
             .array("delays", "bigint", delays)
             .array("priorities", "integer", priorities)
             .array("dedup", "text", dedup)
-            .array("headers", "text", headers);
+            .array("headers", "text", headers)
+            .array("run_ats", "text", runAts);
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = Objects.requireNonNull((wakeUp == WakeUp.BY_CALLER ? pushesWokenByCaller : pushes).get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
@@ -1439,6 +1540,33 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
+    public List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        List<TaskView> result = new ArrayList<>();
+        try (PreparedStatement statement = searchTasks.prepare(transaction.connection(), query(query, topicId, limit));
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                result.add(taskView(resultSet));
+            }
+        }
+        return result;
+    }
+
+    /** Cancelled tasks may have held back later ones under an ordering; no trigger sees a delete. */
+    @Override
+    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        List<Long> cancelled = ids(cancel, transaction, query(query, topicId, limit));
+        if (!cancelled.isEmpty()) {
+            notifyReady(transaction, List.of(topicId));
+        }
+        return cancelled;
+    }
+
+    @Override
+    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        return ids(runNow, transaction, query(query, topicId, limit));
+    }
+
+    @Override
     public void notifyReady(StoreTransaction transaction, Collection<Integer> topicIds) throws SQLException {
         if (topicIds.isEmpty()) {
             return;
@@ -1461,8 +1589,30 @@ public final class PostgresTaskStore implements TaskStore {
             .set("limit", query.taskIds() == null ? limit : Math.min(limit, query.taskIds().size()));
     }
 
+    private static NamedSql.Parameters query(TaskQuery query, int topicId, int limit) {
+        return NamedSql.parameters()
+            .set("topic", topicId)
+            .set("after", query.afterId())
+            .set("all", query.taskIds() == null)
+            .array("ids", "bigint", query.taskIds() == null ? new Object[0] : query.taskIds().toArray())
+            .set("identifier", query.identifier())
+            .set("any_task", query.reference() == null && query.headerName() == null && query.createdFrom() == null && query.createdUntil() == null)
+            .set("reference", query.reference())
+            .set("any_state", query.states().isEmpty())
+            .array("states", "text", query.states().stream().map(QueueState::label).toArray())
+            .set("header", query.headerName())
+            .set("header_value", query.headerValue())
+            .set("from", query.createdFrom() == null ? null : OffsetDateTime.ofInstant(query.createdFrom(), ZoneOffset.UTC))
+            .set("until", query.createdUntil() == null ? null : OffsetDateTime.ofInstant(query.createdUntil(), ZoneOffset.UTC))
+            .set("limit", query.taskIds() == null ? limit : Math.min(limit, query.taskIds().size()));
+    }
+
     private static List<Long> deadLetterIds(NamedSql sql, StoreTransaction transaction, int topicId, DeadLetterQuery query, int limit) throws SQLException {
-        NamedSql.Parameters parameters = query(query, topicId, limit);
+        return ids(sql, transaction, query(query, topicId, limit));
+    }
+
+    /** Runs a statement that returns task ids, and sorts them. */
+    private static List<Long> ids(NamedSql sql, StoreTransaction transaction, NamedSql.Parameters parameters) throws SQLException {
         List<Long> ids = new ArrayList<>();
         try (PreparedStatement statement = sql.prepare(transaction.connection(), parameters);
              ResultSet resultSet = statement.executeQuery()) {

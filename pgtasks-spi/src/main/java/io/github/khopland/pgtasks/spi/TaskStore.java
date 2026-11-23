@@ -25,6 +25,7 @@ import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 
@@ -330,6 +331,27 @@ public interface TaskStore {
         return discard(transaction, topicId, taskIds == null ? DeadLetterQuery.ALL : DeadLetterQuery.ids(taskIds), limit);
     }
 
+    /** A topic's unfinished tasks that match the query, in any state, lowest id first. */
+    List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
+     * Takes the matching unfinished tasks out of the queue, lowest ids first: they finish as
+     * cancelled, with the attempts they took. Ready, delayed, retrying, suspended and dead-lettered
+     * tasks are cancelled; active ones are skipped, since a node runs them. Tasks they held back
+     * under an ordering run next.
+     *
+     * @return the cancelled ids
+     */
+    List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
+     * Makes the matching delayed and retrying tasks ready at once, lowest ids first, keeping their
+     * attempts and failures. Tasks in other states are skipped.
+     *
+     * @return the ids made ready
+     */
+    List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
     /**
      * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest
      * removed. A schedule whose cron or zone is unchanged keeps its next run; one whose cron or
@@ -385,7 +407,9 @@ public interface TaskStore {
 
     /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
-     * are and come back with every claim; an empty map stores none.
+     * are and come back with every claim; an empty map stores none. {@code runAt} is an absolute
+     * time, compared with the store's clock: a time not after it makes the task ready at once.
+     * At most one of {@code delay}, {@code runAt} and {@code suspended} is set.
      */
     record NewTask(
         String identifier,
@@ -398,11 +422,27 @@ public interface TaskStore {
         @Nullable String dedupKey,
         @Nullable Long parentId,
         @Nullable Long rootId,
-        Map<String, String> headers
+        Map<String, String> headers,
+        @Nullable Instant runAt
     ) {
         public NewTask {
             Objects.requireNonNull(identifier, "identifier");
             headers = Map.copyOf(headers);
+            if (runAt != null && (delay != null || suspended)) {
+                throw new IllegalArgumentException("a task runs at a time, after a delay or when released, not more than one");
+            }
+        }
+
+        /** A task without an absolute run time. */
+        public NewTask(String identifier, @Nullable String payload, @Nullable String payloadType, @Nullable String reference, @Nullable Duration delay,
+                       boolean suspended, int priority, @Nullable String dedupKey, @Nullable Long parentId, @Nullable Long rootId,
+                       Map<String, String> headers) {
+            this(identifier, payload, payloadType, reference, delay, suspended, priority, dedupKey, parentId, rootId, headers, null);
+        }
+
+        /** Whether the task waits for a time: a positive delay, or a run time. */
+        public boolean delayed() {
+            return runAt != null || (delay != null && !delay.isZero());
         }
     }
 

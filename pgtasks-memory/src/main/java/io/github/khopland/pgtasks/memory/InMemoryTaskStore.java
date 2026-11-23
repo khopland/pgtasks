@@ -36,7 +36,9 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
+import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.memory.Rows.State;
@@ -240,10 +242,12 @@ public final class InMemoryTaskStore implements TaskStore {
                 results.add(new Pushed(task.identifier(), Pushed.Status.DUPLICATE, null));
                 continue;
             }
-            State state = task.suspended() ? State.SUSPENDED : task.delay() != null && !task.delay().isZero() ? State.SCHEDULED : State.READY;
+            // A run time that has come is ready at once, as a zero delay is.
+            Instant runAt = task.runAt() != null ? task.runAt() : task.delay() != null && !task.delay().isZero() ? now.plus(task.delay()) : null;
+            State state = task.suspended() ? State.SUSPENDED : runAt != null && runAt.isAfter(now) ? State.SCHEDULED : State.READY;
             memory.put(tasks, id, row);
             putQueued(memory, new Rows.Queued(id, topicId, task.identifier(), state, task.priority(),
-                state == State.SCHEDULED ? now.plus(task.delay()) : null, 0, null, null, task.dedupKey(), 0, null, 0));
+                state == State.SCHEDULED ? runAt : null, 0, null, null, task.dedupKey(), 0, null, 0));
             queuedIdentifiers.add(task.identifier());
             results.add(new Pushed(task.identifier(), Pushed.Status.QUEUED, id));
         }
@@ -698,6 +702,51 @@ public final class InMemoryTaskStore implements TaskStore {
             memory.ready(topicId);
         }
         return discarded.stream().map(Rows.Queued::taskId).toList();
+    }
+
+    @Override
+    public List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
+        return unfinished(topicId, query, EnumSet.allOf(State.class), limit).stream()
+            .map(row -> find(transaction, row.taskId()).orElseThrow())
+            .toList();
+    }
+
+    @Override
+    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> cancelled = unfinished(topicId, query, EnumSet.complementOf(EnumSet.of(State.ACTIVE)), limit);
+        Instant now = now();
+        for (Rows.Queued row : cancelled) {
+            memory.remove(queue, row.taskId());
+            Rows.Task task = task(row.taskId());
+            memory.put(tasks, task.id(), task.finish("cancelled", task.output(), row.attempt(), now));
+        }
+        if (!cancelled.isEmpty()) {
+            memory.ready(topicId);
+        }
+        return cancelled.stream().map(Rows.Queued::taskId).toList();
+    }
+
+    @Override
+    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> due = unfinished(topicId, query, EnumSet.of(State.SCHEDULED, State.RETRYING), limit);
+        due.forEach(row -> putQueued(memory, row.with(State.READY, null, row.attempt(), null, null)));
+        return due.stream().map(Rows.Queued::taskId).toList();
+    }
+
+    /** The topic's unfinished tasks in these states that match, lowest id first. */
+    private List<Rows.Queued> unfinished(int topicId, TaskQuery query, Set<State> states, int limit) {
+        return queue.values().stream()
+            .filter(row -> row.topicId() == topicId && states.contains(row.state()))
+            .filter(row -> {
+                Rows.Task task = task(row.taskId());
+                return query.matches(row.taskId(), row.identifier(), task.reference(), QueueState.valueOf(row.state().name()), task.headers(),
+                    task.createdAt());
+            })
+            .sorted(Comparator.comparingLong(Rows.Queued::taskId))
+            .limit(limit)
+            .toList();
     }
 
     @Override

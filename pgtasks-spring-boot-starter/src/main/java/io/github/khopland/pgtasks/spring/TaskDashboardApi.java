@@ -77,7 +77,9 @@ final class TaskDashboardApi implements HttpRequestHandler {
             case "GET 0" -> new WebEndpointResponse<>(endpoint.overview());
             case "GET 2" -> endpoint.read(parts.get(0), parts.get(1), security);
             case "GET 3" -> endpoint.readPart(parts.get(0), parts.get(1), parts.get(2),
-                longValue(request.getParameter("after"), "after"), intValue(request.getParameter("limit"), "limit"), security);
+                longValue(request.getParameter("after"), "after"), intValue(request.getParameter("limit"), "limit"),
+                request.getParameter("identifier"), request.getParameter("reference"), request.getParameter("state"),
+                request.getParameter("header"), request.getParameter("createdFrom"), request.getParameter("createdUntil"), security);
             case "POST 2" -> {
                 Map<String, Object> body = body(request);
                 yield endpoint.override(parts.get(0), parts.get(1), text(body, "rate"), intValue(body.get("burst"), "burst"),
@@ -86,7 +88,9 @@ final class TaskDashboardApi implements HttpRequestHandler {
             case "POST 3" -> {
                 Map<String, Object> body = body(request);
                 yield endpoint.act(parts.get(0), parts.get(1), parts.get(2), text(body, "ids"), text(body, "outcome"), text(body, "before"),
-                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"));
+                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"),
+                    text(body, "identifier"), text(body, "reference"), text(body, "state"), text(body, "header"),
+                    text(body, "createdFrom"), text(body, "createdUntil"));
             }
             case "DELETE 2" -> endpoint.delete(parts.get(0), parts.get(1), longValue(request.getParameter("version"), "version"), security);
             default -> method.equals("GET") || method.equals("POST") || method.equals("DELETE")
