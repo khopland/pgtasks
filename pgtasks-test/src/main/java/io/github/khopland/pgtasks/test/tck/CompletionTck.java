@@ -412,6 +412,26 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(after).isEmpty();
     }
 
+    /** Review 2026-11-23: the orphan sweep compared database claim times with a cutoff from the JVM's clock. */
+    @Test
+    void a_node_sees_only_the_claims_older_than_a_grace_by_the_stores_clock() throws Exception {
+        StoreFixture fixture = setUp();
+        fixture.push(topic, Insertion.APPEND, task("a"), task("b"));
+        ClaimedTask old = fixture.claim(topic, node, Ordering.FIFO, 1).getFirst();
+        // Time passes by either store's clock: the in-memory store's is moved, the database's runs.
+        fixture.advance(Duration.ofMillis(200));
+        Thread.sleep(200);
+        ClaimedTask fresh = fixture.claim(topic, node, Ordering.FIFO, 1).getFirst();
+
+        List<TaskStore.ActiveClaim> settled = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node, Duration.ofMillis(100)));
+        List<TaskStore.ActiveClaim> all = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node, Duration.ZERO));
+        List<TaskStore.ActiveClaim> none = fixture.inTransaction(transaction -> fixture.store().activeClaims(transaction, node, Duration.ofHours(1)));
+
+        assertThat(settled).extracting(TaskStore.ActiveClaim::taskId).containsExactly(old.id());
+        assertThat(all).extracting(TaskStore.ActiveClaim::taskId).containsExactlyInAnyOrder(old.id(), fresh.id());
+        assertThat(none).isEmpty();
+    }
+
     @Test
     void heartbeat_of_an_unknown_node_fails() throws SQLException {
         StoreFixture fixture = setUp();

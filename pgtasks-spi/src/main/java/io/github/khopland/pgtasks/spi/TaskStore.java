@@ -204,6 +204,17 @@ public interface TaskStore {
      */
     List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException;
 
+    /**
+     * Like {@link #activeClaims(StoreTransaction, int)}, but only the claims made at least
+     * {@code claimedFor} ago, by the clock the store stamps claims with: a claim's time and the
+     * cutoff must come from one clock, or a node whose clock runs ahead of the database's would
+     * take a claim still on its way to its worker for one it lost track of. Zero means every claim.
+     */
+    default List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId, Duration claimedFor) throws SQLException {
+        Instant cutoff = clock().instant().minus(claimedFor);
+        return activeClaims(transaction, nodeId).stream().filter(claim -> claimedFor.isZero() || !claim.claimedAt().isAfter(cutoff)).toList();
+    }
+
     int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException;
 
     /**

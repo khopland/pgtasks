@@ -629,13 +629,14 @@ public final class TaskEngine implements AutoCloseable {
 
     /**
      * Releases tasks this node holds active but isn't processing, such as a claim whose commit
-     * succeeded while its reply was lost, if claimed longer ago than the grace period.
+     * succeeded while its reply was lost, if claimed longer ago than the grace period. The store
+     * applies the grace by the clock it stamped the claims with, so a node whose clock runs ahead
+     * of the database's doesn't release claims still on their way to their worker.
      */
     private void releaseOrphans(Duration grace) throws Exception {
-        Instant cutoff = store.clock().instant().minus(grace);
         Map<Integer, List<TaskStore.Completion>> orphans = new HashMap<>();
-        for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId))) {
-            if (!held.containsKey(claim.taskId()) && claim.claimedAt() != null && !claim.claimedAt().isAfter(cutoff)) {
+        for (TaskStore.ActiveClaim claim : EngineCore.transact(store, transaction -> store.activeClaims(transaction, nodeId, grace))) {
+            if (!held.containsKey(claim.taskId())) {
                 orphans.computeIfAbsent(claim.topicId(), ignored -> new ArrayList<>())
                     .add(new TaskStore.Completion(claim.taskId(), claim.attempt(), claim.claimedAt(), BatchRun.RELEASED));
             }
