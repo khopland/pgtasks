@@ -394,11 +394,16 @@ public interface TaskStore {
 
     /**
      * Records that the topic's dead letters were revived for this application version. True for
-     * the first node of the version to ask, false for every other: they are revived once.
+     * the first node of the version to ask, false for every other: they are revived once. The
+     * engine revives them in the same transaction, so the claim counts only if that commits: a
+     * concurrent claim of the same version waits for it, then is false, or true if it rolled back.
      */
     boolean claimRevival(StoreTransaction transaction, int topicId, String version) throws SQLException;
 
-    /** Claims a sweep of the topic's dead letters: true at most once per {@code every}, across the cluster. */
+    /**
+     * Claims a sweep of the topic's dead letters: true at most once per {@code every}, across the
+     * cluster. Like {@link #claimRevival}, the sweep runs in the same transaction.
+     */
     boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) throws SQLException;
 
     /** The logged attempts of a task: failed and expired ones. */

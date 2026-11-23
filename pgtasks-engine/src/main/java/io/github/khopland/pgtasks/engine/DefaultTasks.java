@@ -52,6 +52,9 @@ final class DefaultTasks implements Tasks {
     }
 
     private final TaskStore store;
+    /** SQLSTATE of a foreign key violation: a push to a topic id that no longer exists. */
+    private static final String FOREIGN_KEY_VIOLATION = "23503";
+
     private final TopicDirectory topics;
     private final Map<String, PayloadCodec<?>> topicCodecs;
     private final List<TopicTemplate<?>> templates;
@@ -251,6 +254,9 @@ final class DefaultTasks implements Tasks {
                 ready.add(topicId);
             }
             return results;
+        } catch (SQLException e) {
+            failed(topic.name(), topicId, e);
+            throw e;
         } finally {
             observations.reversed().forEach(TaskObserver.PushObservation::close);
         }
@@ -364,6 +370,17 @@ final class DefaultTasks implements Tasks {
 
     int topicId(StoreTransaction transaction, String topic) throws SQLException {
         return topics.id(transaction, topic);
+    }
+
+    /**
+     * After a write to a topic by its id failed: on a foreign key violation the topic is most
+     * likely gone (deleted on another node), so its cached id is dropped and looked up again next
+     * time, instead of failing every push until a heartbeat or restart.
+     */
+    void failed(String topic, int topicId, SQLException e) {
+        if (FOREIGN_KEY_VIOLATION.equals(e.getSQLState())) {
+            topics.forget(topic, topicId);
+        }
     }
 
     @SuppressWarnings("unchecked")

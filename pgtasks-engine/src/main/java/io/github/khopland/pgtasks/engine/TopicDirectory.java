@@ -9,7 +9,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
-/** Topic names to ids. Topics are never created on push; a misspelt name fails loudly. */
+/**
+ * Topic names to ids. Topics are created on push only with {@link TaskEngineBuilder#topicsCreatedOnPush};
+ * otherwise a misspelt name fails loudly. Only ids of committed topics are cached: one created on
+ * push is created in a short transaction of its own, so a rollback of the push's transaction can't
+ * leave an id cached for a topic that doesn't exist.
+ */
 final class TopicDirectory {
 
     private final TaskStore store;
@@ -35,6 +40,15 @@ final class TopicDirectory {
         ids.keySet().retainAll(names);
     }
 
+    /**
+     * Forgets the cached id of a topic, if it is still the given one: a push to it failed as if the
+     * topic were gone, say deleted by another node, so the next push looks it up again. A node that
+     * only pushes has no heartbeat that would {@link #retain} the topics.
+     */
+    void forget(String name, int id) {
+        ids.remove(name, id);
+    }
+
     void register(String name, int id) {
         ids.put(name, id);
     }
@@ -51,7 +65,17 @@ final class TopicDirectory {
         }
         OptionalInt found = store.findTopic(transaction, name);
         if (found.isEmpty() && createOnPush) {
-            int created = store.createTopic(transaction, name);
+            // Its own transaction, committed before the id is cached: created in the caller's, the
+            // topic would vanish if that rolled back, and the cached id would fail every later push.
+            // create_topic is idempotent, so a concurrent creation on another node is harmless.
+            int created;
+            try {
+                created = EngineCore.transact(store, own -> store.createTopic(own, name));
+            } catch (SQLException | RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
             ids.put(name, created);
             return created;
         }
