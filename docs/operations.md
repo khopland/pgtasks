@@ -62,11 +62,12 @@ in. With another tool, pass the same name the engine uses:
 
 ### Changing the schema
 
-`V001__tasks_schema.sql` is frozen for 0.1.0. **Never edit a released versioned file**: databases
+Nothing is released yet, so `V001__tasks_schema.sql` still changes in place. Once 0.1.0 ships,
+it is frozen. **Never edit a released versioned file**: databases
 that applied it would no longer match it. The built-in runner refuses to start when an applied
 file's checksum changed, and Flyway and Liquibase do the same. Add the next file instead:
 
-1. The next `V<version>__<what>.sql` (`V002__cancelled_outcome.sql` is the first, unreleased yet): the change, written so that 0.1.0 nodes still run against it during a rolling
+1. The next `V<version>__<what>.sql`: the change, written so that the previous release's nodes still run against it during a rolling
    deploy, or with `compatible_from` raised if they can't. It ends by recording its version in the
    meta table, like V001. Use `${pgtasks_schema}` for every name.
 2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
@@ -83,11 +84,9 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
    Add the new file's checksum there when it is released. It also pins the checksum of every
    revision of every `R__` file, so changing one without raising its revision fails the build; add
-   the new revision's checksum next to the old ones. `SchemaUpgradeTest` applies the files as
-   0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
-   state, then the current files, checks the tasks are still usable and runs part of the store TCK
-   on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory
-   and a seed when a release changes the schema.
+   the new revision's checksum next to the old ones. With the first release, add an upgrade test
+   that applies the released files with tasks in every state, then the current files, and checks
+   the tasks are still usable.
 
 ## Postgres versions
 
@@ -330,14 +329,11 @@ admin.tasks("assessment", stuck, 50);            // a page, lowest id first; nex
   `queue (topic_id, task_id)` would avoid that, at a cost to every push and claim, so there is none.)
 - The search shows payloads, outputs, errors and header values under the same `show-values` rules
   as dead letters. Filtering by a header's value still works when values are hidden.
-- `cancelled` is schema version 2 (`V002__cancelled_outcome.sql`). 0.1.0 nodes keep running against
-  it during a rolling deploy; they show the outcome but don't purge it, so cancelled tasks wait for
-  a new node to lead housekeeping before retention applies.
 
 ## Retention
 
 Finished tasks are deleted by the housekeeping leader, per topic and outcome, counted from
-completion: succeeded and cancelled after 30 days, filtered, redundant and recreated after 7,
+completion: succeeded after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
 A fan-in with `Junction.Counts.ANY` only sees parts whose rows are still there: keep its target

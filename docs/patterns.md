@@ -55,8 +55,8 @@ part.junction(MERGE, Junction.Counts.SUSPENDED, Set.of("line-1", "line-2", "line
 
 Once every identifier in the group (the staging task's own plus the given ones) has a task
 there that counts, the group's suspended tasks become ready. `Counts.SUSPENDED` counts only
-suspended tasks: every part is waiting. `Counts.ANY` counts any task that wasn't made redundant
-or cancelled, finished or not.
+suspended tasks: every part is waiting. `Counts.ANY` counts any task that wasn't made redundant,
+finished or not.
 
 `Counts.ANY` looks at the tasks the topic still keeps. Retention deletes finished tasks per
 outcome (succeeded after 30 days by default), and a deleted part no longer counts. If one part

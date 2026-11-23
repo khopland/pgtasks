@@ -129,8 +129,8 @@ class ChaosTest {
         await("every task to succeed", Duration.ofSeconds(60), () -> succeeded() == 200);
         assertExactlyOnce(200);
         assertThat(executions.values()).as("tasks the dead node was running ran again").anyMatch(count -> count.get() > 1);
-        assertThat(database.count("SELECT count(*) FROM pgtasks.attempt a JOIN pgtasks.node n ON n.id = a.node_id WHERE a.result = 'expired' AND n.name = 'node-a'"))
-            .as("expired attempts of the dead node").isPositive();
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task WHERE error->>'type' = 'expired'"))
+            .as("tasks the dead node was running, expired").isPositive();
     }
 
     @Test
@@ -163,7 +163,7 @@ class ChaosTest {
 
         assertExactlyOnce(50);
         assertThat(database.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'child' AND payload = 'from node-a' AND parent_id IN "
-            + "(SELECT a.task_id FROM pgtasks.attempt a WHERE a.result = 'expired')")).as("children from the stale batch").isZero();
+            + "(SELECT t.id FROM pgtasks.task t WHERE t.error->>'type' = 'expired')")).as("children from the stale batch").isZero();
     }
 
     @Test

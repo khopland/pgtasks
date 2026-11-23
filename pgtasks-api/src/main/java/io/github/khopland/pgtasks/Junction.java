@@ -20,8 +20,7 @@ public record Junction(TopicRef<?> topic, Counts counts, Set<String> identifiers
         SUSPENDED,
 
         /**
-         * Any task, finished or not, except one that was made redundant or was cancelled (it never
-         * ran). (1.x: ETERNAL.)
+         * Any task, finished or not, except one that was made redundant. (1.x: ETERNAL.)
          *
          * <p>A finished task counts only while its row exists: once the topic's retention for its
          * outcome has passed (30 days for succeeded by default, see

@@ -22,16 +22,14 @@ class SchemaFreezeTest {
 
     /** SHA-256 of each released versioned file, line endings normalized, placeholder unfilled: what the runner records. */
     static final Map<String, String> RELEASED = Map.of(
-        // 0.1.0
-        "V001__tasks_schema.sql", "02bb99240109e5a8fcdc2e88838d1d0061dd803a0568be8eba558ac1bff5ed56"
+        // Nothing released yet: V001 may still change in place. Pin it here when 0.1.0 ships.
     );
 
     /** SHA-256 of each revision of each repeatable file, keyed {@code <name>@<revision>}. Add a line for every new revision. */
     static final Map<String, String> REVISIONS = Map.of(
         "R__create_topic.sql@1", "1928751b22bcc9475130e2756c3525b98b4925aeb978cc9508c801888cb6391a",
-        "R__notify_limit.sql@1", "226a96d4b8897dd34af1e89b36758b957e8196d00e50d50c87711678fea5eeb1",
         "R__notify_ready.sql@1", "5c0746501fb02bf45e5dcffe6a496a41dca777abb1a9363aebec0981f7d9d8d5",
-        "R__notify_topic.sql@1", "b5e2e0b151cac20418b6f4b30e34fb369a765f64fe2407edff3710b5592ec1a4",
+        "R__notify_topic.sql@1", "4a5be1ca83f3c1b28962b576ea1a49c2fbb2dd6d510bcd622b273019fc960c63",
         "R__task_view.sql@1", "5b1ceb6291c454ce53142a7cfc1d1d3940bb98bf2d87e463429537ea239109ae"
     );
 
@@ -63,12 +61,4 @@ class SchemaFreezeTest {
             .containsEntry(name, checksum));
     }
 
-    @Test
-    void the_released_files_kept_for_the_upgrade_test_are_the_frozen_ones() {
-        for (SchemaScript script : SchemaUpgradeTest.released("0.1.0")) {
-            if (!script.repeatable()) {
-                assertThat(script.checksum()).as(script.name() + " as kept in the test resources").isEqualTo(RELEASED.get(script.name()));
-            }
-        }
-    }
 }

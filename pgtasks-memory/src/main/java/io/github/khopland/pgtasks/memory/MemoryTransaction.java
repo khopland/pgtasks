@@ -6,10 +6,8 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 
@@ -62,24 +60,6 @@ final class MemoryTransaction implements StoreTransaction {
             V previous = table.remove(key);
             undo.push(() -> table.put(key, previous));
         }
-    }
-
-    /** Deletes the rows that match; a rollback puts them back where they were. */
-    <T> void removeIf(List<T> table, Predicate<? super T> which) {
-        check();
-        List<T> before = List.copyOf(table);
-        if (table.removeIf(which)) {
-            undo.push(() -> {
-                table.clear();
-                table.addAll(before);
-            });
-        }
-    }
-
-    <T> void append(List<T> table, T row) {
-        check();
-        table.add(row);
-        undo.push(() -> table.removeLast());
     }
 
     /** Like the queue's NOTIFY triggers: a row became ready, so wake the topic after commit. */

@@ -190,7 +190,7 @@ public class TaskEndpoint {
             }
             case "purge" -> {
                 if (outcome == null || before == null) {
-                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant, recreated or cancelled) and a time to purge before");
+                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant or recreated) and a time to purge before");
                 }
                 Outcome purged;
                 Instant until;

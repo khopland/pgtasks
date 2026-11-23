@@ -68,7 +68,6 @@ class SliceApplicationTest {
         DATABASE.execute("""
             TRUNCATE incoming, assessment, published_feed RESTART IDENTITY;
             UPDATE feed_pointer SET position = 0;
-            DELETE FROM pgtasks.attempt;
             DELETE FROM pgtasks.task;
             """);
         register.lookups.set(0);
@@ -124,8 +123,8 @@ class SliceApplicationTest {
         ));
 
         awaitQueueEmpty();
-        assertThat(DATABASE.rows("SELECT DISTINCT result, error->>'message' FROM pgtasks.attempt"))
-            .containsExactly(List.of("failed", "Simulated failure while publishing"));
+        assertThat(DATABASE.rows("SELECT DISTINCT error->>'message' FROM pgtasks.task WHERE error IS NOT NULL"))
+            .containsExactly(List.of("Simulated failure while publishing"));
         assertThat(DATABASE.count("SELECT count(*) FROM published_feed")).isEqualTo(2);
         assertThat(DATABASE.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'archive'")).isEqualTo(2);
         assertThat(DATABASE.rows("SELECT state, attempt FROM pgtasks.task_view WHERE topic = 'notify'")).containsOnly(List.of("succeeded", 2));

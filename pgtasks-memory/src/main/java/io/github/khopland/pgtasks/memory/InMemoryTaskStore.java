@@ -73,7 +73,6 @@ public final class InMemoryTaskStore implements TaskStore {
     private final Map<Integer, Rows.Node> nodes = new HashMap<>();
     private final TreeMap<Long, Rows.Task> tasks = new TreeMap<>();
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
-    private final List<Rows.Attempt> attempts = new ArrayList<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
     private final Map<String, Held> leases = new HashMap<>();
     private int nextTopic = 1, nextNode = 1;
@@ -282,7 +281,7 @@ public final class InMemoryTaskStore implements TaskStore {
                 row.topicId() == topicId && row.identifier().equals(identifier) && row.state() == State.SUSPENDED);
             case ANY -> tasks.values().stream().anyMatch(row ->
                 row.topicId() == topicId && row.identifier().equals(identifier)
-                && !"redundant".equals(row.outcome()) && !"cancelled".equals(row.outcome()));
+                && !"redundant".equals(row.outcome()));
         };
     }
 
@@ -386,13 +385,6 @@ public final class InMemoryTaskStore implements TaskStore {
                             // The last error stays on the task from the first failure on, as on Postgres.
                             memory.put(tasks, task.id(), task.failed(waiting.error(), attempt));
                         }
-                        if (waiting.error() != null && waiting.counted()) {
-                            // The first attempt and the last ten stay, as on Postgres.
-                            memory.removeIf(attempts, logged -> logged.taskId() == row.taskId() && logged.attempt() > 1
-                                && logged.attempt() <= completion.attempt() - 10);
-                            memory.append(attempts, new Rows.Attempt(topicId, row.taskId(), completion.attempt(), nodeId,
-                                completion.claimedAt() == null ? now : completion.claimedAt(), now, "failed", waiting.error()));
-                        }
                     }
                 }
             }
@@ -437,8 +429,6 @@ public final class InMemoryTaskStore implements TaskStore {
                 Rows.Task task = task(row.taskId());
                 memory.put(tasks, task.id(), task.failed("{\"message\":\"" + (dead ? "Expired " + (row.expiries() + 1)
                     + " times: the node running it stopped every time" : "Expired: the node running it stopped") + "\",\"type\":\"expired\"}", row.attempt()));
-                memory.append(attempts, new Rows.Attempt(row.topicId(), row.taskId(), row.attempt(), row.nodeId(),
-                    row.claimedAt() == null ? now : row.claimedAt(), now, "expired", null));
                 requeued.add(row.topicId());
             }
         }
@@ -581,10 +571,8 @@ public final class InMemoryTaskStore implements TaskStore {
         return Objects.requireNonNull(topics.get(id), () -> "No topic " + id);
     }
 
-    /** Deletes a task and its attempt log. */
     private void deleteTask(MemoryTransaction memory, long taskId) {
         memory.remove(tasks, taskId);
-        memory.removeIf(attempts, attempt -> attempt.taskId() == taskId);
     }
 
     @Override

@@ -115,8 +115,4 @@ final class Rows {
             return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null, 0);
         }
     }
-
-    record Attempt(int topicId, long taskId, int attempt, @Nullable Integer nodeId, Instant startedAt, Instant finishedAt, String result,
-                   @Nullable String error) {
-    }
 }

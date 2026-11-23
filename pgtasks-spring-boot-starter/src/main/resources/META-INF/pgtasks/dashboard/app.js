@@ -23,7 +23,7 @@ const ROUTES = {
 
 const HIDDEN = "******";
 const REFRESH_MS = 10000;
-const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated", "cancelled"];
+const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated"];
 const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "failed"];
 
 const state = {

@@ -191,8 +191,8 @@ public final class PostgresTaskStore implements TaskStore {
         wait = sql("""
             WITH d AS (
                 SELECT * FROM unnest(:ids::bigint[], :attempts::integer[], :states::text[], :delays::bigint[],
-                                     :uncounted::integer[], :errors::text[], :started::timestamptz[])
-                    AS d(task_id, attempt, state, delay_ms, uncounted, error, started_at)
+                                     :uncounted::integer[], :errors::text[])
+                    AS d(task_id, attempt, state, delay_ms, uncounted, error)
             ),
             moved AS (
                 UPDATE pgtasks.queue q
@@ -220,21 +220,6 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM moved m JOIN d ON d.task_id = m.task_id
                 WHERE t.id = ANY (ARRAY(SELECT task_id FROM moved))
                   AND t.id = m.task_id AND d.error IS NOT NULL
-            ),
-            -- Only counted attempts are logged, so an outage of uncounted failures doesn't grow the log.
-            logged AS (
-                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result, error)
-                SELECT :topic::integer, d.task_id, d.attempt, :node::integer, coalesce(d.started_at, now()), 'failed', d.error::jsonb
-                FROM moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL AND d.uncounted = 0
-            ),
-            -- The log keeps a task's first attempt and its last ten, so a task that keeps failing
-            -- doesn't grow it without bound. (This statement doesn't see the row it inserts.)
-            trimmed AS (
-                DELETE FROM pgtasks.attempt a
-                USING moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL AND d.uncounted = 0 AND a.task_id = m.task_id
-                  AND a.attempt > 1 AND a.attempt <= d.attempt - 10
             )
             SELECT task_id FROM moved
             """);
@@ -260,7 +245,7 @@ public final class PostgresTaskStore implements TaskStore {
         // The attempt is kept: an expired run counts, since a poison task can take a node down.
         expire = sql("""
             WITH stale AS (
-                SELECT o.ctid AS row, o.task_id, o.topic_id, o.attempt, o.node_id, o.claimed_at
+                SELECT o.ctid AS row
                 FROM pgtasks.queue o
                 WHERE o.state = 'active'
                   AND o.node_id <> :node::integer
@@ -291,11 +276,6 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM requeued r
                 WHERE t.id = ANY (ARRAY(SELECT task_id FROM requeued))
                   AND t.id = r.task_id
-            ),
-            logged AS (
-                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
-                SELECT s.topic_id, s.task_id, s.attempt, s.node_id, coalesce(s.claimed_at, now()), 'expired'
-                FROM stale s JOIN requeued r ON r.task_id = s.task_id
             )
             SELECT topic_id FROM requeued
             """);
@@ -464,11 +444,6 @@ public final class PostgresTaskStore implements TaskStore {
                 ORDER BY d.completed_at
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
-            ),
-            -- A task's attempt log goes with it.
-            attempts AS (
-                DELETE FROM pgtasks.attempt a
-                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
             WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
@@ -481,10 +456,6 @@ public final class PostgresTaskStore implements TaskStore {
                 WHERE d.topic_id = :topic::integer AND d.outcome IS NOT NULL
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
-            ),
-            attempts AS (
-                DELETE FROM pgtasks.attempt a
-                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
             WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
@@ -495,8 +466,7 @@ public final class PostgresTaskStore implements TaskStore {
         topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.task WHERE topic_id = :topic::integer)");
         // The delete trigger on pgtasks.topic tells every node (R__notify_topic.sql).
         deleteTopic = sql("""
-            WITH schedules AS (DELETE FROM pgtasks.schedule WHERE topic_id = :topic::integer),
-                 counts AS (DELETE FROM pgtasks.topic_count WHERE topic_id = :topic::integer)
+            WITH counts AS (DELETE FROM pgtasks.topic_count WHERE topic_id = :topic::integer)
             DELETE FROM pgtasks.topic WHERE id = :topic::integer
             """);
         // Written at every start, so it skips the write when nothing changed.
@@ -729,10 +699,6 @@ public final class PostgresTaskStore implements TaskStore {
                             AND d.outcome IS NOT NULL
                           FOR UPDATE OF d SKIP LOCKED))
                     RETURNING t.id
-                ),
-                deleted_attempts AS (
-                    DELETE FROM pgtasks.attempt a
-                    WHERE a.task_id = ANY (ARRAY(SELECT id FROM deleted_tasks))
                 )
                 """;
         };
@@ -798,7 +764,7 @@ public final class PostgresTaskStore implements TaskStore {
             case ANY -> """
                 SELECT 1 FROM pgtasks.task t
                 WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
-                  AND (t.outcome IS NULL OR t.outcome NOT IN ('redundant', 'cancelled'))
+                  AND (t.outcome IS NULL OR t.outcome <> 'redundant')
                 """;
         };
         return """
@@ -1106,7 +1072,7 @@ public final class PostgresTaskStore implements TaskStore {
         if (!waiting.isEmpty()) {
             int size = waiting.size();
             @Nullable Object[] ids = new @Nullable Object[size], attempts = new @Nullable Object[size], states = new @Nullable Object[size], delays = new @Nullable Object[size];
-            @Nullable Object[] uncounted = new @Nullable Object[size], errors = new @Nullable Object[size], started = new @Nullable Object[size];
+            @Nullable Object[] uncounted = new @Nullable Object[size], errors = new @Nullable Object[size];
             for (int index = 0; index < size; index++) {
                 Completion completion = waiting.get(index);
                 Resolution.Waiting resolution = (Resolution.Waiting) completion.resolution();
@@ -1121,7 +1087,6 @@ public final class PostgresTaskStore implements TaskStore {
                 delays[index] = resolution.delay() == null ? null : resolution.delay().toMillis();
                 uncounted[index] = resolution.counted() ? 0 : 1;
                 errors[index] = resolution.error();
-                started[index] = completion.claimedAt() == null ? null : completion.claimedAt().toString();
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1131,8 +1096,7 @@ public final class PostgresTaskStore implements TaskStore {
                 .array("states", "text", states)
                 .array("delays", "bigint", delays)
                 .array("uncounted", "integer", uncounted)
-                .array("errors", "text", errors)
-                .array("started", "text", started);
+                .array("errors", "text", errors);
             collect(wait, connection, parameters, matched);
         }
         return matched;

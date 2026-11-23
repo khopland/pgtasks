@@ -188,7 +188,7 @@ Each layer overrides the one before it:
 
 1. Built-in defaults: 100 tasks per batch, 2 batches per topic per node, FIFO, the standard
    retry, a 30 minute batch deadline, a 30 s poll as a fallback for notifications. Succeeded
-   tasks are kept for 30 days, cancelled ones too; filtered, redundant and recreated for 7; failed forever.
+   tasks are kept for 30 days; filtered, redundant and recreated for 7; failed forever.
 2. `TaskGlobals.defaults(...)`, for every topic.
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.

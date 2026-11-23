@@ -137,8 +137,8 @@ class MilestoneOneTest {
         await("the failed first attempt", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'notify' AND state = 'retrying'") == 2);
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).as("publications").isZero();
         assertThat(tasksIn(Slice.ARCHIVE)).as("child tasks").isZero();
-        assertThat(database.rows("SELECT DISTINCT result, error->>'message' FROM pgtasks.attempt"))
-            .containsExactly(List.of("failed", "Simulated failure while publishing"));
+        assertThat(database.rows("SELECT DISTINCT error->>'message' FROM pgtasks.task WHERE error IS NOT NULL"))
+            .containsExactly(List.of("Simulated failure while publishing"));
 
         fixture.makeDue();
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
@@ -182,7 +182,7 @@ class MilestoneOneTest {
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
 
         assertThat(tasksIn(Slice.NOTIFY)).as("notices: only node B's").isEqualTo(1);
-        assertThat(database.rows("SELECT result, node_id FROM pgtasks.attempt WHERE result = 'expired'")).containsExactly(List.of("expired", nodeA.nodeId()));
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task WHERE error->>'type' = 'expired'")).as("node A's task expired").isOne();
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).isEqualTo(1);
         assertThat(ledger.calls).as("both nodes made the external call").hasValue(2);
         assertThat(fixture.count("SELECT count(*) FROM assessment")).as("deduplicated by the stable idempotency key").isEqualTo(1);
