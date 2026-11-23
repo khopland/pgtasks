@@ -64,11 +64,9 @@ public abstract class StoreFixture implements AutoCloseable {
         return inTransaction(transaction -> store().registerNode(transaction, name, "test"));
     }
 
-    public void heartbeat(int node) throws SQLException {
-        inTransaction(transaction -> {
-            store().heartbeat(transaction, node);
-            return null;
-        });
+    /** Whether the node is registered, and so heartbeat. */
+    public boolean heartbeat(int node) throws SQLException {
+        return inTransaction(transaction -> store().heartbeat(transaction, node));
     }
 
     /** The id of a task the push stored, as queued or redundant. */

@@ -39,7 +39,7 @@ final class Coalesced {
                 pending.set(false);
                 try {
                     job.run();
-                } catch (Exception e) {
+                } catch (Exception | Error e) {
                     if (!stopped) {
                         LOGGER.warn("Could not reload the {}; the next heartbeat tries again", what, e);
                     }

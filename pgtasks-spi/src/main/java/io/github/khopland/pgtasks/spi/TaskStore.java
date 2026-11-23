@@ -204,6 +204,17 @@ public interface TaskStore {
      */
     List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException;
 
+    /**
+     * Like {@link #activeClaims(StoreTransaction, int)}, but only the claims made at least
+     * {@code claimedFor} ago, by the clock the store stamps claims with: a claim's time and the
+     * cutoff must come from one clock, or a node whose clock runs ahead of the database's would
+     * take a claim still on its way to its worker for one it lost track of. Zero means every claim.
+     */
+    default List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId, Duration claimedFor) throws SQLException {
+        Instant cutoff = clock().instant().minus(claimedFor);
+        return activeClaims(transaction, nodeId).stream().filter(claim -> claimedFor.isZero() || !claim.claimedAt().isAfter(cutoff)).toList();
+    }
+
     int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException;
 
     /**
@@ -256,7 +267,11 @@ public interface TaskStore {
     /** The last recorded queue counts per topic. */
     List<TopicSnapshot> snapshots(StoreTransaction transaction) throws SQLException;
 
-    void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
+    /**
+     * Records that the node is alive. False if the node isn't registered, such as one
+     * {@link #deleteDeadNodes} forgot while its process was suspended: it must register again.
+     */
+    boolean heartbeat(StoreTransaction transaction, int nodeId) throws SQLException;
 
     /**
      * Deletes the rows of nodes whose last heartbeat is older than {@code deadFor} and that hold

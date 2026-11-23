@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -9,10 +10,13 @@ import java.util.stream.IntStream;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
+import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -120,6 +124,60 @@ class BreakerTest {
         assertThat(runs).hasValue(30);
         assertThat(engine.health().openBreakers()).isEmpty();
         assertThat(engine.admin().find(poison).orElseThrow().state()).isEqualTo("failed");
+    }
+
+    /** Review 2026-11-23: a probe out of attempts was retried as an uncounted probe failure, never dead-lettered. */
+    @Test
+    void a_probe_out_of_attempts_is_dead_lettered() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore(clock);
+        engine = TaskEngine.builder()
+            .store(store)
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                runs.incrementAndGet();
+                return Decision.failed("downstream refused");
+            }), topic -> topic.batchSize(10).retry(Retry.standard().attempts(2)).breaker(Breaker.standard().opensAt(0.8, 10))))
+            .build()
+            .prepare();
+        // A task that used both its attempts on another node: its next claim finds it out of
+        // attempts, as when the last one expired with its node. Due once the breaker is open.
+        long spent = engine.tasks().independently().push(WORK, "spent", "payload").id();
+        int topicId = engine.admin().topicId("work");
+        int other = EngineCore.transact(store, transaction -> store.registerNode(transaction, "other", null));
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            Duration delay = Duration.ofSeconds(attempt == 1 ? 1 : 60);
+            TaskStore.ClaimedTask claim = EngineCore.transact(store, transaction -> store.claim(transaction,
+                new TaskStore.ClaimRequest(topicId, other, Ordering.FIFO, 1, null))).tasks().getFirst();
+            EngineCore.transact(store, transaction -> {
+                store.complete(transaction, topicId, other, List.of(new TaskStore.Completion(claim.id(), claim.attempt(), claim.claimedAt(),
+                    new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, delay, true, null))));
+                return null;
+            });
+            if (attempt == 1) {
+                clock.advance(Duration.ofSeconds(2));
+                EngineCore.transact(store, transaction -> store.promoteDue(transaction, 10));
+            }
+        }
+        assertThat(engine.admin().find(spent).orElseThrow().attempt()).isEqualTo(2);
+
+        engine.start();
+        TaskTester tester = TaskTester.of(engine);
+        engine.tasks().independently().push(WORK, Insertion.APPEND,
+            IntStream.range(0, 10).mapToObj(index -> Creation.of("t" + index, "payload")).toList());
+        tester.awaitIdle();
+        assertThat(engine.health().openBreakers()).containsExactly("work");
+        int ranBefore = runs.get();
+
+        // Probes, one task at a time, until the spent task's turn has come.
+        for (int probe = 0; probe < 15 && !engine.admin().find(spent).orElseThrow().state().equals("failed"); probe++) {
+            tester.advance(Duration.ofSeconds(31));
+            tester.awaitIdle();
+        }
+
+        TaskView task = engine.admin().find(spent).orElseThrow();
+        assertThat(task.state()).as("dead-lettered, not retried as a probe").isEqualTo("failed");
+        assertThat(task.attempt()).isEqualTo(3);
+        assertThat(runs.get() - ranBefore).as("the handler never ran it").isLessThan(15);
+        assertThat(engine.health().openBreakers()).containsExactly("work");
     }
 
     private static <V> V unchecked(Callable<V> call) {

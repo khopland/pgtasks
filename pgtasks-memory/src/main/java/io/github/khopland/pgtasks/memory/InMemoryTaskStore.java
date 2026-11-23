@@ -619,13 +619,14 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public void heartbeat(StoreTransaction transaction, int nodeId) {
+    public boolean heartbeat(StoreTransaction transaction, int nodeId) {
         MemoryTransaction memory = memory(transaction);
         Rows.Node node = nodes.get(nodeId);
         if (node == null) {
-            throw new IllegalStateException("Node " + nodeId + " is not registered");
+            return false;
         }
         memory.put(nodes, nodeId, node.beat(now()));
+        return true;
     }
 
     @Override

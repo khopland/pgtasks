@@ -242,7 +242,9 @@ final class TopicWorker<T> {
                 }
             } catch (InterruptedException e) {
                 return;
-            } catch (Exception e) {
+            } catch (Exception | Error e) {
+                // An Error too (a linkage error, a stack overflow): it would end this thread, and the
+                // topic would stop being polled on this node without a word.
                 if (probe && !dispatched) {
                     breaker.probeReturned();
                 }

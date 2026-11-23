@@ -99,7 +99,8 @@ final class ReadyNotices {
                 failing = false;
                 LOGGER.info("Wake-up notifications are sent again");
             }
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
+            // An Error too: thrown out of send(), it would leave sending set, and no wake-up would go out again.
             if (!failing) {
                 failing = true;
                 LOGGER.warn("Could not send a wake-up notification; other nodes find the tasks at their next poll. Logged once until "

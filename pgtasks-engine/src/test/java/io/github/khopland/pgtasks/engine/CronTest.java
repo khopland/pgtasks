@@ -42,6 +42,22 @@ class CronTest {
         assertThat(Cron.parse("0 0 1 * MON").next(at("2026-11-30T00:00:00Z"))).isEqualTo(at("2026-12-01T00:00:00Z"));
     }
 
+    /** Review 2026-11-23: a day field starting with * counts as unrestricted, as in Vixie cron. */
+    @Test
+    void a_stepped_star_in_a_day_field_makes_both_day_fields_match() {
+        // Odd days of the month that are Mondays: 23 November, then 7 December (30 November is even).
+        Cron oddMondays = Cron.parse("0 0 */2 * MON");
+        assertThat(oddMondays.next(at("2026-11-21T00:00:00Z"))).isEqualTo(at("2026-11-23T00:00:00Z"));
+        assertThat(oddMondays.next(at("2026-11-23T00:00:00Z"))).isEqualTo(at("2026-12-07T00:00:00Z"));
+        // The 1st of the month on a Sunday, Tuesday, Thursday or Saturday: 1 December 2026, a Tuesday,
+        // then 1 April 2027, a Thursday (January starts on a Friday, February and March on a Monday).
+        Cron firstOnEvenWeekdays = Cron.parse("0 0 1 * */2");
+        assertThat(firstOnEvenWeekdays.next(at("2026-11-21T00:00:00Z"))).isEqualTo(at("2026-12-01T00:00:00Z"));
+        assertThat(firstOnEvenWeekdays.next(at("2026-12-01T00:00:00Z"))).isEqualTo(at("2027-04-01T00:00:00Z"));
+        // A restricted field that doesn't start with * still means either day matches.
+        assertThat(Cron.parse("0 0 1-31/2 * MON").next(at("2026-11-23T00:00:00Z"))).isEqualTo(at("2026-11-25T00:00:00Z"));
+    }
+
     @Test
     void a_zone_moves_the_schedule_and_daylight_saving_is_handled() {
         Cron nightly = Cron.parse("0 2 * * *", OSLO);

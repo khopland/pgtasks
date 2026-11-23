@@ -62,7 +62,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final String schema;
     private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, purge, snapshot, snapshots, claimPlanning;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
@@ -680,6 +680,14 @@ public final class PostgresTaskStore implements TaskStore {
             SELECT topic_id, task_id, attempt, claimed_at
             FROM pgtasks.queue
             WHERE node_id = :node::integer AND state = 'active'
+            ORDER BY task_id
+            """);
+        // Claims are stamped with clock_timestamp(), so their age is measured by it too.
+        settledClaims = sql("""
+            SELECT topic_id, task_id, attempt, claimed_at
+            FROM pgtasks.queue
+            WHERE node_id = :node::integer AND state = 'active'
+              AND claimed_at <= clock_timestamp() - :age::bigint * interval '1 millisecond'
             ORDER BY task_id
             """);
         listAttempts = sql("""
@@ -1443,8 +1451,20 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId) throws SQLException {
+        return activeClaims(activeClaims.prepare(transaction.connection(), NamedSql.parameters().set("node", nodeId)));
+    }
+
+    @Override
+    public List<ActiveClaim> activeClaims(StoreTransaction transaction, int nodeId, Duration claimedFor) throws SQLException {
+        if (claimedFor.isZero()) {
+            return activeClaims(transaction, nodeId);
+        }
+        return activeClaims(settledClaims.prepare(transaction.connection(), NamedSql.parameters().set("node", nodeId).set("age", claimedFor.toMillis())));
+    }
+
+    private static List<ActiveClaim> activeClaims(PreparedStatement prepared) throws SQLException {
         List<ActiveClaim> claims = new ArrayList<>();
-        try (PreparedStatement statement = activeClaims.prepare(transaction.connection(), NamedSql.parameters().set("node", nodeId));
+        try (PreparedStatement statement = prepared;
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 claims.add(new ActiveClaim(resultSet.getInt(1), resultSet.getLong(2), resultSet.getInt(3), requiredInstant(resultSet, "claimed_at")));
@@ -1464,12 +1484,10 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
+    public boolean heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = heartbeat.prepare(connection, NamedSql.parameters().set("node", nodeId))) {
-            if (statement.executeUpdate() != 1) {
-                throw new IllegalStateException("Node " + nodeId + " is not registered");
-            }
+            return statement.executeUpdate() == 1;
         }
     }
 

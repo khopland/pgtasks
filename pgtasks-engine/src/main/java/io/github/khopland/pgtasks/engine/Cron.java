@@ -22,8 +22,11 @@ import org.jspecify.annotations.Nullable;
  * A cron schedule in the usual five fields, read in a time zone: minute (0-59), hour (0-23),
  * day of month (1-31), month (1-12 or JAN-DEC) and day of week (0-7 or SUN-SAT; 0 and 7 are
  * Sunday). A field is {@code *}, a value, a range {@code a-b}, any of those with a step
- * ({@code 8-18/2}, or {@code *}&#47;{@code 15} for every 15), or a comma-separated list of them. As in classic cron, when both
- * day fields are restricted a day matches either. The shorthands {@code @hourly}, {@code @daily},
+ * ({@code 8-18/2}, or {@code *}&#47;{@code 15} for every 15), or a comma-separated list of them. As in classic (Vixie)
+ * cron, when both day fields are restricted a day matches either; otherwise it must match both. A day
+ * field that starts with {@code *}, such as {@code *}&#47;{@code 2}, counts as unrestricted for this
+ * rule, so {@code 0 0 *}&#47;{@code 2 * MON} fires on Mondays that fall on an odd day of the month,
+ * not on every odd day and every Monday. The shorthands {@code @hourly}, {@code @daily},
  * {@code @weekly}, {@code @monthly} and {@code @yearly} work too.
  *
  * <p>Daylight saving time: a time skipped when clocks go forward fires at the first instant
@@ -72,8 +75,9 @@ public final class Cron {
             weekdays.clear(7);
         }
         daysOfWeek = weekdays;
-        anyDayOfMonth = fields[2].equals("*");
-        anyDayOfWeek = fields[4].equals("*");
+        // As Vixie cron decides it: by the first character, so "*/2" counts as unrestricted too.
+        anyDayOfMonth = fields[2].startsWith("*");
+        anyDayOfWeek = fields[4].startsWith("*");
         if (next(Instant.EPOCH.plus(365 * 30, ChronoUnit.DAYS)) == null) {
             throw new IllegalArgumentException("The cron expression '" + expression + "' never fires");
         }

@@ -125,6 +125,32 @@ final class MemoryTransaction implements StoreTransaction {
         store.unlock();
     }
 
+    /** Undoes the changes recorded since, newest first; wake-ups for them are dropped too. */
+    @Override
+    public Savepoint savepoint() {
+        check();
+        int changes = undo.size();
+        Set<Integer> ready = Set.copyOf(readyTopics);
+        Set<String> limits = Set.copyOf(changedLimits);
+        Set<String> topics = Set.copyOf(changedTopics);
+        return new Savepoint() {
+            @Override
+            public void rollback() {
+                check();
+                while (undo.size() > changes) {
+                    undo.pop().run();
+                }
+                readyTopics.retainAll(ready);
+                changedLimits.retainAll(limits);
+                changedTopics.retainAll(topics);
+            }
+
+            @Override
+            public void release() {
+            }
+        };
+    }
+
     @Override
     public Connection connection() {
         return NO_CONNECTION;

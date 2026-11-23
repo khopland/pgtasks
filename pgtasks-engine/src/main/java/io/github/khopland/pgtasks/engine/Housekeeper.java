@@ -15,11 +15,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.Schedule;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -57,11 +59,13 @@ final class Housekeeper {
 
     private final TaskStore store;
     private final EngineSettings settings;
-    private final int nodeId;
+    private final IntSupplier nodeId;
+    private final Job rejoin;
     private final IntConsumer wake;
     private final Job sweepOrphans;
     private final Job reconcile;
     private final Object leadership = new Object();
+    private final Object beating = new Object();
     private @Nullable Instant leaseEnds;
     private volatile @Nullable Instant lastHeartbeat;
     /**
@@ -77,20 +81,20 @@ final class Housekeeper {
     private @Nullable Integer purgeStoppedAt;
 
     /**
+     * @param nodeId       this node's id now
+     * @param rejoin       registers this node again, under a new id, once the cluster has forgotten it
      * @param wake         wakes this node's worker for a topic id
      * @param sweepOrphans releases tasks this node holds but isn't processing
      * @param reconcile    brings this node in line with the store, in case a notification was
      *                     lost: the topics it runs and paused, the rate limit overrides
      */
-    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reconcile) {
-        this(store, settings, nodeId, wake, sweepOrphans, reconcile, PURGE_BUDGET);
-    }
-
-    Housekeeper(TaskStore store, EngineSettings settings, int nodeId, IntConsumer wake, Job sweepOrphans, Job reconcile, Duration purgeBudget) {
+    Housekeeper(TaskStore store, EngineSettings settings, IntSupplier nodeId, Job rejoin, IntConsumer wake, Job sweepOrphans, Job reconcile,
+                Duration purgeBudget) {
         this.purgeBudget = purgeBudget;
         this.store = store;
         this.settings = settings;
         this.nodeId = nodeId;
+        this.rejoin = rejoin;
         this.wake = wake;
         this.sweepOrphans = sweepOrphans;
         this.reconcile = reconcile;
@@ -145,6 +149,10 @@ final class Housekeeper {
                 job.run();
             } catch (Exception e) {
                 LOGGER.warn("The {} job failed; it runs again in {}", name, interval, e);
+            } catch (Error e) {
+                // Caught too: anything thrown out of a scheduled job cancels it for good, without a word,
+                // and a node whose heartbeat stopped that way would be taken for dead while still running.
+                LOGGER.error("The {} job failed with an error; it runs again in {}", name, interval, e);
             }
         }, 0, interval.toNanos(), TimeUnit.NANOSECONDS);
     }
@@ -174,7 +182,7 @@ final class Housekeeper {
         if (held) {
             try {
                 EngineCore.transact(store, transaction -> {
-                    store.resign(transaction, LEASE, nodeId);
+                    store.resign(transaction, LEASE, nodeId.getAsInt());
                     return null;
                 });
             } catch (Exception e) {
@@ -195,18 +203,34 @@ final class Housekeeper {
         }
     }
 
-    /** Heartbeats, then renews or takes the lease. */
+    /**
+     * Heartbeats, then renews or takes the lease. A node silent for {@link #FORGET_NODES_AFTER}
+     * without claims is forgotten, but its process may still be alive, after a suspended VM or a
+     * long partition: it finds its row gone, and registers again under a new id rather than fail
+     * every heartbeat and claim from then on. It held no claims, and no lease (deleted with it).
+     */
     void heartbeat() throws Exception {
+        // One at a time, so a heartbeat asked for (heartbeatNow) and the scheduled one can't both register again.
+        synchronized (beating) {
+            beat();
+        }
+    }
+
+    private void beat() throws Exception {
         Instant beat = store.clock().instant();
-        EngineCore.transact(store, transaction -> {
-            store.heartbeat(transaction, nodeId);
-            return null;
-        });
+        int node = nodeId.getAsInt();
+        if (!EngineCore.transact(store, transaction -> store.heartbeat(transaction, node))) {
+            synchronized (leadership) {
+                leaseEnds = null;
+            }
+            rejoin.run();
+        }
         lastHeartbeat = beat;
         Duration term = settings.leaseTerm();
         // Counted from before the call, so this node never believes in a lease longer than the store does.
         Instant asked = store.clock().instant();
-        boolean held = EngineCore.transact(store, transaction -> store.lead(transaction, LEASE, nodeId, term));
+        int leader = nodeId.getAsInt();
+        boolean held = EngineCore.transact(store, transaction -> store.lead(transaction, LEASE, leader, term));
         boolean was;
         synchronized (leadership) {
             was = leaseEnds != null && asked.isBefore(leaseEnds);
@@ -232,7 +256,7 @@ final class Housekeeper {
     static final Duration FORGET_NODES_AFTER = Duration.ofDays(3);
 
     private void expire() throws Exception {
-        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId, settings.expiry(), settings.expiries())).forEach(wake::accept);
+        EngineCore.transact(store, transaction -> store.requeueExpired(transaction, nodeId.getAsInt(), settings.expiry(), settings.expiries())).forEach(wake::accept);
         EngineCore.transact(store, transaction -> store.deleteDeadNodes(transaction, FORGET_NODES_AFTER));
     }
 
@@ -245,21 +269,27 @@ final class Housekeeper {
         } while (promoted.tasks() == BATCH && leading());
     }
 
+    /** How soon a recurring task whose push failed is tried again, unless its next run comes first. */
+    static final Duration FAILED_SCHEDULE_RETRY = Duration.ofMinutes(1);
+
     /**
      * Pushes the recurring tasks that are due, each in the same transaction as moving its next run
      * on, so a schedule fires once even if this node dies halfway. A run missed while no node was
-     * up is made up once: the next run counts from now.
+     * up is made up once: the next run counts from now. Each schedule has a savepoint of its own,
+     * so one whose push fails is undone, logged and tried again later, and the others still fire.
      */
     private void fireSchedules() throws Exception {
-        List<Integer> fired;
+        int[] due = new int[1];
         do {
             // Seen by the observer like any push: traced while written, counted once committed.
             List<Runnable> committed = new ArrayList<>();
-            fired = EngineCore.transact(store, transaction -> {
+            List<Integer> fired = EngineCore.transact(store, transaction -> {
                 committed.clear();
                 Instant now = store.clock().instant();
                 List<Integer> topics = new ArrayList<>();
-                for (Schedule schedule : store.dueSchedules(transaction, BATCH)) {
+                List<Schedule> schedules = store.dueSchedules(transaction, BATCH);
+                due[0] = schedules.size();
+                for (Schedule schedule : schedules) {
                     Instant next;
                     try {
                         // The store decides what is due by its own clock (the database server's), this
@@ -275,20 +305,36 @@ final class Housekeeper {
                         continue;
                     }
                     TopicRef<?> topic = TopicRef.of(schedule.topic(), Object.class);
+                    StoreTransaction.Savepoint savepoint = transaction.savepoint();
                     List<Pushed> results;
-                    try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
-                        results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
-                            schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.headers())));
+                    try {
+                        try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
+                            results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
+                                schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.headers())));
+                        }
+                        store.scheduleFired(transaction, schedule.id(), now, next);
+                        savepoint.release();
+                    } catch (Exception e) {
+                        // Undone, or the transaction can't go on (a lost connection): then this throws and the whole run is retried.
+                        savepoint.rollback();
+                        if (Transient.is(e)) {
+                            throw e;
+                        }
+                        // Its slot stays unfired: tried again shortly, and made up once when it works.
+                        Instant retry = now.plus(FAILED_SCHEDULE_RETRY);
+                        Instant at = next.isBefore(retry) ? next : retry;
+                        LOGGER.warn("Recurring task {} of {} could not be pushed; tried again at {}", schedule.name(), schedule.topic(), at, e);
+                        store.scheduleFired(transaction, schedule.id(), now, at);
+                        continue;
                     }
                     committed.add(() -> settings.observer().pushed(topic, results));
-                    store.scheduleFired(transaction, schedule.id(), now, next);
                     topics.add(schedule.topicId());
                 }
                 return topics;
             });
             committed.forEach(Runnable::run);
             fired.forEach(wake::accept);
-        } while (fired.size() == BATCH && leading());
+        } while (due[0] == BATCH && leading());
     }
 
     /**
@@ -334,6 +380,6 @@ final class Housekeeper {
 
     @Override
     public String toString() {
-        return "Housekeeper[node " + nodeId + (leading() ? ", leading" : "") + "]";
+        return "Housekeeper[node " + nodeId.getAsInt() + (leading() ? ", leading" : "") + "]";
     }
 }

@@ -70,9 +70,9 @@ final class BatchRun<T> {
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private @Nullable VirtualMachineError fatal;
     /**
-     * Tasks whose failure the retry policy blames on the task itself, such as bad input, and
-     * dead-letters at once: the breaker leaves them out, since they say nothing about whether a
-     * downstream system is down.
+     * Tasks whose failure says nothing about whether a downstream system is down, so the breaker
+     * leaves them out: those the retry policy blames on the task itself, such as bad input, and
+     * dead-letters at once, and those decided without running, such as one out of attempts.
      */
     private final Set<Long> taskFaults = new HashSet<>();
     private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
@@ -302,8 +302,16 @@ final class BatchRun<T> {
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                                 TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
-        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
-        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision(), probe)));
+        // Decided without running the handler, so not a probe of anything, even when sent as one:
+        // a task out of attempts is dead-lettered rather than retried as an uncounted probe failure.
+        Set<Long> notRun = new HashSet<>();
+        early.verdicts().forEach(verdict -> {
+            ClaimedTask claim = claimOf(claims, verdict.task());
+            notRun.add(claim.id());
+            taskFaults.add(claim.id());
+            completions.add(completion(claim, verdict.decision(), false));
+        });
         Set<String> targets = new LinkedHashSet<>();
         Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
@@ -343,7 +351,7 @@ final class BatchRun<T> {
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
-            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
+            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e), probe && !notRun.contains(claim.id()))).toList();
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
@@ -448,7 +456,8 @@ final class BatchRun<T> {
         }
     }
 
-    private Completion completion(ClaimedTask claim, Decision decision) {
+    /** @param asProbe whether a counted failure is a probe's, and so isn't counted */
+    private Completion completion(ClaimedTask claim, Decision decision, boolean asProbe) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
             case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, success.output());
@@ -470,7 +479,7 @@ final class BatchRun<T> {
                     }
                     // A probe fails while the breaker is open: likely the outage, not the task.
                     case COUNTED -> {
-                        if (probe) {
+                        if (asProbe) {
                             yield new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
                         }
                         Duration backoff = retry.backoff(claim.failures() + 1, core.random());

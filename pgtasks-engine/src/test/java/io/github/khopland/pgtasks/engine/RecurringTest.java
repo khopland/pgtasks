@@ -9,6 +9,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Pushed;
@@ -214,6 +215,115 @@ class RecurringTest {
                 .recurring(REPORTS, "nightly", Cron.parse("@daily"), "x", "y")
                 .recurring(REPORTS, "nightly", Cron.parse("@hourly"), "x", "y"))
             .build()).hasMessageContaining("Two recurring tasks named nightly");
+    }
+
+    private static final TopicRef<String> AUDITS = TopicRef.of("audits", String.class);
+
+    private TaskEngine startWithTwoSchedules(TaskStore store) {
+        TaskEngine engine = TaskEngine.builder().store(store)
+            .configure("reporting", tasks -> tasks
+                .topic(REPORTS, batch -> batch.decide(task -> {
+                    ran.add(task.identifier());
+                    return Decision.success();
+                }))
+                .topic(AUDITS, batch -> batch.decide(task -> {
+                    ran.add(task.identifier());
+                    return Decision.success();
+                }))
+                .recurring(AUDITS, "audit", Cron.parse("0 2 * * *"), "audit", "full")
+                .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *"), "nightly-report", "full"))
+            .build().start();
+        engines.add(engine);
+        return engine;
+    }
+
+    /** Review 2026-11-23: all due schedules fired in one transaction, so one failing push held back every other, every time. */
+    @Test
+    @DisplayName("A schedule whose push fails is retried shortly and doesn't hold back the others")
+    void a_failing_schedule_doesnt_hold_back_the_others() throws Exception {
+        AtomicBoolean broken = new AtomicBoolean(true);
+        TaskStore failing = (TaskStore) Proxy.newProxyInstance(TaskStore.class.getClassLoader(), new Class<?>[] {TaskStore.class},
+            (proxy, method, args) -> {
+                if (method.getName().equals("push") && broken.get()
+                    && ((List<?>) args[3]).stream().anyMatch(task -> ((TaskStore.NewTask) task).identifier().equals("audit"))) {
+                    // Half done when it fails: the savepoint must undo what it wrote.
+                    method.invoke(store, args);
+                    throw new IllegalStateException("audits are broken");
+                }
+                try {
+                    return method.invoke(store, args);
+                } catch (InvocationTargetException e) {
+                    throw e.getCause();
+                }
+            });
+        TaskEngine engine = startWithTwoSchedules(failing);
+        TaskTester tester = TaskTester.of(engine);
+
+        tester.advance(Duration.ofHours(1));
+        tester.awaitIdle();
+        assertThat(ran).containsExactly("nightly-report");
+        assertThat(tester.counts(AUDITS).total()).as("the failed push left nothing behind").isZero();
+        assertThat(engine.admin().schedules()).extracting(Schedule::name, Schedule::nextRunAt).containsExactlyInAnyOrder(
+            Tuple.tuple("audit", Instant.parse("2026-11-21T02:01:00Z")),
+            Tuple.tuple("nightly", Instant.parse("2026-11-22T02:00:00Z")));
+
+        // Still broken a minute later: tried again, nothing else fires.
+        tester.advance(Duration.ofMinutes(1));
+        tester.awaitIdle();
+        assertThat(ran).containsExactly("nightly-report");
+
+        broken.set(false);
+        tester.advance(Duration.ofMinutes(1));
+        tester.awaitIdle();
+        tester.advance(Duration.ofHours(1));
+        tester.awaitIdle();
+        assertThat(ran).as("the missed slot made up once").containsExactly("nightly-report", "audit");
+        assertThat(engine.admin().schedules()).extracting(Schedule::nextRunAt).containsOnly(Instant.parse("2026-11-22T02:00:00Z"));
+    }
+
+    @Test
+    @DisplayName("On Postgres: a schedule whose push fails is rolled back to its savepoint, and the others fire")
+    void a_failing_schedule_on_postgres(PostgresDatabase database) throws Exception {
+        database.execute("""
+            CREATE FUNCTION pgtasks.refuse_audits() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.identifier = 'audit' THEN
+                    RAISE EXCEPTION 'audits are broken';
+                END IF;
+                RETURN NEW;
+            END $$""");
+        database.execute("CREATE TRIGGER refuse_audits BEFORE INSERT ON pgtasks.queue FOR EACH ROW EXECUTE FUNCTION pgtasks.refuse_audits()");
+        try {
+            TaskEngine engine = TaskEngine.builder()
+                .dataSource(database.dataSource())
+                .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.promoteEvery(Duration.ofMillis(50))))
+                .configure("reporting", tasks -> tasks
+                    .topic(REPORTS, batch -> batch.decide(task -> {
+                        ran.add(task.identifier());
+                        return Decision.success();
+                    }))
+                    .topic(AUDITS, batch -> batch.decide(task -> {
+                        ran.add(task.identifier());
+                        return Decision.success();
+                    }))
+                    .recurring(AUDITS, "audit", Cron.parse("0 2 * * *"), "audit", "full")
+                    .recurring(REPORTS, "nightly", Cron.parse("0 2 * * *"), "nightly-report", "full"))
+                .build()
+                .start();
+            engines.add(engine);
+
+            // The audit is due first, so its failure comes before the report in the same transaction.
+            database.execute("UPDATE pgtasks.schedule SET next_run_at = now() - interval '2 seconds' WHERE name = 'audit'");
+            database.execute("UPDATE pgtasks.schedule SET next_run_at = now() - interval '1 second' WHERE name = 'nightly'");
+            EngineFixture.await("the report ran", Duration.ofSeconds(5), () -> !ran.isEmpty());
+
+            assertThat(ran).containsExactly("nightly-report");
+            assertThat(database.count("SELECT count(*) FROM pgtasks.schedule WHERE name = 'audit' "
+                + "AND next_run_at BETWEEN now() + interval '50 seconds' AND now() + interval '61 seconds'")).isEqualTo(1);
+        } finally {
+            database.execute("DROP TRIGGER refuse_audits ON pgtasks.queue");
+            database.execute("DROP FUNCTION pgtasks.refuse_audits()");
+        }
     }
 
     @Test
