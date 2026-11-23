@@ -58,6 +58,24 @@ public abstract class PushTck extends StoreTck {
     }
 
     @Test
+    void a_savepoint_undoes_a_push_and_keeps_the_rest() throws SQLException {
+        StoreFixture fixture = setUp();
+        List<Long> kept = fixture.inTransaction(transaction -> {
+            long before = StoreFixture.id(fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("before"))).getFirst());
+            StoreTransaction.Savepoint undone = transaction.savepoint();
+            fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("undone")));
+            undone.rollback();
+            StoreTransaction.Savepoint released = transaction.savepoint();
+            long after = StoreFixture.id(fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("after"))).getFirst());
+            released.release();
+            return List.of(before, after);
+        });
+
+        assertThat(fixture.inTransaction(transaction -> fixture.store().count(transaction, topic)).ready()).isEqualTo(2);
+        assertThat(kept).allSatisfy(id -> assertThat(fixture.state(id)).isEqualTo("ready"));
+    }
+
+    @Test
     void a_push_with_a_run_time_waits_until_then_by_the_stores_clock() throws Exception {
         StoreFixture fixture = setUp();
         Instant now = fixture.store().clock().instant().truncatedTo(ChronoUnit.MILLIS);

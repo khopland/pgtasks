@@ -21,6 +21,38 @@ public interface StoreTransaction extends AutoCloseable {
      */
     Connection connection();
 
+    /**
+     * Marks a point to roll back to without ending the transaction, so one failing step of many
+     * can be undone and the rest kept. The default uses a JDBC savepoint on {@link #connection()};
+     * a store without a connection overrides it.
+     */
+    default Savepoint savepoint() throws SQLException {
+        Connection connection = connection();
+        java.sql.Savepoint savepoint = connection.setSavepoint();
+        return new Savepoint() {
+            @Override
+            public void rollback() throws SQLException {
+                connection.rollback(savepoint);
+                connection.releaseSavepoint(savepoint);
+            }
+
+            @Override
+            public void release() throws SQLException {
+                connection.releaseSavepoint(savepoint);
+            }
+        };
+    }
+
+    /** A point in a transaction, from {@link #savepoint()}. Ends with exactly one of its methods. */
+    interface Savepoint {
+
+        /** Undoes everything done in the transaction since the savepoint; the transaction goes on. */
+        void rollback() throws SQLException;
+
+        /** Keeps what was done since the savepoint, as part of the transaction. */
+        void release() throws SQLException;
+    }
+
     @Override
     void close() throws SQLException;
 }
