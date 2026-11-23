@@ -71,7 +71,6 @@ already claimed is never touched.
 | `APPEND` (default) | kept | kept | kept |
 | `SUPERSEDE` | become redundant | kept | kept |
 | `REPLACE` | become redundant | become redundant | marked redundant, outcome kept in `previous_outcome` |
-| `DELETE` | deleted | deleted | deleted |
 
 Insertion is a queue-management tool, not a uniqueness guarantee. Use a dedup key for that.
 

@@ -175,27 +175,6 @@ public abstract class PushTck extends StoreTck {
     }
 
     @Test
-    void delete_removes_earlier_tasks_and_their_history() throws SQLException {
-        StoreFixture fixture = setUp();
-        long finished = fixture.push(topic, "a");
-        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
-        long running = fixture.push(topic, "x");
-        fixture.claim(topic, node);
-        long waiting = fixture.push(topic, "a");
-        long keepOther = fixture.push(topic, "b");
-
-        List<Pushed> pushed = fixture.push(topic, Insertion.DELETE, task("a"), task("x"), task("a"));
-
-        assertThat(pushed).extracting(Pushed::status).containsExactly(Pushed.Status.REDUNDANT, Pushed.Status.QUEUED, Pushed.Status.QUEUED);
-        assertThat(pushed.getFirst().id()).isNull();
-        assertThat(fixture.state(finished)).isNull();
-        assertThat(fixture.state(waiting)).isNull();
-        assertThat(fixture.state(running)).isEqualTo("active");
-        assertThat(fixture.state(keepOther)).isEqualTo("ready");
-        assertThat(fixture.state(StoreFixture.id(pushed.get(2)))).isEqualTo("ready");
-    }
-
-    @Test
     void a_dedup_key_allows_one_unfinished_task() throws SQLException {
         StoreFixture fixture = setUp();
         List<Pushed> first = fixture.push(topic, Insertion.APPEND, deduplicated("a", "key-1"));

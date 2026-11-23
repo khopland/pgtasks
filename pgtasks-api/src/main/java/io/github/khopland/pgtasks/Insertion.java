@@ -37,11 +37,5 @@ public enum Insertion {
      * finished tasks (succeeded, filtered, failed) redundant, keeping their outcome in
      * {@code previous_outcome}.
      */
-    REPLACE,
-
-    /**
-     * Deletes every earlier task for the identifier that isn't running, history included. Within
-     * one push, only the last creation per identifier is kept.
-     */
-    DELETE
+    REPLACE
 }

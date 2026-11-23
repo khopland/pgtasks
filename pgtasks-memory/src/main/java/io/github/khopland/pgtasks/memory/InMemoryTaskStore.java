@@ -213,10 +213,6 @@ public final class InMemoryTaskStore implements TaskStore {
         for (int index = 0; index < newTasks.size(); index++) {
             NewTask task = newTasks.get(index);
             boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
-            if (superseded && insertion == Insertion.DELETE) {
-                results.add(new Pushed(task.identifier(), Pushed.Status.REDUNDANT, null));
-                continue;
-            }
             long id = nextTask++;
             Rows.Task row = new Rows.Task(topicId, id, task.identifier(), task.reference(), task.payload(), task.payloadType(),
                 task.parentId(), task.rootId(), now, null, null, null, null, 0, null, task.headers());
@@ -247,22 +243,15 @@ public final class InMemoryTaskStore implements TaskStore {
                 if (before.contains(old.taskId()) && old.topicId() == topicId
                     && queuedIdentifiers.contains(old.identifier()) && covered.contains(old.state())) {
                     memory.remove(queue, old.taskId());
-                    if (insertion == Insertion.DELETE) {
-                        deleteTask(memory, old.taskId());
-                    } else {
-                        memory.put(tasks, old.taskId(), task(old.taskId()).redundant(now));
-                    }
+                    memory.put(tasks, old.taskId(), task(old.taskId()).redundant(now));
                 }
             }
             if (insertion != Insertion.SUPERSEDE) {
                 for (Rows.Task old : List.copyOf(tasks.values())) {
                     if (beforeTasks.contains(old.id()) && old.topicId() == topicId && queuedIdentifiers.contains(old.identifier())
-                        && old.outcome() != null && !queue.containsKey(old.id())) {
-                        if (insertion == Insertion.DELETE) {
-                            deleteTask(memory, old.id());
-                        } else if (Set.of("succeeded", "filtered", "failed").contains(old.outcome())) {
-                            memory.put(tasks, old.id(), old.replaced());
-                        }
+                        && old.outcome() != null && !queue.containsKey(old.id())
+                        && Set.of("succeeded", "filtered", "failed").contains(old.outcome())) {
+                        memory.put(tasks, old.id(), old.replaced());
                     }
                 }
             }

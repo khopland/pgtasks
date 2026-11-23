@@ -678,31 +678,6 @@ public final class PostgresTaskStore implements TaskStore {
                         FOR UPDATE OF d SKIP LOCKED))
                 )
                 """;
-            case DELETE -> """
-                ,
-                deleted AS (
-                    DELETE FROM pgtasks.queue q
-                    WHERE q.topic_id = :topic::integer
-                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                      AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM pgtasks.queue o
-                        WHERE o.topic_id = :topic::integer
-                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                          AND o.state <> 'active'
-                        FOR UPDATE OF o SKIP LOCKED))
-                    RETURNING q.task_id
-                ),
-                deleted_tasks AS (
-                    DELETE FROM pgtasks.task t
-                    WHERE t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
-                          SELECT d.id FROM pgtasks.task d
-                          WHERE d.topic_id = (SELECT :topic::integer)
-                            AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                            AND d.outcome IS NOT NULL
-                          FOR UPDATE OF d SKIP LOCKED))
-                    RETURNING t.id
-                )
-                """;
         };
         // Woken by the caller: the flag tells the queue's insert trigger, which runs at the end of
         // this statement, to skip its notification; the trigger clears it, so it covers this
@@ -891,22 +866,16 @@ public final class PostgresTaskStore implements TaskStore {
         if (tasks.isEmpty()) {
             return List.of();
         }
-        // Within one push, SUPERSEDE and REPLACE keep earlier duplicates as redundant history;
-        // DELETE drops them.
+        // Within one push, SUPERSEDE and REPLACE keep earlier duplicates as redundant history.
         Map<String, Integer> last = new HashMap<>();
         for (int index = 0; index < tasks.size(); index++) {
             last.put(tasks.get(index).identifier(), index);
         }
         List<NewTask> stored = new ArrayList<>(tasks.size());
         List<String> states = new ArrayList<>(tasks.size());
-        boolean[] dropped = new boolean[tasks.size()];
         for (int index = 0; index < tasks.size(); index++) {
             NewTask task = tasks.get(index);
             boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
-            if (superseded && insertion == Insertion.DELETE) {
-                dropped[index] = true;
-                continue;
-            }
             stored.add(task);
             states.add(superseded ? null : task.suspended() ? "suspended" : task.delayed() ? "scheduled" : "ready");
         }
@@ -953,10 +922,6 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             for (int index = 0; index < tasks.size(); index++) {
                 String identifier = tasks.get(index).identifier();
-                if (dropped[index]) {
-                    results.add(new Pushed(identifier, Pushed.Status.REDUNDANT, null));
-                    continue;
-                }
                 if (!resultSet.next()) {
                     throw new IllegalStateException("Push returned fewer rows than it was given");
                 }

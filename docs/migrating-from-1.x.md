@@ -12,7 +12,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | `TaskManager` with its 12 constructor arguments, one per topic | `TaskEngine.builder()`, or the Spring starter, with one `TaskConfigurer` per module |
 | Your own heartbeat, expire, scheduled, purge and purgeOwners jobs | Built in: one node leads housekeeping by a lease, retention per topic and outcome |
 | `INPUT` and `OUTPUT` as strings | A typed payload with a `PayloadCodec`, or JSON by default with Jackson; `Decision.success(output)` |
-| `TaskSink.Insertion` APPEND, SUPERSEDE, REPLACE, DELETE | `Insertion`, the same four |
+| `TaskSink.Insertion` APPEND, SUPERSEDE, REPLACE, DELETE | `Insertion` APPEND, SUPERSEDE, REPLACE. DELETE is not in this version: use REPLACE, and retention for the history |
 | `TaskSource.Condition` NONE, SINGULAR_BY_IDENTIFIER, …_SUSPEND_ON_FAILURE, …_SUSPEND_UNTIL_SUCCESS | `Ordering` FIFO, SINGULAR_BY_IDENTIFIER, …_ON_FAILURE, …_UNTIL_SUCCESS, now applied within the topic only, and always |
 | `TaskSource.Order` LAST_IN_FIRST_OUT | Dropped. Use `Creation.withPriority(n)` for work that should jump the queue |
 | `TaskJuncture` SINGULAR, ETERNAL | `Junction.Counts.SUSPENDED`, `Junction.Counts.ANY`, staged with `task.junction(...)` |

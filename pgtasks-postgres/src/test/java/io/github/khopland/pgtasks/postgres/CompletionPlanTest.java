@@ -112,10 +112,9 @@ class CompletionPlanTest {
         database.execute("UPDATE pgtasks.node SET heartbeat_at = now() - interval '1 hour' WHERE id = " + dying);
         assertThat(fixture.requeueExpired(node, Duration.ofMinutes(1))).containsExactly(topic);
 
-        // Pushes that finish, or delete, older tasks of the same identifiers.
+        // Pushes that finish older tasks of the same identifiers.
         fixture.push(topic, Insertion.SUPERSEDE, StoreFixture.many(round + "-e", BATCH));
         fixture.push(topic, Insertion.REPLACE, StoreFixture.many(round + "-t", BATCH));
-        fixture.push(topic, Insertion.DELETE, StoreFixture.many(round + "-t", BATCH));
     }
 
     private static void finish(PostgresStoreFixture fixture, int topic, int node, Resolution resolution) throws SQLException {
