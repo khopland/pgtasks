@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.postgres;
 
+import java.sql.SQLException;
 import java.time.Duration;
 import javax.sql.DataSource;
 
@@ -20,9 +21,10 @@ class PostgresStoreFixture extends StoreFixture {
 
     /**
      * The queue's statistics when a TCK test starts. Every Postgres TCK class runs once with each,
-     * so every statement is also tested while the planner believes the queue is empty.
+     * so every statement is also tested while the planner believes the queue is empty, and while it
+     * believes the task table is empty too.
      *
-     * <p>The drained pass also runs on a schema named {@value #CUSTOM_SCHEMA}, in a database without a
+     * <p>The drained and emptied passes also run on a schema named {@value #CUSTOM_SCHEMA}, in a database without a
      * {@code pgtasks} schema, so the whole TCK and the plan audit run once under a configured name at no
      * extra cost. A plan doesn't depend on the schema's name.
      */
@@ -30,7 +32,14 @@ class PostgresStoreFixture extends StoreFixture {
         /** A new database: nothing analyzed yet. The default schema. */
         FRESH(TaskSchema.DEFAULT_SCHEMA),
         /** Analyzed right after a burst drained, with ballast it doesn't know about; see {@link DrainedQueue}. */
-        DRAINED(CUSTOM_SCHEMA);
+        DRAINED(CUSTOM_SCHEMA),
+        /**
+         * The queue and the task table both analyzed while empty, then history and ballast they
+         * don't know about: an analyze right after retention emptied the task table. The store is
+         * prepared first, as an engine does, which repairs the task table's statistics; see
+         * {@link DrainedQueue} and EmptiedTaskStatisticsTest.
+         */
+        EMPTIED(CUSTOM_SCHEMA);
 
         final String schema;
 
@@ -47,9 +56,9 @@ class PostgresStoreFixture extends StoreFixture {
     static PostgresStoreFixture create(PostgresDatabase database, QueueStatistics statistics) {
         return switch (statistics) {
             case FRESH -> new PostgresStoreFixture(database);
-            case DRAINED -> {
-                DrainedQueue drained = DrainedQueue.create(statistics.schema);
-                yield new PostgresStoreFixture(drained.database(), drained.dataSource(), drained.schema()) {
+            case DRAINED, EMPTIED -> {
+                DrainedQueue drained = DrainedQueue.create(statistics.schema, statistics == QueueStatistics.EMPTIED);
+                PostgresStoreFixture fixture = new PostgresStoreFixture(drained.database(), drained.dataSource(), drained.schema()) {
                     @Override
                     public void close() {
                         try {
@@ -59,6 +68,15 @@ class PostgresStoreFixture extends StoreFixture {
                         }
                     }
                 };
+                if (statistics == QueueStatistics.EMPTIED) {
+                    // As an engine does before anything else: the store repairs the task table's statistics.
+                    try {
+                        fixture.store.prepare();
+                    } catch (SQLException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }
+                yield fixture;
             }
         };
     }

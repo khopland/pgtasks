@@ -76,7 +76,7 @@ public final class TaskEngine implements AutoCloseable {
     private List<Recurring<?>> recurring = List.of();
     private @Nullable String version;
     private volatile boolean started;
-    private boolean prepared;
+    private volatile boolean prepared;
     /** Whether it was started and stopped before, so a start must switch the reloads back on. */
     private boolean stopped;
     /** How long one retention run may take; shorter in tests. */
@@ -272,6 +272,11 @@ public final class TaskEngine implements AutoCloseable {
         });
         limits.refresh();
         prepared = true;
+    }
+
+    /** Whether the store has been readied for this engine: {@link #prepare()} or {@link #start()} has run. */
+    public boolean prepared() {
+        return prepared;
     }
 
     /** Whether this engine processes tasks: started and not stopped. A node that only pushes never starts. */

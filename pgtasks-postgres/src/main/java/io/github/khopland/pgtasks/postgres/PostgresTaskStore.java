@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -693,7 +694,56 @@ public final class PostgresTaskStore implements TaskStore {
     @Override
     public void prepare() throws SQLException {
         TaskSchema.prepare(dataSource, mode, schema);
+        if (mode == SchemaMode.NONE) {
+            // Does nothing, and the schema may not exist yet; the leader's count snapshots still check.
+            return;
+        }
+        try (Connection connection = dataSource.getConnection()) {
+            analyzeTasksIfStatisticsSayEmpty(connection);
+        }
     }
+
+    /**
+     * Statistics that say the task table has pages but no rows (analyzed right after retention
+     * emptied it) make every index path on it look free, and equally so: the planner then picks
+     * by tie, and a claim, completion or lookup can read every task (the TCK's EMPTIED pass). No
+     * statement rewrite helps a tie, so the statistics are repaired instead: at prepare and with
+     * every count snapshot on the leader (prepare skips it in SchemaMode.NONE), an ANALYZE when they say empty and a row exists. Rarely
+     * true, and false again once analyzed; the queue isn't touched, its statements are built for
+     * "analyzed while empty". A role that doesn't own the table gets a warning from Postgres and
+     * nothing else; an error is rolled back to before the check, so the caller's work stands.
+     */
+    private void analyzeTasksIfStatisticsSayEmpty(Connection connection) throws SQLException {
+        boolean autoCommit = connection.getAutoCommit();
+        Savepoint before = autoCommit ? null : connection.setSavepoint();
+        try {
+            boolean empty;
+            try (PreparedStatement statement = connection.prepareStatement(TaskSchema.qualify(TASK_STATISTICS_SAY_EMPTY, schema));
+                 ResultSet resultSet = statement.executeQuery()) {
+                empty = resultSet.next() && resultSet.getBoolean(1);
+            }
+            if (empty) {
+                try (PreparedStatement statement = connection.prepareStatement(TaskSchema.qualify("ANALYZE pgtasks.task", schema))) {
+                    statement.execute();
+                }
+            }
+            if (before != null) {
+                connection.releaseSavepoint(before);
+            }
+        } catch (SQLException e) {
+            if (before == null) {
+                throw e;
+            }
+            connection.rollback(before);
+        }
+    }
+
+    /** The CASE keeps the table from being read unless its statistics say it is empty. */
+    private static final String TASK_STATISTICS_SAY_EMPTY = """
+        SELECT CASE WHEN c.reltuples = 0 AND c.relpages > 0 THEN EXISTS (SELECT 1 FROM pgtasks.task) ELSE false END
+        FROM pg_class c
+        WHERE c.oid = 'pgtasks.task'::regclass
+        """;
 
     @Override
     public StoreTransaction begin() throws SQLException {
@@ -1373,6 +1423,7 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = snapshot.prepare(transaction.connection(), NamedSql.parameters())) {
             statement.executeUpdate();
         }
+        analyzeTasksIfStatisticsSayEmpty(transaction.connection());
     }
 
     @Override

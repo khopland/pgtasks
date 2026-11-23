@@ -1,45 +1,49 @@
-# NOTIFY at commit, throughput ceiling and wake-up latency
+# Wake-ups, throughput ceiling and latency
 
-Run on 2026-11-22 with `NotifyBenchmark` in `pgtasks-benchmark` (commit 9ce3778), on the real engine
-and schema (`pgtasks`), with **`fsync`, `synchronous_commit` and `full_page_writes` on**. The
-question: pgtasks wakes workers with `pg_notify('pgtasks_ready', topic)` from a statement-level
-trigger on `pgtasks.queue`, so every push notifies inside the application's own transaction.
-Postgres serializes the commits of all transactions that notified behind one database-wide lock
-(`PreCommit_Notify` takes a lock on object 0 of `pg_database` and holds it until the commit has
-been flushed). Does that cap how fast an application with many concurrent transactions can commit?
+Run on 2026-11-22 with `NotifyBenchmark` in `pgtasks-benchmark`, against the library as it ships:
+pushes in a bound transaction, so the engine sends the wake-up notification after the commit
+(`feee2a3`), and the completion plans fixed (`01e2ce9`, `8b2ce4e`). The real engine and schema
+(`pgtasks`), **`fsync`, `synchronous_commit` and `full_page_writes` on**. devbox ran commit
+`c294937`, the Mac `247f556`; they differ only in when the ceiling search stops.
+
+The question it started from: Postgres serializes the commits of all transactions that sent a
+`NOTIFY` behind one database-wide lock (`PreCommit_Notify` locks object 0 of `pg_database` and
+holds it until the commit has been flushed). Does waking workers cap how fast an application with
+many concurrent transactions can commit? And what are pgtasks' throughput ceiling and wake-up
+latency?
 
 ## Short answer
 
-- **Yes, and at realistic concurrency.** From about 8 concurrent pushing transactions, the shipped
-  trigger limits the whole database to about one pushing commit per WAL flush, whatever the number
-  of producers. Pushing commits can no longer share a flush (group commit). Medians of three rounds:
-  - devbox (real flush): 441 to 522 commits/s from 8 to 128 producers, against 2,479 to 4,273
-    without the notify.
-  - Mac with a real flush (`fsync_writethrough`): 102 to 113 commits/s from 8 to 128 producers,
-    against 820 to 6,009.
-  - Mac on its default settings, where macOS doesn't flush the drive's cache: 3,856 to 8,254
-    against 10,333 to 22,691.
-  - Commit latency grows with the queue for the lock: commit p99 at 128 producers was 1.7 s on
-    devbox and 2.1 s on the Mac with a real flush, against 26 and 35 ms without the notify.
-- **The cause is confirmed, not inferred.** With the trigger, an average of 6 of 8, 30 of 32, 62 of
-  64 and 125 of 128 producer backends were waiting on `Lock:object` for object 0 of `pg_database`.
-  Without a consumer and from 8 producers up, the trigger ran at 1.0 commits per WAL flush on every
-  machine; without the notify, 1.6 to 29.
-- **One producer barely notices.** A single serial producer pays one flush per commit anyway: 369
-  against 485 commits/s on devbox, 112 against 111 on the Mac with a real flush.
-- **Recommended fix: a debounced notify sent by the engine after commit, on its own connection**
-  (details under [Recommendation](#recommendation)). With a real flush on the Mac it committed
-  within 1 to 4 % of having no notify at all. On devbox, with a consumer, it reached 80 to 100 %
-  from 8 producers up (the rounds are noisy), and without a consumer it matched. It sent 80 to 100
-  notifications a second instead of one per push, and cost 1.6 to 3.5 ms of p50 wake-up latency on
-  the Mac and nothing measurable on devbox.
-- **Notifying only into an idle topic doesn't work.** It skipped the notify when the topic already
-  had a ready task, and lost wake-ups: p50 latency of 15 s at 1,000 tasks/s on the Mac, and already
-  at 100 tasks/s on devbox.
-- **Throughput ceiling, as shipped:** with one task per transaction, the notify lock is the limit,
-  and more nodes don't help: devbox 328 to 413 tasks/s, Mac 2,737 to 4,044. With 100 tasks per
-  transaction it isn't: one node sustained 7,660 to 8,907 tasks/s on devbox and 15,466 to 17,955
-  on the Mac, three nodes 11,647 to 14,213 and 36,891 to 43,359.
+- **Pushing doesn't serialize the application's commits.** A `tasks.push(...)` in a bound
+  transaction (Spring, `JdbcTransactions`) doesn't notify inside it. After the commit the engine
+  wakes its own workers, and sends one notification for the other nodes from a short transaction
+  of its own, at most once every 10 ms. Medians of three rounds, 8 to 128 producers, one push per
+  transaction:
+  - devbox (real flush): 2,387 to 4,261 commits/s, against 2,359 to 4,342 with no notification at
+    all.
+  - Mac with a real flush (`fsync_writethrough`): 1,037 to 9,650, against 1,102 to 7,360.
+  - Mac on its default settings, where macOS doesn't flush the drive's cache: 14,220 to 23,829,
+    against 14,418 to 24,785.
+  - About 70 to 100 notifications a second per node, whatever the push rate.
+- **Notifying inside the transaction still caps it,** and that is what `tasks.on(connection)` and
+  plain-SQL inserts do (the queue's insert trigger): about one pushing commit per WAL flush from 8
+  producers up. devbox 502 to 525 commits/s, Mac with a real flush 123 to 135, with commit p99
+  over 1 s at 128 producers. Up to 125 of 128 producer backends waited on `Lock:object` for
+  `pg_database` 0. These are the "before" numbers: until `feee2a3` every push did this.
+- **Throughput ceiling** (stepped search: the offered rate raised until the backlog grows, the
+  last rate held):
+  - One task per transaction, 64 producers: the producers are the limit, not the engine. devbox
+    3,100 to 3,500 tasks/s, Mac 14,000 to 16,000, with 1 or 3 nodes. Before, the notify lock held
+    this at 328 to 413 tasks/s on devbox and 2,737 to 4,044 on the Mac.
+  - 100 tasks per transaction, 8 producers: the consumers are the limit. devbox 9,100 (one node,
+    2 batches) to 13,000 (8 batches) on one node, 17,000 to 18,000 on three; Mac 18,000 to 41,000
+    on one node, 52,000 to 61,000 on three.
+- **Wake-up latency, p50 / p99** from the push's commit to the handler starting:
+  - pushed on the node that handles it: Mac 0.4 to 1.1 / 2.0 to 2.9 ms, devbox 2.8 to 5.0 /
+    5.3 to 34 ms. The node wakes its own workers directly, with or without LISTEN.
+  - pushed on another node, LISTEN on: about 5 / 12 ms on both machines, the 10 ms debounce
+    window included.
+  - pushed on another node, LISTEN off: half the 30 s poll interval at p50, the whole of it at p99.
 
 ## Machines and settings
 
@@ -58,41 +62,48 @@ Both: Postgres 17.12, embedded (zonky binaries), on the same machine as the clie
 macOS `fsync` doesn't flush the drive's write cache, so the Mac's default numbers are what a
 machine with a battery-backed or no-flush cache would see. `fsync_writethrough` makes Postgres
 use `F_FULLFSYNC`, a real flush, at about 9 ms per commit here. Compare devbox numbers only with
-devbox numbers.
+devbox numbers. The Mac had other work running (load average about 4 before the runs).
 
 ## Workload
 
 Each run gets a fresh database copied from a template: the schema, an application table
-`app.event`, and 200,000 finished tasks in the topic, analyzed. Without those statistics the
-planner completes a batch through the wrong index (see [Found on the way](#found-on-the-way)), and
-the consumer, not the producers, would set the pace. A `CHECKPOINT` runs before each run.
+`app.event`, and 200,000 finished tasks in the topic, analyzed. A `CHECKPOINT` runs before each
+run.
 
 **Wake-up variants:**
 
 | Variant | What it does |
 |---|---|
-| trigger as it is | `R__notify_ready.sql` as shipped: every push notifies inside the application's transaction |
-| no notify (baseline) | the insert trigger dropped; nothing notifies |
-| notify only into an idle topic | the insert trigger notifies only if the topic had no other ready task |
-| debounced notify after commit | the insert trigger dropped; after each commit the producer tells a debouncer, which sends `SELECT pg_notify(...)` in autocommit on its own connection, at once after a quiet spell and then at most once per 10 ms. This prototypes in the benchmark what the engine would do. |
+| notify after commit (shipped) | `JdbcTransactions.inTransaction` inserts the app row and calls `tasks.push(...)`. The insert trigger skips the push; after the commit the engine wakes its workers and its `ReadyNotices` sends `pg_notify` from its own transaction, at once after a quiet spell, then at most once per 10 ms |
+| notify at commit (trigger) | the app row and `tasks.on(connection).push(...)` on one connection: the insert trigger notifies inside the transaction. Every push before `feee2a3`; pushes on an explicit connection still |
+| no notify (baseline) | as the trigger variant, with the insert trigger dropped: nothing notifies |
 
-**The three parts:**
+**The four parts:**
 
-1. **Producer contention:** N producers (1, 8, 32, 64, 128), each on its own connection, committing
-   transactions that insert one row into `app.event` and push one task with `tasks.on(connection)`.
-   One engine node consumes (LISTEN on, default batches, 1 s poll so the baseline still drains), or,
-   in separate runs, nothing consumes. 3 s warm-up, then 15 s measured; three rounds with a
-   consumer, one without. Wait events were sampled every 5 ms from `pg_stat_activity`, joined with
-   `pg_locks` for ungranted locks, for the producers and the engine node separately. WAL flushes
-   come from `pg_stat_wal` (`wal_sync`, or `wal_write` with an `open_*sync` method).
-2. **Throughput ceiling:** producers push flat out while 1 or 3 engine nodes claim and complete
-   (no-op handler, batches of 100, 2 or 8 batches per node). The nodes are **separate engines in one
-   JVM**, each with its own pool, sharing the machine with Postgres. Then a fresh run pushes at 90 %
-   of the lower of what was pushed and completed; it held if the backlog grew by less than a
-   second's worth. Two shapes: 64 producers with one task per transaction, and 8 producers with 100.
-3. **End-to-end latency:** 8 producers at a steady 100 or 1,000 tasks/s in total, one task per
-   transaction, one engine node with default settings (2 batches of 100, 30 s poll). Latency is
-   from the producer's `commit()` returning to the handler starting.
+1. **Producer contention:** N producers (1, 8, 32, 64, 128), each committing transactions that
+   insert one row into `app.event` and push one task. One engine node consumes (LISTEN on,
+   default batches, 1 s poll so the baseline still drains), or, in separate runs, nothing consumes.
+   Pushes go through that node. 3 s warm-up, then 15 s measured; three rounds with a consumer, one
+   without. Wait events sampled every 5 ms from `pg_stat_activity`, joined with `pg_locks` for
+   ungranted locks. WAL flushes from `pg_stat_wal` (`wal_sync`, or `wal_write` with an
+   `open_*sync` method).
+2. **Throughput ceiling, flat out then paced:** producers push flat out while 1 or 3 engine nodes
+   claim and complete (no-op handler, batches of 100, 2 or 8 batches per node). The nodes are
+   **separate engines in one JVM**, each with its own pool, sharing the machine with Postgres; the
+   producers push through node 1. Then a fresh run pushes at 90 % of the lower of what was pushed
+   and completed. It held if the producers pushed at least 97 % of that and the backlog grew by
+   less than a second's worth. Two shapes: 64 producers with one task per transaction, and 8 with
+   100.
+3. **Stepped ceiling search:** the same shapes and nodes. From 60 % of the flat-out guess, the rate
+   goes up by half while it holds, then the gap between the last rate held and the first that
+   didn't is halved three times. A step held if the producers pushed at least 97 % of the rate
+   and the backlog grew by less than a quarter of a second's worth, or than the tasks the nodes
+   can hold claimed at once (nodes × batches × 100), whichever is more. It stops early if the
+   next step is above what the producers pushed flat out: the producers are then the limit.
+4. **End-to-end latency:** 8 producers at a steady 100 or 1,000 tasks/s in total, one task per
+   transaction, one engine node with default settings (2 batches of 100, 30 s poll). Pushed
+   through the consuming node, or through a second engine that only pushes. Latency is from the
+   push's commit returning to the handler starting.
 
 ## Results
 
@@ -100,205 +111,198 @@ the consumer, not the producers, would set the pace. A `CHECKPOINT` runs before 
 
 Commits/s, with commit p99 in ms in brackets. With a consumer: the median of three rounds.
 
-**devbox**, with a consumer:
+**devbox:**
 
-| Producers | trigger as it is | no notify | notify only into an idle topic | debounced after commit |
-|---:|---:|---:|---:|---:|
-| 1 | 369 (4.5) | 485 (3.0) | 444 (2.9) | 345 (4.2) |
-| 8 | 441 (29.3) | 2,479 (4.9) | 2,153 (5.4) | 2,075 (21.5) |
-| 32 | 522 (76.6) | 4,273 (10.8) | 3,464 (19.0) | 3,434 (48.8) |
-| 64 | 522 (161) | 4,037 (54.8) | 3,136 (54.7) | 3,851 (57.0) |
-| 128 | 482 (1,688) | 4,239 (25.8) | 3,460 (55.5) | 4,203 (23.0) |
-
-**devbox**, without a consumer:
-
-| Producers | trigger as it is | no notify | notify only into an idle topic | debounced after commit |
-|---:|---:|---:|---:|---:|
-| 1 | 285 (31.1) | 447 (2.7) | 409 (4.1) | 401 (3.3) |
-| 8 | 618 (18.5) | 2,364 (4.3) | 2,566 (4.0) | 2,353 (5.1) |
-| 32 | 495 (857) | 3,923 (59.4) | 3,834 (49.2) | 4,504 (12.1) |
-| 64 | 847 (88.6) | 5,129 (13.6) | 3,933 (22.7) | 5,060 (13.5) |
-| 128 | 832 (220) | 4,894 (18.8) | 4,084 (30.7) | 4,757 (20.6) |
+| Producers | shipped, with consumer | trigger, with consumer | no notify, with consumer | shipped, no consumer | trigger, no consumer | no notify, no consumer |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 410 (3.6) | 294 (22.6) | 406 (4.0) | 483 (2.5) | 498 (2.6) | 546 (2.2) |
+| 8 | 2,387 (5.2) | 509 (22.5) | 2,359 (7.7) | 2,433 (5.1) | 661 (17.3) | 2,122 (10.3) |
+| 32 | 4,075 (12.0) | 511 (85.9) | 4,216 (11.0) | 4,466 (28.6) | 682 (56.2) | 3,893 (44.2) |
+| 64 | 4,261 (17.0) | 525 (152) | 4,342 (17.1) | 4,896 (14.6) | 835 (95.5) | 5,175 (14.0) |
+| 128 | 3,994 (30.7) | 502 (1,009) | 4,312 (24.3) | 4,707 (20.2) | 761 (1,030) | 4,513 (26.9) |
 
 **Mac, real flush** (`wal_sync_method=fsync_writethrough`):
 
-| Producers | trigger, with consumer | no notify, with consumer | debounced, with consumer | trigger, no consumer | no notify, no consumer | debounced, no consumer |
+| Producers | shipped, with consumer | trigger, with consumer | no notify, with consumer | shipped, no consumer | trigger, no consumer | no notify, no consumer |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 112 (19.1) | 111 (20.0) | 107 (20.1) | 159 (19.3) | 177 (16.9) | 195 (15.8) |
-| 8 | 110 (272) | 820 (22.0) | 800 (23.3) | 193 (231) | 792 (24.5) | 799 (22.2) |
-| 32 | 106 (1,156) | 2,919 (22.1) | 2,882 (21.9) | 223 (385) | 2,700 (29.5) | 2,655 (25.3) |
-| 64 | 113 (1,289) | 4,808 (23.4) | 4,643 (34.4) | 233 (1,156) | 4,470 (36.1) | 4,880 (25.5) |
-| 128 | 102 (2,146) | 6,009 (35.1) | 5,946 (26.8) | 197 (1,317) | 6,883 (39.7) | 5,022 (53.9) |
+| 1 | 123 (11.7) | 123 (12.6) | 136 (9.5) | 240 (7.6) | 238 (5.1) | 233 (5.2) |
+| 8 | 1,037 (15.1) | 134 (136) | 1,102 (12.3) | 1,161 (9.7) | 274 (38.2) | 1,060 (11.5) |
+| 32 | 3,985 (16.4) | 135 (1,074) | 3,206 (17.5) | 4,539 (11.4) | 260 (361) | 4,077 (16.1) |
+| 64 | 6,633 (16.8) | 131 (745) | 6,941 (17.6) | 7,143 (16.7) | 229 (1,121) | 5,738 (12.4) |
+| 128 | 9,650 (23.4) | 123 (1,130) | 7,360 (18.8) | 7,346 (14.8) | 229 (1,502) | 6,725 (24.1) |
 
 **Mac, default** (`open_datasync`, no drive-cache flush):
 
-| Producers | trigger, with consumer | no notify, with consumer | idle topic only, with consumer | debounced, with consumer | trigger, no consumer | no notify, no consumer | debounced, no consumer |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 4,498 (1.5) | 6,494 (0.7) | 2,532 (1.1) | 5,297 (0.7) | 6,122 (0.3) | 5,742 (0.3) | 7,166 (0.2) |
-| 8 | 8,254 (3.1) | 10,333 (2.8) | 8,883 (3.0) | 8,865 (2.9) | 12,339 (1.7) | 8,639 (4.2) | 12,383 (2.3) |
-| 32 | 6,540 (10.4) | 22,691 (4.8) | 11,111 (5.8) | 11,282 (5.8) | 8,901 (9.2) | 14,561 (7.2) | 17,291 (7.2) |
-| 64 | 4,930 (63.4) | 21,545 (11.1) | 16,349 (15.3) | 16,421 (11.4) | 7,322 (85.4) | 15,246 (11.3) | 13,353 (16.6) |
-| 128 | 3,856 (47.2) | 17,636 (27.8) | 14,925 (31.9) | 15,832 (24.9) | 6,181 (133) | 10,877 (45.8) | 15,314 (30.7) |
+| Producers | shipped, with consumer | trigger, with consumer | no notify, with consumer | shipped, no consumer | trigger, no consumer | no notify, no consumer |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2,759 (3.1) | 2,612 (3.1) | 7,454 (0.1) | 8,180 (0.0) | 7,824 (0.1) | 8,324 (0.1) |
+| 8 | 14,220 (1.7) | 10,449 (2.3) | 14,418 (2.5) | 24,046 (0.2) | 11,147 (2.9) | 15,037 (1.9) |
+| 32 | 21,227 (5.0) | 8,796 (9.8) | 24,785 (4.4) | 20,464 (4.9) | 13,962 (5.8) | 20,031 (5.4) |
+| 64 | 23,829 (13.4) | 12,663 (7.3) | 24,299 (12.1) | 18,344 (11.1) | 8,421 (55.6) | 19,562 (9.6) |
+| 128 | 21,369 (31.0) | 10,863 (17.3) | 19,784 (30.2) | 17,457 (25.8) | 8,375 (109) | 17,523 (26.0) |
 
-The Mac's default settings are the noisiest setup: rounds at the same point varied by up to 2x,
-and with a flush this cheap, 1 and 8 producers overlap. From 32 producers up the trigger was the
-slowest in every round and every setup.
+- **Shipped and no notify are within each other's noise everywhere from 8 producers up.** The
+  rounds varied by up to 2x at one point on the Mac, and by up to 20 % on devbox; shipped was
+  ahead as often as behind.
+- **One producer pays one flush per commit anyway.** On the Mac's default settings, the
+  one-producer rounds with a consumer were the noisiest of all: 6,462, 1,849 and 2,759 commits/s
+  for shipped, and 7,454, 7,504 and 2,922 for no notify, minutes apart. Without a consumer the
+  three variants were equal.
+- **With 64 and 128 producers one consumer node falls behind** (devbox 2,600 to 3,600 tasks/s
+  completed, Mac default 2,400 to 8,000), shipped and no notify alike: the backlog grew by 10,000
+  to 350,000 in 15 s. That is the consumer's limit, which the ceiling section measures, not the
+  wake-up's. With the trigger the consumer keeps up, because the producers are held back.
 
-**Why the debounced notify trails "no notify" on the Mac's default settings with a consumer**
-(32 and 64 producers): without a notify the consumer only polls every second and falls far behind.
-It completed 5,000 to 10,000 tasks/s while the backlog reached 180,000 to 330,000, which left the
-WAL and CPU to the producers. With the debounced notify the consumer keeps up (about 14,000
-tasks/s, backlog near zero), and its claims and completions share the WAL flushes. Without a
-consumer, the debounced notify was as fast as no notify or faster, except at 64 producers (88 %).
+**Where the producers waited.** Average number of producer backends in each state, the top two,
+and commits per WAL flush:
 
-**Where the producers waited.** Average number of producer backends in each state, the top two:
+| Setup | Producers | shipped | trigger | no notify |
+|---|---:|---|---|---|
+| devbox | 8 | 3.6 `LWLock:WALWrite`; 0.8 `IO:WalSync` · 3.2 per flush | 6.3 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` · 0.7 | 3.8 `LWLock:WALWrite`; 0.8 `IO:WalSync` · 3.4 |
+| devbox | 64 | 23.4 `LWLock:BufferContent`; 14.8 `LWLock:WALWrite` · 10.2 | 62.2 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` · 0.7 | 29.1 `LWLock:WALWrite`; 14.6 `LWLock:BufferContent` · 11.4 |
+| devbox | 128 | 64.9 `LWLock:BufferContent`; 30.8 `LWLock:WALWrite` · 11.6 | 124.8 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` · 0.7 | 71.8 `LWLock:BufferContent`; 18.7 `LWLock:WALWrite` · 11.9 |
+| Mac, real flush | 64 | 41.1 `LWLock:WALWrite`; 8.7 `LWLock:BufferContent` · 22.5 | 62.8 `Lock:object (pg_database 0)`; 0.5 `LWLock:WALWrite` · 0.5 | 40.1 `LWLock:WALWrite`; 7.8 `LWLock:BufferContent` · 23.1 |
+| Mac, real flush | 128 | 55.2 `LWLock:WALWrite`; 48.6 `LWLock:BufferContent` · 28.4 | 124.0 `Lock:object (pg_database 0)`; 0.5 `LWLock:WALWrite` · 0.5 | 55.7 `LWLock:WALWrite`; 45.1 `LWLock:BufferContent` · 29.2 |
 
-| Setup | Producers | trigger as it is | no notify |
-|---|---:|---|---|
-| devbox | 8 | 6.3 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` | 3.7 `LWLock:WALWrite`; 0.8 `IO:WalSync` |
-| devbox | 64 | 62.2 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` | 25.4 `LWLock:WALWrite`; 17.3 `LWLock:BufferContent` |
-| devbox | 128 | 124.8 `Lock:object (pg_database 0)`; 0.5 `IO:WalSync` | 62.8 `LWLock:BufferContent`; 31.6 `LWLock:WALWrite` |
-| Mac, real flush, no consumer | 64 | 62.8 `Lock:object (pg_database 0)`; 1.0 `IO:WalSync` | 43.4 `LWLock:WALWrite`; 7.8 `LWLock:BufferContent` |
-| Mac, default | 64 | 57.6 `Lock:object (pg_database 0)`; 1.0 `LWLock:BufferContent` | 25.2 `LWLock:WALWrite`; 7.5 `LWLock:BufferContent` |
-
-Without the notify, producers wait in `LWLock:WALWrite`, which is group commit working: one
-backend flushes for everyone queued behind it. Commits per flush at 64 producers without a
-consumer: 1.0 with the trigger on every machine; without the notify 11.2 on devbox, 23.8 on the Mac
-with a real flush and 3.7 on its default settings. With a consumer the trigger's figure drops to
-0.6 to 0.9, because the consumer's commits flush too.
+(First round of three; the others look the same.) Shipped waits like no notify: in
+`LWLock:WALWrite`, which is group commit working (one backend flushes for everyone queued behind
+it), and from 64 producers on the queue's hot index pages (`LWLock:BufferContent`). The trigger
+queues for the notify lock and gets under one commit per flush, because the consumer's commits
+flush too; without a consumer exactly 1.0 on every machine.
 
 ### Throughput ceiling
 
-Sustained tasks/s: the paced rate held, and what completed at it.
+**Stepped search,** shipped code, tasks/s. "Sustained" is the last rate held; "(producers)" means
+the producers couldn't push the next step, so the engine's ceiling is higher.
 
-| | Nodes | Batches per node | devbox, trigger | devbox, debounced | Mac, trigger | Mac, debounced |
+| Shape | Nodes | Batches per node | devbox: flat out pushed / completed | devbox sustained | Mac: flat out pushed / completed | Mac sustained |
 |---|---:|---:|---:|---:|---:|---:|
-| 64 producers × 1 task | 1 | 2 | 328 | 3,132 | 4,044 | 5,489 |
-| 64 producers × 1 task | 1 | 8 | 387 | 3,414 | 2,907 | 6,249 |
-| 64 producers × 1 task | 3 | 2 | 341 | 3,651 | 2,737 | 10,137 |
-| 64 producers × 1 task | 3 | 8 | 413 | 3,385 | 3,307 | 9,336 |
-| 8 producers × 100 tasks | 1 | 2 | 7,660 | 6,273 | 15,466 | 15,451 |
-| 8 producers × 100 tasks | 1 | 8 | 8,907 | 3,693 | 17,955 | 20,953 |
-| 8 producers × 100 tasks | 3 | 2 | 11,647 | 8,825 | 43,359 | 35,666 |
-| 8 producers × 100 tasks | 3 | 8 | 14,213 | 12,000 | 36,891 | 33,209 |
+| 64 producers × 1 task | 1 | 2 | 4,270 / 3,493 | 3,100 (producers) | 20,295 / 5,385 | 15,000 (producers) |
+| 64 producers × 1 task | 1 | 8 | 4,060 / 3,800 | 3,400 (producers) | 19,018 / 7,837 | 15,000 (producers) |
+| 64 producers × 1 task | 3 | 2 | 3,924 / 3,922 | 3,500 (producers) | 16,813 / 12,877 | 16,000 (producers) |
+| 64 producers × 1 task | 3 | 8 | 3,851 / 3,843 | 3,200 | 17,361 / 16,556 | 14,000 (producers) |
+| 8 producers × 100 tasks | 1 | 2 | 40,653 / 5,067 | 9,100 | 141,799 / 24,772 | 18,000 |
+| 8 producers × 100 tasks | 1 | 8 | 40,506 / 6,587 | 13,000 * | 137,416 / 23,119 | 41,000 |
+| 8 producers × 100 tasks | 3 | 2 | 36,106 / 12,073 | 18,000 | 106,925 / 39,823 | 52,000 |
+| 8 producers × 100 tasks | 3 | 8 | 27,333 / 10,893 | 17,000 | 104,581 / 46,059 | 61,000 |
 
-Flat out, the batched producers pushed 21,000 to 47,000 tasks/s on devbox and 78,000 to 120,000
-on the Mac, so the consumers were the limit there.
+\* 13,000 held, then failed when the search rounded back onto it: within the noise of the step.
+From `247f556` the search stops instead of retrying a rate.
 
-- **One task per transaction:** with the trigger, the notify lock is the ceiling, and more nodes
-  don't help. With the debounced notify it was 8 to 11 times higher on devbox, and 1.4 to 3.7
-  times on the Mac. The consumers then set the limit.
-- **100 tasks per transaction:** a push transaction is one commit for 100 tasks, so the notify lock
-  hardly matters. The debounced column differs from the trigger's in both directions. That is the
-  method's noise: the paced rate is 90 % of a flat-out run, and the flat-out runs load the shared CPU
-  differently from one run to the next. Read these rows as "the trigger doesn't limit batched
-  pushes", not as one variant beating the other.
-- **Three nodes** gave 1.5 to 2.8 times one node's rate with batched pushes and the trigger.
-  Everything ran on one machine (4 cores on devbox), so a deployment with nodes on their own
-  machines should scale further.
+The steps, for the record: devbox 3 nodes × 2 batches, 100 per transaction: 7,243 ✓, 10,000 ✓,
+15,000 ✓, 22,000 ✗ (backlog +111,000 in 15 s), 18,000 ✓, 20,000 ✗, 19,000 ✗. Mac 3 nodes × 8
+batches: 27,635 ✓, 41,000 ✓, 61,000 ✓, 91,000 ✗, 76,000 ✗, 68,000 ✗, 64,000 ✗. The full lists
+are in the runs' `notify-results.md`.
+
+- **One task per transaction:** with the notification after the commit, 64 producers commit
+  about as fast as the machine flushes WAL for them (devbox about 4,000 a second, the Mac on its
+  default settings about 20,000), and the engine keeps up with that.
+- **Flat out understates the ceiling.** Producers pushing without limit take the CPU and the WAL
+  from the consumers: on the Mac, one node completed 5,385 tasks/s flat out but sustained 15,000
+  when the push rate was set. The search measures what a node sustains; the flat-out columns are
+  where it started.
+- **100 tasks per transaction:** the producers push 27,000 to 142,000 tasks/s and the consumers
+  are the limit. More batches per node help on the Mac (one node 18,000 with 2, 41,000 with 8) and
+  less on devbox's 4 shared cores. Three nodes in one JVM, on the same machine as Postgres, gave
+  1.3 to 2.9 times one node.
+
+**Flat out, then paced at 90 %** (the method of the first run), shipped against the trigger:
+
+| Shape | Nodes | Batches per node | devbox shipped | devbox trigger | Mac shipped | Mac trigger |
+|---|---:|---:|---:|---:|---:|---:|
+| 64 × 1 | 1 | 2 | 2,885 | 472 | 3,416 | 5,630 |
+| 64 × 1 | 1 | 8 | 3,471 | 361 | 1,415 | 5,840 |
+| 64 × 1 | 3 | 2 | 3,432 | 277 | 8,218 | 9,190 |
+| 64 × 1 | 3 | 8 | 3,444 | 397 | 11,632 | 7,988 (not held) |
+| 8 × 100 | 1 | 2 | 4,087 | 7,007 | 22,526 (not held) | 18,388 |
+| 8 × 100 | 1 | 8 | 6,093 | 8,167 | 25,491 | 23,206 |
+| 8 × 100 | 3 | 2 | 9,420 | 12,946 | 38,620 (not held) | 39,294 |
+| 8 × 100 | 3 | 8 | 11,340 | 13,984 | 35,069 | 45,272 |
+
+Tasks/s completed at the paced rate. On devbox the trigger caps one task per transaction at 277
+to 472 tasks/s; shipped is 6 to 12 times that. Elsewhere the 90 % method is unreliable: with
+shipped pushes the producers aren't held back by a lock, so a flat-out run starves the
+consumers, and 90 % of what they completed then is a low guess. That is why the trigger can look
+faster here (Mac 64 × 1, one node: 5,630 against 3,416) while the search finds shipped sustaining
+15,000 on the same setup. Read the stepped search for the ceiling.
 
 ### End-to-end latency
 
-From push commit to handler start, ms. One run each; LISTEN off ran 120 s, the others 30 s.
+From push commit to handler start, ms. One run each, 30 s; poll-only runs 120 s.
 
-| Wake-up | Rate/s | Mac p50 | Mac p99 | Mac max | devbox p50 | devbox p99 | devbox max |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| trigger as it is, LISTEN on | 100 | 2.2 | 7.2 | 72 | 5.8 | 9.5 | 22 |
-| debounced after commit, LISTEN on | 100 | 3.8 | 11.8 | 13 | 5.5 | 10.6 | 23 |
-| notify only into an idle topic, LISTEN on | 100 | 1.9 | 3.8 | 11 | 15,153 | 29,717 | 30,015 |
-| LISTEN off (poll every 30 s) | 100 | 15,023 | 29,682 | 30,011 | 15,099 | 29,692 | 30,011 |
-| trigger as it is, LISTEN on | 1,000 | 1.6 | 6.0 | 77 | 4.7 * | 49.3 * | 156 * |
-| debounced after commit, LISTEN on | 1,000 | 5.1 | 12.3 | 17 | 4.8 | 13.9 | 26 |
-| notify only into an idle topic, LISTEN on | 1,000 | 15,363 | 29,716 | 30,007 | 16,055 | 29,698 | 30,018 |
-| LISTEN off (poll every 30 s) | 1,000 | 15,353 | 29,689 | 30,008 | 7.8 * | 29,304 * | 30,002 * |
+| Wake-up | Pushed on | LISTEN | Rate/s | Mac p50 | Mac p99 | Mac max | devbox p50 | devbox p99 | devbox max |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| shipped | the consuming node | on | 100 | 1.1 | 2.0 | 12 | 2.8 | 5.3 | 19 |
+| shipped | another node | on | 100 | 4.9 | 12.2 | 14 | 5.1 | 12.7 | 22 |
+| shipped | the consuming node | off | 100 | 1.2 | 2.2 | 4 | 4.6 | 49.1 | 154 |
+| shipped | another node | off | 100 | 15,039 | 29,701 | 30,007 | 15,124 | 29,714 | 30,013 |
+| trigger (before) | another node | on | 100 | 2.8 | 4.2 | 29 | 4.9 | 10.9 | 2,330 |
+| shipped | the consuming node | on | 1,000 | 0.4 | 2.9 | 55 | 5.0 | 34.2 | 608 |
+| shipped | another node | on | 1,000 | 4.8 | 12.5 | 36 | 4.5 | 12.2 | 308 |
+| shipped | the consuming node | off | 1,000 | 0.4 | 2.6 | 41 | 5.1 | 13.8 | 26 |
+| shipped | another node | off | 1,000 | 15,383 | 29,721 | 30,008 | 5.8 * | 26,824 * | 29,994 * |
+| trigger (before) | another node | on | 1,000 | 1.6 | 6.0 | 29 | 5.5 ** | 10.7 ** | 21 ** |
 
-\* On devbox, with the trigger, 8 producers can't commit 1,000 pushes a second: those runs
-reached about 335 (trigger) and 413 tasks/s (LISTEN off, where the trigger still runs). With
-LISTEN off at that rate the queue never drained, so the worker kept claiming: p50 7.8 ms, but 20,532
-of 49,549 tasks waited over a second.
+\* On devbox at 1,000/s the queue never emptied, so the worker kept claiming without waiting for
+the poll: p50 5.8 ms, but 31,496 of 115,592 tasks waited over a second.
+\** On devbox the trigger let 8 producers push only about 400 tasks/s (12,021 in 30 s), not 1,000.
 
+- **Pushed on the consuming node,** the engine wakes its workers directly after the commit:
+  about 1 ms at p50 on the Mac, LISTEN on or off.
+- **Pushed on another node,** the wake-up is the debounced notification: about 5 ms at p50, 12 ms
+  at p99, within the 10 ms window plus a claim. The trigger notified at every commit, so it was
+  2.1 to 3.2 ms faster at p50 on the Mac, and about as fast on devbox.
 - **LISTEN off** means waiting for the poll: p50 about half the 30 s interval.
-- **Debounced** adds 1.6 to 3.5 ms at p50 on the Mac and stays within the 10 ms window plus a claim
-  at p99. On devbox it was as fast as the trigger at p50, and faster at the tail at 1,000/s, where
-  the trigger's own contention slowed it.
-- **Notify only into an idle topic** loses wake-ups by design. A push that sees a ready task skips
-  the notify, but that task may be one a worker is claiming right then. The worker's next claim
-  can run on a snapshot from before the push committed, find nothing, and wait for the poll. At
-  100 tasks/s on the Mac the queue was empty at almost every push, so it notified. At 1,000/s, and
-  already at 100/s on devbox, most tasks waited for the 30 s poll.
 
-## Recommendation
+## Before: the notification inside every pushing transaction
 
-**The contention is real, from about 8 concurrent pushing transactions** on any machine whose
-flush costs real time (most production servers, any cloud disk). An application that pushes one
-task per request, with dozens of requests in flight, gets its database's commit rate capped near
-one commit per flush (about 500/s on devbox, 110/s on the Mac with a real flush). Its commit
-latency then rises with the number of waiters. It affects every transaction that pushes, not just
-pgtasks', and only them: transactions that don't notify aren't serialized. A low-concurrency or
-batch-pushing application won't notice.
+The first run of this benchmark (at `9ce3778`, the same day) measured the library when every push
+notified from the insert trigger, inside the application's transaction. It led to `feee2a3`.
+Those numbers, for comparison with the tables above (medians of three rounds):
 
-**Fix: notify after commit, debounced, from the engine.** Drop the INSERT trigger. When a push's
-transaction commits, the engine wakes its own workers for the topic (it already does for
-`independently()`). It also asks a per-node notifier to send `pg_notify('pgtasks_ready', topic)` in
-a short transaction of its own: at once after a quiet spell, then at most once per topic per 10 ms.
-Only those short transactions queue for the notify lock, at most about 100 a second per node and
-topic, and the application's commits share flushes again. The benchmark's prototype committed as
-fast as no notify with a real flush on the Mac, and without a consumer on devbox. With a consumer
-on devbox it reached 80 to 100 % of no notify from 8 producers up, within that setup's noise.
+- devbox: 441 to 522 commits/s from 8 to 128 producers with the trigger, against 2,479 to 4,273
+  without the notification; Mac with a real flush 102 to 113 against 820 to 6,009.
+- Throughput ceiling, 90 % method: one task per transaction devbox 328 to 413 tasks/s, Mac 2,737
+  to 4,044, whatever the number of nodes. 100 per transaction: one node devbox 7,660 to 8,907,
+  Mac 15,466 to 17,955; three nodes devbox 11,647 to 14,213, Mac 36,891 to 43,359.
+- Rejected on the way: notifying only into an idle topic lost wake-ups (p50 15 s at 1,000
+  tasks/s). A prototype of the debounced notification inside the benchmark matched the
+  no-notify baseline and cost 1.6 to 3.5 ms of p50 latency; the engine's `ReadyNotices` measured
+  above is its shipped form.
 
-Trade-offs:
-
-- **Wake-up latency:** +1.6 to 3.5 ms at p50 on the Mac, at most the debounce window (10 ms) more
-  at the tail. The window could be shorter; 10 ms already cut notifications to 80 to 100 a second.
-- **Missed notifications:** a node that dies between the commit and the notify loses that wake-up.
-  Other nodes find the task at their next poll (default 30 s), as they do today when a
-  notification is dropped. The notify is a hint now too; polling still finds the work.
-- **Pushes the engine doesn't see commit:** `tasks.push(...)` inside a bound transaction (Spring,
-  `JdbcTransactions`) and staged pushes from handlers have a commit hook. `tasks.on(connection)`
-  doesn't, and neither do rows inserted by SQL outside the library. Those would rely on the poll,
-  or the application calls a `tasks.wake(topic)` after its commit. If that matters, keep the
-  trigger as an option (say `pgtasks.notify=trigger|after-commit|off`) for applications with few
-  concurrent producers.
-- **The UPDATE trigger** (housekeeping promotions, released tasks) runs in the engine's own
-  transactions, at a low rate. It can stay, or use the same notifier.
-- **Schema:** dropping the insert trigger changes `R__notify_ready.sql`, a repeatable file, so the
-  frozen V001 is untouched; the 0.1.0 copy used by the upgrade test needs refreshing with it.
-
-**Alternatives measured or considered:**
-- Notify only into an idle topic: rejected (lost wake-ups).
-- LISTEN off, polling only: costs half the poll interval in latency, or a short poll interval's
-  empty claims on every node.
-- Leave it as is and document it: an option for low concurrency, but the cap is easy to hit and
-  hard to diagnose (it shows up as slow commits across the whole database, in `Lock:object`).
-
-Nothing in the library has changed yet; this is a proposal.
+The trigger is still there as the fallback for pushes the engine doesn't see commit, which is
+why the trigger variant above still measures something real: `tasks.on(connection)` and plain-SQL
+inserts. See [Operations, "Wake-ups and the notify lock"](../operations.md#wake-ups-and-the-notify-lock).
 
 ## Found on the way
 
-- **Completion walks the topic's history while `pgtasks.task` has no statistics.** On a fresh
-  database, before the first autoanalyze, the completion's UPDATE of `pgtasks.task` used
-  `task_completed_idx` with only `topic_id` as its condition. It read every task of the topic for
-  each batch: 3,677 rows for 100 updated in one plan, and more with every task. The consumer fell to
-  about 50 to 100 tasks/s with a growing backlog. Once `pgtasks.task` is analyzed the plan uses
-  `task_pkey`. This is the open issue about a completion plan linear in the topic's own rows. It
-  matters for a new installation hit by a burst before autovacuum's first analyze; pinning the
-  plan, like the claim's, would close it. Not fixed here. (Seen while the schema was still named
-  `tasks`; the statements are the same.)
+- **Fixed: completion walked the topic's history while `pgtasks.task` had no statistics.** The
+  first run found the completion's UPDATE using `task_completed_idx` by topic alone and reading
+  every task of the topic per batch, the consumer falling to 50 to 100 tasks/s. The cause was
+  partly cached generic plans: fixed in `01e2ce9` (task rows reached by primary key, no cached
+  generic plans) and `8b2ce4e` (history lookups planned for an average topic). These runs keep
+  the 200,000 analyzed history rows only to stay comparable with the first run.
+- **Fixed: a task table analyzed while empty.** Statistics taken right after retention emptied
+  `pgtasks.task` say it has pages but no rows; claims, completions and lookups then read every
+  task until the next analyze. `1861080` has the store analyze the table at start and with the
+  leader's count snapshot when its statistics say empty and it isn't.
+- **The 90 % paced method understates the ceiling** once producers aren't held back by the
+  notify lock (see above), so this run adds the stepped search.
 
 ## Caveats
 
 - **Embedded Postgres on the client's machine.** Producers, engines and Postgres share the CPU
-  (10 cores on the Mac, 4 on devbox). From 64 producers up the CPU is contended, and the
-  no-notify runs show `LWLock:BufferContent` on the queue's hot index pages.
-- **Short runs.** 15 s per point: three rounds with a consumer, one without. Rounds varied by up to
-  2x at the same point on the Mac's default settings, and single points by up to about 2x on
-  devbox. The conclusions rest on gaps of 4x to 50x, well outside that noise.
-- **The debounced notify is a prototype in the benchmark**, driven by the producers after commit,
-  not engine code. An engine version would also wake the local node at once.
+  (10 cores on the Mac, 4 on devbox). From 64 producers up the CPU is contended, and every
+  variant shows `LWLock:BufferContent` on the queue's hot index pages.
+- **Short runs.** 15 s per point; three rounds with a consumer, one without. Rounds varied by up
+  to 3.5x at one point on the Mac's default settings (one producer), and up to 20 % on devbox
+  from 8 producers up (45 % once at one producer). The Mac had other
+  sessions' work running. The conclusions rest on gaps of 4x to 80x (trigger against the others),
+  and on shipped and no notify overlapping.
 - **Engines in one JVM.** The three "nodes" are separate engines with separate pools, LISTEN
   connections and node rows, in one process.
-- **A no-op handler** and a 7-byte payload: the ceiling is the library's and the database's, not an
-  application's.
+- **A no-op handler** and a 7-byte payload: the ceiling is the library's and the database's, not
+  an application's.
 - **Postgres 17.** The notify lock is the same in every supported version.
 
 To rerun:
@@ -307,6 +311,6 @@ To rerun:
 mvn -Pbenchmark -pl pgtasks-benchmark -am test -Dtest=NotifyBenchmark -Dsurefire.failIfNoSpecifiedTests=false -Dbenchmark.notify=all
 ```
 
-Options are listed in the class's Javadoc (producer counts, variants, durations, repeats, running
-without a consumer, extra server settings such as
+Options are listed in the class's Javadoc (parts, producer counts, variants for each part,
+batches, durations, repeats, running without a consumer, extra server settings such as
 `-Dbenchmark.postgres.config=wal_sync_method=fsync_writethrough`, the schema).
