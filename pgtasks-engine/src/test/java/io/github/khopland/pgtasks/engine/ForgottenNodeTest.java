@@ -55,8 +55,9 @@ class ForgottenNodeTest {
         // The scheduled first heartbeat, the only one for an hour, takes the lease.
         EngineFixture.await("the first heartbeat", Duration.ofSeconds(5), engine::leadsHousekeeping);
         engines.clock.advance(Housekeeper.FORGET_NODES_AFTER.plusHours(1));
-        int deleted = EngineCore.transact(engines.store, transaction -> engines.store.deleteDeadNodes(transaction, Housekeeper.FORGET_NODES_AFTER));
-        assertThat(deleted).isEqualTo(1);
+        // The leader's own expiry job may get there first, if it was already running when the clock moved.
+        EngineCore.transact(engines.store, transaction -> engines.store.deleteDeadNodes(transaction, Housekeeper.FORGET_NODES_AFTER));
+        assertThat(engine.admin().nodes()).as("forgotten").isEmpty();
 
         engine.heartbeatNow();
 
