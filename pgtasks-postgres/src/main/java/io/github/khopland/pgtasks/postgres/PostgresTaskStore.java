@@ -58,6 +58,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class PostgresTaskStore implements TaskStore {
 
+    /** The first key of the advisory lock SINGULAR_* claims take per topic; never a topic id, which is positive. */
+    private static final int SINGULAR_CLAIM_LOCK = -0x7067_6c6b;
+
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
@@ -67,6 +70,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
+    private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
@@ -150,6 +154,20 @@ public final class PostgresTaskStore implements TaskStore {
             pushes.put(insertion, insertion == Insertion.APPEND ? atCommit.withGenericPlans() : atCommit);
             pushesWokenByCaller.put(insertion, insertion == Insertion.APPEND ? byCaller.withGenericPlans() : byCaller);
         }
+        // Order per identifier is task-id order, and ids are drawn before commit. Two pushes for one
+        // identifier could commit out of id order, and the one that commits first can't see the
+        // other's task to supersede, replace or delete it: an older task would then outlive, or run
+        // after, a newer one. So a push that does more than append locks each of its identifiers,
+        // in one order so two pushes can't deadlock on them, before its statement draws ids, and
+        // holds the locks until it commits; the next push's statement takes its snapshot after
+        // that. APPEND pushes take no lock (they don't touch earlier tasks, and are the hot path),
+        // so concurrent APPEND pushes for one identifier may still commit out of id order.
+        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims and
+        // junctions; topics share a hash only by chance, which merely serializes those pushes.
+        identifierLocks = sql("""
+            SELECT count(pg_advisory_xact_lock(key))
+            FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
+            """);
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)));
         }
@@ -164,6 +182,13 @@ public final class PostgresTaskStore implements TaskStore {
                    set_config('enable_sort', 'off', true), set_config('enable_hashjoin', 'off', true),
                    set_config('enable_mergejoin', 'off', true)
             """);
+        // A SINGULAR_* poll checks other tasks for each candidate's identifier in its statement
+        // snapshot, where another node's uncommitted claim still looks ready: with an earlier task
+        // turned ready meanwhile (a promotion, a release), both nodes would claim one identifier.
+        // So SINGULAR_* claims on a topic take turns until commit, and each poll's snapshot shows
+        // the previous claim. The first key is negative and topic ids are positive, so it can't
+        // meet a junction lock (topic, hashtext(identifier)). FIFO claims don't wait.
+        singularClaimLock = sql("SELECT pg_advisory_xact_lock(" + SINGULAR_CLAIM_LOCK + ", :topic::integer)");
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""
             WITH d AS (
@@ -1107,6 +1132,12 @@ public final class PostgresTaskStore implements TaskStore {
             .array("dedup", "text", dedup)
             .array("headers", "text", headers)
             .array("run_ats", "text", runAts);
+        if (insertion != Insertion.APPEND) {
+            try (PreparedStatement statement = identifierLocks.prepare(connection, NamedSql.parameters().set("topic", topicId).array("identifiers", "text", identifiers));
+                 ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+            }
+        }
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = Objects.requireNonNull((wakeUp == WakeUp.BY_CALLER ? pushesWokenByCaller : pushes).get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
@@ -1141,6 +1172,11 @@ public final class PostgresTaskStore implements TaskStore {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = claimPlanning.prepare(connection, NamedSql.parameters())) {
             statement.execute();
+        }
+        if (request.ordering() != Ordering.FIFO) {
+            try (PreparedStatement statement = singularClaimLock.prepare(connection, NamedSql.parameters().set("topic", request.topicId()))) {
+                statement.execute();
+            }
         }
         Admission admission = request.admission();
         int limit = request.limit();

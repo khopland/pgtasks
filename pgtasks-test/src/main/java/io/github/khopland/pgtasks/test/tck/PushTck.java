@@ -18,6 +18,8 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static io.github.khopland.pgtasks.test.tck.StoreFixture.deduplicated;
 import static io.github.khopland.pgtasks.test.tck.StoreFixture.delayed;
@@ -205,6 +207,40 @@ public abstract class PushTck extends StoreTck {
 
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
         assertThat(fixture.push(topic, Insertion.APPEND, deduplicated("a", "key-1"))).extracting(Pushed::status).containsExactly(Pushed.Status.QUEUED);
+    }
+
+    /**
+     * Order per identifier is task-id order, and ids are drawn before commit. The push that drew
+     * the later id must still find the earlier task when the earlier push commits last.
+     */
+    @ParameterizedTest
+    @EnumSource(value = Insertion.class, names = "APPEND", mode = EnumSource.Mode.EXCLUDE)
+    void a_later_push_waits_for_an_earlier_push_of_the_identifier(Insertion insertion) throws Exception {
+        StoreFixture fixture = setUp();
+        long earlier;
+        CompletableFuture<Long> later;
+        try (StoreTransaction first = fixture.store().begin()) {
+            earlier = StoreFixture.id(fixture.store().push(first, topic, insertion, List.of(task("x"))).getFirst());
+
+            later = CompletableFuture.supplyAsync(() -> {
+                try (StoreTransaction second = fixture.store().begin()) {
+                    long id = StoreFixture.id(fixture.store().push(second, topic, insertion, List.of(task("x"))).getFirst());
+                    second.commit();
+                    return id;
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            Thread.sleep(300);      // let the later push get as far as it can
+            assertThat(later).as("the later push waits for the earlier one").isNotDone();
+            first.commit();
+        }
+
+        long id = later.get(10, TimeUnit.SECONDS);
+        assertThat(id).as("the later push's task").isGreaterThan(earlier);
+        assertThat(fixture.state(id)).isEqualTo("ready");
+        assertThat(fixture.state(earlier)).as("the earlier task").isNotEqualTo("ready");
+        assertThat(fixture.counts(topic).ready()).isEqualTo(1);
     }
 
     @Test

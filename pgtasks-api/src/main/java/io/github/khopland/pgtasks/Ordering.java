@@ -16,6 +16,14 @@ package io.github.khopland.pgtasks;
  *
  * <p>Under every {@code SINGULAR_*} ordering, an active task also holds back every other task for
  * its identifier, earlier or later, so two tasks for one identifier never run at the same time.
+ *
+ * <p>Earlier and later mean task-id order. A push draws its ids before it commits, so concurrent
+ * pushes for one identifier can commit out of id order. Pushes with any {@link Insertion} other
+ * than {@link Insertion#APPEND APPEND} wait for each other per identifier until commit, so their
+ * ids follow commit order. Concurrent {@code APPEND} pushes for one identifier don't, and their
+ * tasks may become visible out of id order: a later task can start first, and the earlier one
+ * then waits until it is done. Push from one transaction at a time per identifier, or use another
+ * insertion, when the order between concurrent producers matters.
  */
 public enum Ordering {
 
