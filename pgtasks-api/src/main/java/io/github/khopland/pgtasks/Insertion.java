@@ -9,9 +9,14 @@ package io.github.khopland.pgtasks;
  * <p>"Earlier" means a lower task id. Every insertion but {@link #APPEND} waits for other
  * uncommitted pushes of its identifiers (other than {@code APPEND} pushes) to commit or roll
  * back before it draws its ids, so a push always finds the tasks of pushes that took their ids
- * before it. That holds in read committed transactions, the Postgres default. A transaction that
- * pushes for several identifiers holds them until it commits, so push them in one call, or in
- * the same order everywhere, to avoid deadlocks between producers.
+ * before it. That holds in read committed transactions, the Postgres default.
+ *
+ * <p>A transaction holds these waits until it commits, and only the identifiers of one call are
+ * taken in a fixed order. If one transaction pushes {@code a} and then {@code b} in separate calls
+ * while another pushes {@code b} and then {@code a}, each waits for the other, and Postgres aborts
+ * one of them with a deadlock (SQLState {@code 40P01}). The engine retries its own completions on
+ * that, but an application transaction gets the exception. So push several identifiers in one
+ * call, or in the same order in every producer, and retry the transaction on a deadlock.
  */
 public enum Insertion {
 

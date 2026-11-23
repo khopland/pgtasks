@@ -79,10 +79,16 @@ Earlier and later mean task-id order. A push draws its ids before it commits, so
 identifier could commit out of id order, and the one that commits first couldn't see the other's
 task. So every push but `APPEND` waits per identifier for another uncommitted non-`APPEND` push of
 the same identifier to finish, and its ids follow commit order (in read committed transactions,
-the Postgres default). A transaction holds these waits until it commits: one that pushes several
-identifiers in separate calls should push them in the same order as other producers, or in one
-call, to avoid deadlocks. `APPEND` waits for nothing, since it is the common, cheapest push, so
+the Postgres default). `APPEND` waits for nothing, since it is the common, cheapest push, so
 concurrent `APPEND` pushes for one identifier may commit out of id order.
+
+A transaction holds these waits until it commits, and only the identifiers of one call are taken
+in a fixed order. If one transaction pushes `a` and then `b` in separate calls while another
+pushes `b` and then `a`, each waits for the other, and Postgres aborts one with a deadlock
+(SQLState `40P01`). The engine retries its own completions on that, and pushes a completion's
+downstream work in topic-name order to make it rare. An application transaction gets the
+exception: push several identifiers in one call, or in the same order in every producer, and
+retry the transaction on a deadlock.
 
 ### Ordering
 
