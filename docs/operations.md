@@ -413,6 +413,14 @@ push with `tasks.push(...)` in a bound transaction instead.
   `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
+- Recurring tasks follow the node that started last: each node that registers a topic replaces
+  the topic's schedules with its own when it starts. While old and new versions run side by side,
+  an old node that restarts (a crash, a rescheduled pod) removes the schedules the new version
+  added, and they stay gone until a new node starts. A schedule the new version removed comes
+  back the same way. So don't count on a new schedule until the rollout is done, and change
+  schedules in two steps: add new ones in one release, and remove old ones, if needed, in the
+  next. Then no rollout both adds and removes, and a schedule that comes back briefly is one the
+  running versions still expect.
 - Topic changes (created, paused, resumed, deleted) and rate limit overrides reach every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another

@@ -234,6 +234,10 @@ tasks.recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", oslo), "nightly-repo
 The housekeeping leader pushes it when due, once across the cluster. A run missed while no node
 was up is made up once. By default each push supersedes the last one if that is still waiting.
 
+Every node that starts replaces the topic's schedules with its own, so the schedules are those of
+the node that started last. See [rolling deploys](operations.md#deploys-and-shutdown) for what
+that means when versions add or remove schedules.
+
 ## Where settings come from
 
 Each layer overrides the one before it:

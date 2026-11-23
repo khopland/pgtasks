@@ -108,6 +108,12 @@ public interface TaskRegistry {
      * no node was up is made up once, not once per missed time. Each push supersedes the last one
      * if that is still waiting; see {@link Recurring#insertion()}.
      *
+     * <p>A node that starts replaces the topic's schedules with its own, so the schedules are
+     * those of whichever node started last. During a rolling deploy, an old node that restarts
+     * removes a schedule the new version added, until a new node starts again; a schedule the new
+     * version dropped comes back the same way. So change schedules in two steps: add new ones in
+     * one release, and remove old ones, if needed, in the next.
+     *
      * @param name unique within the topic
      */
     default <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload) {
