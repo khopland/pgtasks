@@ -149,6 +149,10 @@ final class Housekeeper {
                 job.run();
             } catch (Exception e) {
                 LOGGER.warn("The {} job failed; it runs again in {}", name, interval, e);
+            } catch (Error e) {
+                // Caught too: anything thrown out of a scheduled job cancels it for good, without a word,
+                // and a node whose heartbeat stopped that way would be taken for dead while still running.
+                LOGGER.error("The {} job failed with an error; it runs again in {}", name, interval, e);
             }
         }, 0, interval.toNanos(), TimeUnit.NANOSECONDS);
     }
