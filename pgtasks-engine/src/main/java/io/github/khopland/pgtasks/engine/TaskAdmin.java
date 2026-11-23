@@ -1,9 +1,13 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -17,6 +21,7 @@ import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.NodeView;
+import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
@@ -25,6 +30,7 @@ import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,12 +40,19 @@ import org.slf4j.LoggerFactory;
  * only pushes, and acts on the whole cluster: a topic paused here is paused on every node.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
+ *
+ * <p>A bulk action (revive, discard, cancel, run now) works in batches and takes each row it can
+ * lock. A row that stays locked by another transaction, such as a claim or a push, through the
+ * action's few re-reads is left as it is; the count it returns says how many it took.
  */
 public final class TaskAdmin {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TaskAdmin.class);
 
     private static final int BATCH = 1_000;
+    /** How often a bulk action reads which matching rows it skipped as locked, and takes them; see {@link #inBatches}. */
+    private static final int RESCANS = 3;
+    private static final Duration RESCAN_PAUSE = Duration.ofMillis(50);
 
     private final TaskEngine engine;
     private final TaskStore store;
@@ -210,7 +223,7 @@ public final class TaskAdmin {
     public int revive(String topic, DeadLetterQuery query) {
         return Unchecked.call("Reviving dead letters of " + topic, () -> {
             int id = topicId(topic);
-            int revived = inBatches(query, (transaction, batch, limit) -> store.revive(transaction, id, batch, limit));
+            int revived = inBatches(query, id, (transaction, batch, limit) -> store.revive(transaction, id, batch, limit));
             if (revived > 0) {
                 engine.wake(topic);
             }
@@ -232,7 +245,7 @@ public final class TaskAdmin {
     public int discard(String topic, DeadLetterQuery query) {
         return Unchecked.call("Discarding dead letters of " + topic, () -> {
             int id = topicId(topic);
-            int discarded = inBatches(query, (transaction, batch, limit) -> store.discard(transaction, id, batch, limit));
+            int discarded = inBatches(query, id, (transaction, batch, limit) -> store.discard(transaction, id, batch, limit));
             if (discarded > 0) {
                 engine.wake(topic);
             }
@@ -276,7 +289,7 @@ public final class TaskAdmin {
     public int cancel(String topic, TaskQuery query) {
         return Unchecked.call("Cancelling tasks of " + topic, () -> {
             int id = topicId(topic);
-            int cancelled = inBatches(query, (transaction, batch, limit) -> store.cancel(transaction, id, batch, limit));
+            int cancelled = inBatches(query, id, CANCELLABLE, (transaction, batch, limit) -> store.cancel(transaction, id, batch, limit));
             if (cancelled > 0) {
                 LOGGER.info("Cancelled {} task(s) of {}", cancelled, topic);
                 engine.wake(topic);
@@ -299,7 +312,8 @@ public final class TaskAdmin {
     public int runNow(String topic, TaskQuery query) {
         return Unchecked.call("Running tasks of " + topic + " now", () -> {
             int id = topicId(topic);
-            int ready = inBatches(query, (transaction, batch, limit) -> store.runNow(transaction, id, batch, limit));
+            int ready = inBatches(query, id, EnumSet.of(QueueState.SCHEDULED, QueueState.RETRYING),
+                (transaction, batch, limit) -> store.runNow(transaction, id, batch, limit));
             if (ready > 0) {
                 engine.wake(topic);
             }
@@ -323,54 +337,139 @@ public final class TaskAdmin {
     }
 
     @FunctionalInterface
-    private interface DeadLetterWork {
-        List<Long> apply(StoreTransaction transaction, DeadLetterQuery query, int limit) throws Exception;
+    private interface Work<Q> {
+        List<Long> apply(StoreTransaction transaction, Q query, int limit) throws Exception;
     }
 
-    @FunctionalInterface
-    private interface TaskWork {
-        List<Long> apply(StoreTransaction transaction, TaskQuery query, int limit) throws Exception;
+    /** How a bulk action pages through, and re-reads, the rows its query matches. */
+    private interface Paging<Q> {
+        @Nullable Collection<Long> ids(Q query);
+
+        Q after(Q query, long id);
+
+        Q withIds(Q query, Collection<Long> ids);
+
+        /** The ids of rows that match and that the action would take, read without locking them. */
+        List<Long> matching(StoreTransaction transaction, Q query, int limit) throws Exception;
     }
 
-    /** As for dead letters: given ids in one transaction, otherwise a batch per transaction. */
-    private int inBatches(TaskQuery query, TaskWork work) throws Exception {
-        Collection<Long> ids = query.taskIds();
-        if (ids != null) {
-            return ids.isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, ids.size())).size();
+    /** States a cancel takes: every one but active. */
+    private static final Set<QueueState> CANCELLABLE = EnumSet.complementOf(EnumSet.of(QueueState.ACTIVE));
+
+    /** As for dead letters, for the tasks in the given states that the action takes. */
+    private int inBatches(TaskQuery query, int topicId, Set<QueueState> takes, Work<TaskQuery> work) throws Exception {
+        Set<QueueState> states = query.states().isEmpty() ? takes : EnumSet.copyOf(query.states());
+        states.retainAll(takes);
+        if (states.isEmpty()) {
+            return 0; // it asks for states the action doesn't take
         }
-        int total = 0;
-        TaskQuery next = query;
-        while (true) {
-            TaskQuery batch = next;
-            List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
-            total += done.size();
-            if (done.size() < BATCH) {
-                return total;
+        return inBatches(query, work, new Paging<>() {
+            @Override
+            public @Nullable Collection<Long> ids(TaskQuery query) {
+                return query.taskIds();
             }
-            next = batch.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
-        }
+
+            @Override
+            public TaskQuery after(TaskQuery query, long id) {
+                return query.after(id);
+            }
+
+            @Override
+            public TaskQuery withIds(TaskQuery query, Collection<Long> ids) {
+                return query.withIds(ids);
+            }
+
+            @Override
+            public List<Long> matching(StoreTransaction transaction, TaskQuery query, int limit) throws Exception {
+                return store.tasks(transaction, topicId, query.inStates(states), limit).stream().map(TaskView::id).toList();
+            }
+        });
+    }
+
+    private int inBatches(DeadLetterQuery query, int topicId, Work<DeadLetterQuery> work) throws Exception {
+        return inBatches(query, work, new Paging<>() {
+            @Override
+            public @Nullable Collection<Long> ids(DeadLetterQuery query) {
+                return query.taskIds();
+            }
+
+            @Override
+            public DeadLetterQuery after(DeadLetterQuery query, long id) {
+                return query.after(id);
+            }
+
+            @Override
+            public DeadLetterQuery withIds(DeadLetterQuery query, Collection<Long> ids) {
+                return new DeadLetterQuery(ids, query.afterId(), query.error(), query.failedFrom(), query.failedUntil());
+            }
+
+            @Override
+            public List<Long> matching(StoreTransaction transaction, DeadLetterQuery query, int limit) throws Exception {
+                return store.deadLetters(transaction, topicId, query, limit).stream().map(TaskView::id).toList();
+            }
+        });
     }
 
     /**
      * Given ids in one transaction; otherwise a batch per transaction, so a large topic doesn't
      * hold locks for long. Each batch starts after the last one's highest id: a revived task that
      * fails straight back into the dead letters isn't revived again by the same call.
+     *
+     * <p>The store skips rows locked at that moment, by a claim, a promotion or a push, and a
+     * batch that starts after a skipped row's id never meets it again. So the action then reads
+     * which matching rows are left, without locking them, and takes those by id: up to
+     * {@value #RESCANS} times, while rows are left. Rows this call has already taken are never
+     * taken again, so a revived task that failed straight back is left alone. A row still locked
+     * after that is left as it is, and the count says how many were taken.
      */
-    private int inBatches(DeadLetterQuery query, DeadLetterWork work) throws Exception {
-        Collection<Long> ids = query.taskIds();
-        if (ids != null) {
-            return ids.isEmpty() ? 0 : EngineCore.transact(store, transaction -> work.apply(transaction, query, ids.size())).size();
-        }
-        int total = 0;
-        DeadLetterQuery next = query;
-        while (true) {
-            DeadLetterQuery batch = next;
-            List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
-            total += done.size();
-            if (done.size() < BATCH) {
-                return total;
+    private <Q> int inBatches(Q query, Work<Q> work, Paging<Q> paging) throws Exception {
+        Set<Long> taken = new HashSet<>();
+        Collection<Long> ids = paging.ids(query);
+        if (ids == null) {
+            Q next = query;
+            while (true) {
+                Q batch = next;
+                List<Long> done = EngineCore.transact(store, transaction -> work.apply(transaction, batch, BATCH));
+                taken.addAll(done);
+                if (done.size() < BATCH) {
+                    break;
+                }
+                next = paging.after(batch, done.stream().mapToLong(Long::longValue).max().orElseThrow());
             }
-            next = batch.after(done.stream().mapToLong(Long::longValue).max().orElseThrow());
+        } else if (ids.isEmpty()) {
+            return 0;
+        } else {
+            taken.addAll(EngineCore.transact(store, transaction -> work.apply(transaction, query, ids.size())));
+        }
+        for (int round = 0; round < RESCANS; round++) {
+            if (round > 0) {
+                Thread.sleep(RESCAN_PAUSE.toMillis() * round);
+            }
+            List<Long> left = left(query, paging, taken);
+            if (left.isEmpty()) {
+                break;
+            }
+            for (int from = 0; from < left.size(); from += BATCH) {
+                List<Long> chunk = left.subList(from, Math.min(left.size(), from + BATCH));
+                Q byIds = paging.withIds(query, chunk);
+                taken.addAll(EngineCore.transact(store, transaction -> work.apply(transaction, byIds, chunk.size())));
+            }
+        }
+        return taken.size();
+    }
+
+    /** The ids of rows the query still matches that this call hasn't taken, read without locks. */
+    private <Q> List<Long> left(Q query, Paging<Q> paging, Set<Long> taken) throws Exception {
+        List<Long> left = new ArrayList<>();
+        Q next = query;
+        while (true) {
+            Q page = next;
+            List<Long> found = EngineCore.transact(store, transaction -> paging.matching(transaction, page, BATCH));
+            found.stream().filter(id -> !taken.contains(id)).forEach(left::add);
+            if (found.size() < BATCH) {
+                return left;
+            }
+            next = paging.after(page, found.getLast());
         }
     }
 
