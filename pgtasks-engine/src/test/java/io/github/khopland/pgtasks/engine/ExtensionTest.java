@@ -5,7 +5,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
+import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
@@ -175,6 +177,32 @@ class ExtensionTest {
             assertThat(seen).extracting(BatchListener.Completed::identifier).doesNotHaveDuplicates();
         }
         assertThatThrownBy(() -> ClaimGate.Permit.atMost(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void decorators_wrap_every_handler_the_first_outermost() throws Exception {
+        List<String> calls = new CopyOnWriteArrayList<>();
+        Function<String, Extension> named = name -> context -> context.handlerDecorator(new HandlerDecorator() {
+            @Override
+            public <T> BatchHandler<T> decorate(TopicRef<T> topic, BatchHandler<T> handler) {
+                return batch -> {
+                    calls.add(name + " before " + topic.name());
+                    try {
+                        return handler.handle(batch);
+                    } finally {
+                        calls.add(name + " after");
+                    }
+                };
+            }
+        });
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .extension(named.apply("outer"), named.apply("inner"))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> calls.add("handler")))
+            .build().start()) {
+            engine.tasks().independently().push(WORK, "a", "x");
+            TaskTester.of(engine).awaitIdle();
+        }
+        assertThat(calls).containsExactly("outer before work", "inner before work", "handler", "inner after", "outer after");
     }
 
     @Test

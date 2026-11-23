@@ -18,6 +18,7 @@ import java.util.concurrent.Semaphore;
 import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
 
+import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.Tasks;
@@ -77,6 +78,7 @@ public final class TaskEngine implements AutoCloseable {
     private final List<HousekeepingJob> extensionJobs = new ArrayList<>();
     private final List<ClaimGate> gates = new ArrayList<>();
     private final List<BatchListener> batchListeners = new ArrayList<>();
+    private final List<HandlerDecorator> decorators = new ArrayList<>();
     private final List<Runnable> onStart = new ArrayList<>();
     private final List<Runnable> onStop = new ArrayList<>();
     private final List<String> extensions = new ArrayList<>();
@@ -334,7 +336,7 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     private void launch(TaskStore.TopicInfo info) throws Exception {
-        Topic<?> topic = Objects.requireNonNull(topicsByName.get(info.name()), info.name());
+        Topic<?> topic = decorated(Objects.requireNonNull(topicsByName.get(info.name()), info.name()));
         directory.register(info.name(), info.id());
         TopicWorker<?> worker = new TopicWorker<>(topic, info.id(), running(core));
         workersByName.put(info.name(), worker);
@@ -596,6 +598,15 @@ public final class TaskEngine implements AutoCloseable {
         return this;
     }
 
+    /** The topic with its handler wrapped by every decorator, the first outermost. */
+    private <T> Topic<T> decorated(Topic<T> topic) {
+        BatchHandler<T> handler = topic.handler();
+        for (HandlerDecorator decorator : decorators.reversed()) {
+            handler = Objects.requireNonNull(decorator.decorate(topic.ref(), handler), "a decorator returned no handler");
+        }
+        return new Topic<>(topic.ref(), handler, topic.codec(), topic.settings(), topic.resources());
+    }
+
     /** Asks every extension channel's reloads to run soon. */
     private void reloadChannels() {
         channels.values().forEach(reloads -> reloads.forEach(Coalesced::request));
@@ -646,6 +657,11 @@ public final class TaskEngine implements AutoCloseable {
         @Override
         public void batchListener(BatchListener listener) {
             batchListeners.add(Objects.requireNonNull(listener, "listener"));
+        }
+
+        @Override
+        public void handlerDecorator(HandlerDecorator decorator) {
+            decorators.add(Objects.requireNonNull(decorator, "decorator"));
         }
 
         @Override

@@ -38,6 +38,9 @@ public interface ExtensionContext {
     /** Told each batch's results on this node; see {@link BatchListener}. */
     void batchListener(BatchListener listener);
 
+    /** Wraps every topic's handler on this node; see {@link HandlerDecorator}. */
+    void handlerDecorator(HandlerDecorator decorator);
+
     /** Runs a job on a fixed delay while the engine runs. */
     void job(HousekeepingJob job);
 
