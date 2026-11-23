@@ -17,6 +17,14 @@ public interface ExtensionContext {
     /** The engine's store, for an extension's own statements. */
     TaskStore store();
 
+    /**
+     * The extension's own view of the store, from the first {@link io.github.khopland.pgtasks.spi.StoreCapability}
+     * on the class path that provides one of this type for this store.
+     *
+     * @throws IllegalStateException if none does: the module that provides it is missing
+     */
+    <C> C capability(Class<C> type);
+
     /** Pushes tasks, like any producer. */
     Tasks tasks();
 

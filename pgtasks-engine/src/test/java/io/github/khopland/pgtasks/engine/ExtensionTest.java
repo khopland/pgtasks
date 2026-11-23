@@ -206,6 +206,16 @@ class ExtensionTest {
     }
 
     @Test
+    void an_extension_gets_its_capability_from_the_provider_for_its_store() {
+        Windowed extension = new Windowed();
+        builder(new InMemoryTaskStore()).extension(extension).build();
+
+        assertThat(extension.context.capability(TestCapabilities.StoreName.class).name()).isEqualTo("memory");
+        assertThatThrownBy(() -> extension.context.capability(Runnable.class))
+            .hasMessageContaining("No java.lang.Runnable for InMemoryTaskStore");
+    }
+
+    @Test
     void a_job_that_throws_runs_again() throws Exception {
         AtomicInteger runs = new AtomicInteger();
         Extension failing = context -> context.job(HousekeepingJob.everyNode("failing", Duration.ofMillis(10), () -> {

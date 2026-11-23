@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
@@ -24,6 +25,7 @@ import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.Notifier;
+import io.github.khopland.pgtasks.spi.StoreCapability;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -623,6 +625,17 @@ public final class TaskEngine implements AutoCloseable {
         @Override
         public TaskStore store() {
             return store;
+        }
+
+        @Override
+        public <C> C capability(Class<C> type) {
+            for (StoreCapability provider : ServiceLoader.load(StoreCapability.class, type.getClassLoader())) {
+                Optional<C> found = provider.create(type, store);
+                if (found.isPresent()) {
+                    return type.cast(found.get());
+                }
+            }
+            throw new IllegalStateException("No " + type.getName() + " for " + store + ": add the module that provides it for this store");
         }
 
         @Override
