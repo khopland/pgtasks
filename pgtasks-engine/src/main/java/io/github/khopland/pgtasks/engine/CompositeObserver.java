@@ -45,11 +45,6 @@ final class CompositeObserver implements TaskObserver {
     }
 
     @Override
-    public void breaker(TopicRef<?> topic, boolean open) {
-        observers.forEach(observer -> observer.breaker(topic, open));
-    }
-
-    @Override
     public BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
         List<BatchObservation> each = observers.stream().map(observer -> observer.batch(topic, tasks)).toList();
         return new BatchObservation() {

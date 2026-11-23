@@ -200,14 +200,6 @@ Operators can also act on tasks that are still waiting, not only on dead letters
 retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
 since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
 
-## The breaker
-
-When most of a topic's recent tasks fail (80 % of the last 50, from at least 5 different tasks),
-a node stops claiming from it and sends one probe task every 30 s. The probe's failures don't
-count, and the first probe that succeeds closes the breaker. Failures the policy dead-letters at
-once (`deadLetterAt`) don't count, since bad input isn't an outage. Change it with
-`options.breaker(Breaker.standard().opensAt(0.5, 20))`, or turn it off with `Breaker.off()`.
-
 ## Recurring tasks
 
 ```java
@@ -232,8 +224,8 @@ Each layer overrides the one before it:
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.
 5. Overrides: `pgtasks.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
-   are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`, `breaker`
-   (on or off), `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
+   are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`,
+   `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
    `retry.max-backoff` and `retain.<outcome>`.
 
 `engine.effectiveSettings()`, and the endpoint, show each topic's values and the layer each one

@@ -123,13 +123,12 @@ public final class TaskAdmin {
             Map<String, String> modules = new HashMap<>();
             engine.effectiveSettings().forEach(settings -> modules.put(settings.topic(), settings.module()));
             Set<String> processing = engine.processing();
-            Set<String> open = Set.copyOf(engine.openBreakers());
             return all.stream()
                 .sorted(Comparator.comparing(TaskStore.TopicInfo::name))
                 .map(topic -> {
                     TopicSnapshot snapshot = counts.get(topic.name());
                     return new TopicStatus(topic.name(), topic.paused(), processing.contains(topic.name()), modules.get(topic.name()),
-                        snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt(), open.contains(topic.name()));
+                        snapshot == null ? null : snapshot.counts(), snapshot == null ? null : snapshot.takenAt());
                 })
                 .toList();
         });

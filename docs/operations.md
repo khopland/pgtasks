@@ -136,8 +136,8 @@ can still tell failures apart and revive them by type. Everything here is also l
 
 The `tasks` health indicator is UP while the engine runs and its heartbeat is on time. It is
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
-and after stop. Its details show leadership, notifications, claims stuck past their deadline and
-open breakers, without changing the status.
+and after stop. Its details show leadership, notifications, and claims stuck past their deadline,
+without changing the status.
 
 ## Dashboard
 
@@ -158,7 +158,7 @@ management:
 Then open `http://<host>/pgtasks/`. It shows:
 
 - **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
-  task, failing tasks and dead letters, whether this node's breaker is open, and paused or running.
+  task, failing tasks and dead letters, and paused or running.
   Every registered node with its heartbeat (marked late after the lease term) and what it leads.
 - **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
   list of dead letters to revive or discard by id (or all of them), the topic's effective settings
@@ -238,7 +238,7 @@ one rule covers the page and its API, and CSRF works as above:
 Without Spring Security the dashboard logs a warning at startup. Keep the path off your public
 ingress (route it only through an internal one, or reach it with `kubectl port-forward`). Each pod
 shows the same topics, counts, dead letters and nodes, since they come from the database;
-"running" and breaker state are that pod's own.
+"running" is that pod's own.
 
 ## Metrics and alerts
 
@@ -253,7 +253,6 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 | `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
 | `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
 | `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
-| `pgtasks.breaker.open{topic}` | 1 while this node's breaker for the topic is open |
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
@@ -263,7 +262,7 @@ counts the queue. Alert on:
 - `pgtasks.queue.oldest.failing`: something has been failing for a while. Dead letters can take
   days to appear.
 - `pgtasks.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
-- `pgtasks.breaker.open`, and the health indicator going DOWN.
+- The health indicator going DOWN.
 
 ## Tracing and correlation
 

@@ -427,7 +427,6 @@ async function overviewView() {
   showNode(data.node);
   const topics = data.topics || [];
   const total = key => topics.reduce((sum, topic) => sum + (topic.queue ? topic.queue[key] || 0 : 0), 0);
-  const open = topics.filter(topic => topic.breaker === "open").length;
   const paused = topics.filter(topic => topic.paused).length;
   const oldest = topics.map(topic => topic.queue && topic.queue.oldestReadyAt).filter(Boolean).sort()[0];
   const stats = h("div", { class: "stats" },
@@ -437,7 +436,6 @@ async function overviewView() {
     stat("Oldest ready", oldest ? since(oldest) : "—"),
     stat("Failing", total("failing"), total("failing") ? "warn" : null),
     stat("Dead letters", total("deadLetters"), total("deadLetters") ? "bad" : null),
-    stat("Open breakers", open, open ? "bad" : null),
     stat("Paused", paused, paused ? "warn" : null));
 
   const byName = new Map(topics.map(topic => [topic.name, topic]));
@@ -466,7 +464,6 @@ function stat(label, val, kind) {
 function topicStatus(topic) {
   return h("span", { class: "chips" },
     topic.paused ? chip("paused", "warn") : null,
-    topic.breaker === "open" ? chip("breaker open", "bad", "This node's circuit breaker for the topic is open") : null,
     topic.processing ? chip("running", "ok", "This node processes it") : chip("not here", null, "This node doesn't process it"));
 }
 

@@ -210,11 +210,6 @@ public final class TaskEngine implements AutoCloseable {
         return topicsByName.containsKey(topic);
     }
 
-    /** The topics whose breaker is open on this node. */
-    List<String> openBreakers() {
-        return workersByName.values().stream().filter(TopicWorker::breakerOpen).map(worker -> worker.topic().ref().name()).sorted().toList();
-    }
-
     public int nodeId() {
         if (nodeId < 0) {
             throw new IllegalStateException("Not started");
@@ -429,7 +424,7 @@ public final class TaskEngine implements AutoCloseable {
     private EngineHealth checkHealth() throws Exception {
         Duration term = settings.leaseTerm();
         if (!started) {
-            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(), List.of());
+            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of());
         }
         Instant now = store.clock().instant();
         Instant beat = running(housekeeper).lastHeartbeat();
@@ -446,10 +441,8 @@ public final class TaskEngine implements AutoCloseable {
                     claim.taskId(), claim.attempt(), claim.claimedAt(), running));
             }
         }
-        List<String> openBreakers = workersByName.values().stream().filter(TopicWorker::breakerOpen)
-            .map(worker -> worker.topic().ref().name()).sorted().toList();
         return new EngineHealth(true, settings.nodeName(), nodeId, beat, beat == null ? null : Duration.between(beat, now), term,
-            running(housekeeper).leading(), notifications, stuck, openBreakers);
+            running(housekeeper).leading(), notifications, stuck);
     }
 
     /** What {@link #start} set up, while the engine runs. */

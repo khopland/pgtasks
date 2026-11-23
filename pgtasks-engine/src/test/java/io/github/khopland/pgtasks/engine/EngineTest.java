@@ -206,7 +206,7 @@ class EngineTest {
         engine.stop(Duration.ofMillis(500));
 
         // The handler's work was fine and the database will be again: like a batch cut short by
-        // stop, the task goes back without a counted attempt or a failure the breaker would see.
+        // stop, the task goes back without a counted attempt or a failure.
         assertThat(view(tester, id).state()).isIn("retrying", "ready");
         assertThat(view(tester, id).attempt()).isZero();
         assertThat(view(tester, id).failures()).isZero();

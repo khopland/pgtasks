@@ -12,9 +12,7 @@ import org.jspecify.annotations.Nullable;
  * @param module      the configurer that registered the topic on this node, or null
  * @param counts      from the last snapshot, or null if none was taken yet
  * @param countedAt   when that snapshot was taken, or null
- * @param breakerOpen whether this node's breaker for the topic is open
  */
 public record TopicStatus(String name, boolean paused, boolean processing, @Nullable String module, @Nullable QueueCounts counts,
-                          @Nullable Instant countedAt,
-                          boolean breakerOpen) {
+                          @Nullable Instant countedAt) {
 }

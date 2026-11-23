@@ -6,7 +6,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -66,30 +65,17 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
-    /** A single task sent while the topic's breaker is open: its failure doesn't count. */
-    private final boolean probe;
     private @Nullable BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private @Nullable VirtualMachineError fatal;
-    /**
-     * Tasks whose failure says nothing about whether a downstream system is down, so the breaker
-     * leaves them out: those the retry policy blames on the task itself, such as bad input, and
-     * dead-letters at once, and those decided without running, such as one out of attempts.
-     */
-    private final Set<Long> taskFaults = new HashSet<>();
     private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
     /** Each task's own observation, by task id, created the first time the engine needs it. */
     private final Map<Long, TaskObserver.TaskObservation> taskObservations = new ConcurrentHashMap<>();
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
-        this(worker, core, claimed, false);
-    }
-
-    BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed, boolean probe) {
         this.worker = worker;
         this.core = core;
         this.claimed = claimed;
-        this.probe = probe;
     }
 
     void run() {
@@ -144,13 +130,11 @@ final class BatchRun<T> {
         if (scope != null && scope.abandoned()) {
             // The handler still runs: handing its tasks back would let them run twice at once.
             observation.released();
-            returnProbe();
             return;
         }
         if (decisions == null) {
             release(claims, claimed.stream().map(ClaimedTask::id).toList());
             observation.released();
-            returnProbe();
             return;
         }
         try (TaskObserver.Scope ignored = observation.open()) {
@@ -304,16 +288,8 @@ final class BatchRun<T> {
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                                 TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
-        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision(), probe)));
-        // Decided without running the handler, so not a probe of anything, even when sent as one:
-        // a task out of attempts is dead-lettered rather than retried as an uncounted probe failure.
-        Set<Long> notRun = new HashSet<>();
-        early.verdicts().forEach(verdict -> {
-            ClaimedTask claim = claimOf(claims, verdict.task());
-            notRun.add(claim.id());
-            taskFaults.add(claim.id());
-            completions.add(completion(claim, verdict.decision(), false));
-        });
+        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
         Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
@@ -334,7 +310,6 @@ final class BatchRun<T> {
             LOGGER.warn("Discarded the completion of a batch in {}: {}", topic.ref(), stale.getMessage());
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
             observation.released();
-            returnProbe();
             return;
         } catch (Exception | Error e) {
             if (e instanceof VirtualMachineError vm) {
@@ -348,24 +323,20 @@ final class BatchRun<T> {
                     topic.ref(), e.toString());
                 release(claims, List.copyOf(claims.keySet()));
                 observation.released();
-                returnProbe();
-                return;
+                    return;
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
-            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e), probe && !notRun.contains(claim.id()))).toList();
+            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
-                worker.recordResults(breakerResults(failures), probe);
             } catch (Exception recording) {
                 LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
-                returnProbe();
-            }
+                }
             return;
         }
         observation.completed(results(completions));
-        worker.recordResults(breakerResults(completions), probe);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -476,8 +447,7 @@ final class BatchRun<T> {
         }
     }
 
-    /** @param asProbe whether a counted failure is a probe's, and so isn't counted */
-    private Completion completion(ClaimedTask claim, Decision decision, boolean asProbe) {
+    private Completion completion(ClaimedTask claim, Decision decision) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
             case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, success.output());
@@ -493,15 +463,8 @@ final class BatchRun<T> {
                 // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
                 yield switch (retry.classify(failed.cause())) {
                     case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                    case DEAD_LETTER -> {
-                        taskFaults.add(claim.id());
-                        yield new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
-                    }
-                    // A probe fails while the breaker is open: likely the outage, not the task.
+                    case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
                     case COUNTED -> {
-                        if (asProbe) {
-                            yield new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                        }
                         Duration backoff = retry.backoff(claim.failures() + 1, core.random());
                         yield retry.allowsAnotherAfter(claim.attempt(), claim.firstFailedAt(), core.clock().instant(), backoff)
                             ? new Resolution.Waiting(WaitState.RETRYING, backoff, true, error)
@@ -511,31 +474,6 @@ final class BatchRun<T> {
             }
         };
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
-    }
-
-    /**
-     * For the breaker: true for a task that failed, false for one that finished. Waits that aren't
-     * failures are left out, and so are failures the retry policy blames on the task.
-     */
-    private Map<Long, Boolean> breakerResults(List<Completion> completions) {
-        Map<Long, Boolean> results = new LinkedHashMap<>();
-        for (Completion completion : completions) {
-            if (taskFaults.contains(completion.taskId())) {
-                continue;
-            }
-            switch (completion.resolution()) {
-                case Resolution.Finished ignored -> results.put(completion.taskId(), false);
-                case Resolution.Waiting waiting when waiting.error() != null -> results.put(completion.taskId(), true);
-                case Resolution.Waiting ignored -> { }
-            }
-        }
-        return results;
-    }
-
-    private void returnProbe() {
-        if (probe) {
-            worker.probeReturned();
-        }
     }
 
     /** How many of the completions ended in each result. */

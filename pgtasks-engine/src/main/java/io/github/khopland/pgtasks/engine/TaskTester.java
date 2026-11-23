@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -133,11 +132,7 @@ public final class TaskTester {
         while (true) {
             awaitIdle(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
             QueueCounts counts = counts(topic);
-            // Ready tasks wait for an open breaker's next probe.
-            Instant probe = counts.ready() == 0 ? null : engines.stream().flatMap(engine -> engine.workers().stream())
-                .filter(worker -> worker.topic().ref().name().equals(topic.name()))
-                .map(TopicWorker::nextProbe).filter(Objects::nonNull).min(Instant::compareTo).orElse(null);
-            Instant next = counts.nextRunAt() == null ? probe : probe == null || counts.nextRunAt().isBefore(probe) ? counts.nextRunAt() : probe;
+            Instant next = counts.nextRunAt();
             if (next == null) {
                 return counts;
             }

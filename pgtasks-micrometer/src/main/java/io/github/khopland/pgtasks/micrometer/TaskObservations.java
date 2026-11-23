@@ -5,8 +5,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
@@ -14,7 +12,6 @@ import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -61,14 +58,12 @@ public final class TaskObservations implements TaskObserver {
     public static final String TASK = "pgtasks.task";
     public static final String PUSHED = "pgtasks.pushed";
     public static final String COMPLETED = "pgtasks.completed";
-    public static final String BREAKER = "pgtasks.breaker.open";
     public static final String MDC_TOPIC = "task.topic";
     public static final String MDC_ID = "task.id";
     public static final String MDC_IDENTIFIER = "task.identifier";
 
     private final ObservationRegistry observations;
     private final @Nullable MeterRegistry meters;
-    private final Map<String, AtomicInteger> breakers = new ConcurrentHashMap<>();
 
     /** Observations and the MDC only, without counters. */
     public TaskObservations(ObservationRegistry observations) {
@@ -202,22 +197,6 @@ public final class TaskObservations implements TaskObserver {
                 observation.stop();
             }
         };
-    }
-
-    /** {@value #BREAKER}: 1 while this node's breaker for the topic is open, from the first time it opens. */
-    @Override
-    public void breaker(TopicRef<?> topic, boolean open) {
-        if (meters == null) {
-            return;
-        }
-        breakers.computeIfAbsent(topic.name(), name -> {
-            AtomicInteger state = new AtomicInteger();
-            Gauge.builder(BREAKER, state, AtomicInteger::get)
-                .description("1 while this node has stopped claiming from the topic because most recent tasks failed")
-                .tag("topic", name)
-                .register(meters);
-            return state;
-        }).set(open ? 1 : 0);
     }
 
     @Override

@@ -45,11 +45,6 @@ final class SafeObserver implements TaskObserver {
     }
 
     @Override
-    public void breaker(TopicRef<?> topic, boolean open) {
-        run(() -> observer.breaker(topic, open));
-    }
-
-    @Override
     public void pushed(TopicRef<?> topic, List<Pushed> results) {
         run(() -> observer.pushed(topic, results));
     }

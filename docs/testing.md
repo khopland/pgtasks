@@ -36,7 +36,7 @@ globals or codecs.
 
 - `awaitIdle()`: waits until nothing is left to do now, without moving the clock.
 - `drain(topic)`: runs a topic until nothing in it can run, jumping the clock past delays,
-  backoffs and breaker probes. Suspended tasks and dead letters stay.
+  and backoffs. Suspended tasks and dead letters stay.
 - `advance(duration)`: moves the clock and runs housekeeping once, as if that much time passed.
 - `pushed(topic)`, `pushedPayloads(topic)`, `pushedIdentifiers(topic)`, `assertPushed(topic, n)`,
   `assertNothingPushed(topic)`: what was pushed and committed.
