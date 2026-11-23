@@ -61,7 +61,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final String schema;
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
-    private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
+    private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks;
     private final NamedSql deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, junctionLocks;
@@ -420,6 +420,8 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         // A discarded dead letter may have held back later tasks; no trigger sees a delete.
         notifyReady = sql("SELECT pg_notify('" + schema + "_ready', t::text) FROM unnest(:topics::integer[]) AS t");
+        // The channel name is the schema's, so another schema's nodes don't hear it.
+        notifyChannel = sql("SELECT pg_notify(:channel::text, :payload::text)");
         countQueue = sql("""
             SELECT count(*) FILTER (WHERE state = 'scheduled'),
                    count(*) FILTER (WHERE state = 'retrying'),
@@ -1380,6 +1382,17 @@ public final class PostgresTaskStore implements TaskStore {
         }
         try (PreparedStatement statement = notifyReady.prepare(transaction.connection(),
             NamedSql.parameters().array("topics", "integer", topicIds.toArray()))) {
+            statement.execute();
+        }
+    }
+
+    @Override
+    public void notify(StoreTransaction transaction, String channel, String payload) throws SQLException {
+        if (!Notifier.CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
+            throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
+        }
+        try (PreparedStatement statement = notifyChannel.prepare(transaction.connection(),
+            NamedSql.parameters().set("channel", schema + "_" + channel).set("payload", payload))) {
             statement.execute();
         }
     }

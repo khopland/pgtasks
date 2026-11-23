@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -96,8 +97,8 @@ class SchemaNameTest {
         Recorder ordersHeard = new Recorder(), tasksHeard = new Recorder();
         try (Notifier ordersNotifier = new PostgresNotifier(database::connect, "orders_tasks");
              Notifier tasksNotifier = new PostgresNotifier(database::connect)) {
-            ordersNotifier.start(ordersHeard);
-            tasksNotifier.start(tasksHeard);
+            ordersNotifier.start(ordersHeard, Set.of(Notifier.TOPIC));
+            tasksNotifier.start(tasksHeard, Set.of(Notifier.TOPIC));
             awaitConnected(ordersNotifier);
             awaitConnected(tasksNotifier);
 
@@ -134,8 +135,8 @@ class SchemaNameTest {
         }
 
         @Override
-        public void topicChanged(String name) {
-            events.add("topic " + name);
+        public void notified(String channel, String payload) {
+            events.add(channel + " " + payload);
         }
 
         @Override

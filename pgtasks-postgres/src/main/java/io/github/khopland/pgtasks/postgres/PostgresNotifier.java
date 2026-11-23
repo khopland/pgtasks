@@ -4,7 +4,10 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.khopland.pgtasks.spi.Notifier;
@@ -40,8 +43,8 @@ public final class PostgresNotifier implements Notifier {
 
     private final ConnectionFactory connections;
     // The schema's channels, so two schemas in one database don't wake each other's nodes.
+    private final String schema;
     private final String ready;
-    private final String topic;
     private final Duration livenessInterval;
     private final Duration livenessTimeout;
     private final AtomicBoolean running = new AtomicBoolean();
@@ -53,7 +56,7 @@ public final class PostgresNotifier implements Notifier {
         this(connections, TaskSchema.DEFAULT_SCHEMA);
     }
 
-    /** Listens to the given schema's channels: {@code <schema>_ready} and {@code <schema>_topic}. */
+    /** Listens to the given schema's channels: {@code <schema>_ready}, and {@code <schema>_<channel>} for each channel it is started with. */
     public PostgresNotifier(ConnectionFactory connections, String schema) {
         this(connections, schema, Duration.ofSeconds(LIVENESS_SECONDS), LIVENESS_TIMEOUT);
     }
@@ -64,19 +67,27 @@ public final class PostgresNotifier implements Notifier {
         this.livenessTimeout = Objects.requireNonNull(livenessTimeout);
         this.connections = Objects.requireNonNull(connections);
         TaskSchema.validName(schema);
+        this.schema = schema;
         this.ready = schema + "_ready";
-        this.topic = schema + "_topic";
     }
 
     @Override
-    public void start(Listener listener) {
+    public void start(Listener listener, Set<String> channels) {
+        Map<String, String> byName = new HashMap<>();
+        for (String channel : channels) {
+            if (!CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
+                throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
+            }
+            byName.put(schema + "_" + channel, channel);
+        }
         if (!running.compareAndSet(false, true)) {
             throw new IllegalStateException("Already started");
         }
-        thread = Thread.ofVirtual().name("pgtasks-notifier").start(() -> listen(listener));
+        thread = Thread.ofVirtual().name("pgtasks-notifier").start(() -> listen(listener, Map.copyOf(byName)));
     }
 
-    private void listen(Listener listener) {
+    /** @param channels the channels to listen to, by their name in the database */
+    private void listen(Listener listener, Map<String, String> channels) {
         Duration backoff = Duration.ofMillis(100);
         boolean first = true;
         while (running.get()) {
@@ -88,7 +99,9 @@ public final class PostgresNotifier implements Notifier {
                 connection.setNetworkTimeout(Runnable::run, Math.toIntExact(livenessTimeout.toMillis()));
                 try (Statement statement = connection.createStatement()) {
                     statement.execute("LISTEN " + ready);
-                    statement.execute("LISTEN " + topic);
+                    for (String channel : channels.keySet()) {
+                        statement.execute("LISTEN " + channel);
+                    }
                 }
                 connected = true;
                 if (!first) {
@@ -110,8 +123,9 @@ public final class PostgresNotifier implements Notifier {
                         continue;
                     }
                     for (PGNotification notification : notifications) {
-                        if (topic.equals(notification.getName())) {
-                            listener.topicChanged(notification.getParameter());
+                        String channel = channels.get(notification.getName());
+                        if (channel != null) {
+                            listener.notified(channel, notification.getParameter());
                             continue;
                         }
                         try {

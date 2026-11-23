@@ -34,7 +34,11 @@ final class MemoryTransaction implements StoreTransaction {
     private final InMemoryTaskStore store;
     private final Deque<Runnable> undo = new ArrayDeque<>();
     private final Set<Integer> readyTopics = new LinkedHashSet<>();
-    private final Set<String> changedTopics = new LinkedHashSet<>();
+    /** Sent on commit; like NOTIFY, a message sent twice in one transaction is delivered once. */
+    private final Set<Message> messages = new LinkedHashSet<>();
+
+    record Message(String channel, String payload) {
+    }
     private boolean done;
 
     MemoryTransaction(InMemoryTaskStore store) {
@@ -67,9 +71,9 @@ final class MemoryTransaction implements StoreTransaction {
         readyTopics.add(topicId);
     }
 
-    /** Like the topic NOTIFY triggers: tell every engine after commit. */
-    void topicChanged(String name) {
-        changedTopics.add(name);
+    /** Like NOTIFY: tell every engine listening to the channel after commit. */
+    void send(String channel, String payload) {
+        messages.add(new Message(channel, payload));
     }
 
     private void check() {
@@ -85,7 +89,7 @@ final class MemoryTransaction implements StoreTransaction {
         undo.clear();
         store.unlock();
         store.notifyReady(readyTopics);
-        store.notifyTopics(changedTopics);
+        store.deliver(messages);
     }
 
     @Override
@@ -104,7 +108,7 @@ final class MemoryTransaction implements StoreTransaction {
         check();
         int changes = undo.size();
         Set<Integer> ready = Set.copyOf(readyTopics);
-        Set<String> topics = Set.copyOf(changedTopics);
+        Set<Message> sent = Set.copyOf(messages);
         return new Savepoint() {
             @Override
             public void rollback() {
@@ -113,7 +117,7 @@ final class MemoryTransaction implements StoreTransaction {
                     undo.pop().run();
                 }
                 readyTopics.retainAll(ready);
-                changedTopics.retainAll(topics);
+                messages.retainAll(sent);
             }
 
             @Override

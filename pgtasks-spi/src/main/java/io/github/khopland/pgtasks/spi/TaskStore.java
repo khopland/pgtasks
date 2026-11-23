@@ -115,6 +115,13 @@ public interface TaskStore {
     }
 
     /**
+     * Sends a message on a channel ({@link Notifier#CHANNEL}) to every node whose notifier
+     * listens to it, once the transaction commits; nothing if it rolls back. A hint, like a
+     * wake-up: a node may miss it, so a listener also reloads on every heartbeat.
+     */
+    void notify(StoreTransaction transaction, String channel, String payload) throws SQLException;
+
+    /**
      * For each group of identifiers: if every identifier has a task in the topic that counts for
      * the counts, the group's suspended tasks become ready. Returns the released identifiers.
      */

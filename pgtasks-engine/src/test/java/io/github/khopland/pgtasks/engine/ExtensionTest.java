@@ -82,6 +82,27 @@ class ExtensionTest {
     }
 
     @Test
+    void a_message_on_an_extensions_channel_reaches_the_other_nodes_reloads() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        AtomicInteger reloads = new AtomicInteger();
+        ExtensionContext[] sender = new ExtensionContext[1];
+        Extension listening = context -> context.channel("settings", reloads::incrementAndGet);
+        Extension sending = context -> sender[0] = context;
+        try (TaskEngine ignored = builder(store).extension(listening).build().start();
+             TaskEngine other = builder(store).extension(sending).build().start()) {
+            int before = reloads.get();
+            try (var transaction = sender[0].store().begin()) {
+                sender[0].store().notify(transaction, "settings", "changed");
+                transaction.commit();
+            }
+            EngineFixture.await("the reload on the other node", Duration.ofSeconds(5), () -> reloads.get() > before);
+            assertThat(other.extensions()).hasSize(1);
+        }
+        assertThatThrownBy(() -> builder(store).extension(context -> context.channel("topic", () -> { })).build())
+            .hasMessageContaining("Invalid channel 'topic'");
+    }
+
+    @Test
     void a_job_that_throws_runs_again() throws Exception {
         AtomicInteger runs = new AtomicInteger();
         Extension failing = context -> context.job(HousekeepingJob.everyNode("failing", Duration.ofMillis(10), () -> {

@@ -27,6 +27,16 @@ public interface ExtensionContext {
     /** Runs a job on a fixed delay while the engine runs. */
     void job(HousekeepingJob job);
 
+    /**
+     * Reloads something when it may have changed on another node: on a message on the channel
+     * (sent with {@link TaskStore#notify} in the transaction that changed it, so it arrives once
+     * that commits), after the notification connection was lost, and on every heartbeat, since a
+     * message may get lost. Runs on a thread of its own; requests that arrive while one waits are
+     * served by that one run. Channel names are lowercase words ({@link io.github.khopland.pgtasks.spi.Notifier#CHANNEL});
+     * {@code ready} and {@code topic} are the engine's.
+     */
+    void channel(String name, Runnable reload);
+
     /** Runs each time the engine starts, after its topics run; also after a restart. */
     void onStart(Runnable action);
 

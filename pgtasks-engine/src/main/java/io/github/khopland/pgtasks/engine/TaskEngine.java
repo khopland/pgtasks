@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -75,6 +76,8 @@ public final class TaskEngine implements AutoCloseable {
     private final List<Runnable> onStart = new ArrayList<>();
     private final List<Runnable> onStop = new ArrayList<>();
     private final List<String> extensions = new ArrayList<>();
+    /** Each extension channel's reloads, run soon on a message, a reconnect or a heartbeat. */
+    private final Map<String, List<Coalesced>> channels = new LinkedHashMap<>();
     /** How long one retention run may take; shorter in tests. */
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
@@ -219,6 +222,7 @@ public final class TaskEngine implements AutoCloseable {
             // Started again after a stop, as Spring does on context.stop() and start(): the
             // reloads that stop() switched off take notifications again. It registers as a new node.
             reconcileSoon.restart();
+            channels.values().forEach(reloads -> reloads.forEach(Coalesced::restart));
         }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
@@ -228,6 +232,8 @@ public final class TaskEngine implements AutoCloseable {
         housekeeper = null;
         try {
             if (wakeUps != null) {
+                Set<String> listened = new LinkedHashSet<>(channels.keySet());
+                listened.add(Notifier.TOPIC);
                 wakeUps.start(new Notifier.Listener() {
                     @Override
                     public void ready(int topicId) {
@@ -238,19 +244,25 @@ public final class TaskEngine implements AutoCloseable {
                     }
 
                     @Override
-                    public void topicChanged(String name) {
-                        reconcileSoon.request();
+                    public void notified(String channel, String payload) {
+                        if (channel.equals(Notifier.TOPIC)) {
+                            reconcileSoon.request();
+                        } else {
+                            channels.getOrDefault(channel, List.of()).forEach(Coalesced::request);
+                        }
                     }
 
                     @Override
                     public void missed() {
                         workersById.values().forEach(TopicWorker::wake);
                         reconcileSoon.request();
+                        reloadChannels();
                     }
-                });
+                }, listened);
             }
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
+                reloadChannels();
             }, purgeBudget, extensionJobs);
             housekeeper = keeper;
             keeper.start();
@@ -520,6 +532,11 @@ public final class TaskEngine implements AutoCloseable {
                 wakeUps.close();
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
+            for (List<Coalesced> reloads : channels.values()) {
+                for (Coalesced reload : reloads) {
+                    reload.stop(TopicWorker.PATIENCE);
+                }
+            }
             List<TopicWorker<?>> all = new ArrayList<>();
             List<Thread> drains;
             synchronized (topicsLock) {
@@ -565,6 +582,11 @@ public final class TaskEngine implements AutoCloseable {
         extensions.add(extension.name());
     }
 
+    /** Asks every extension channel's reloads to run soon. */
+    private void reloadChannels() {
+        channels.values().forEach(reloads -> reloads.forEach(Coalesced::request));
+    }
+
     /** The names of the installed extensions, in the order they were installed. */
     public List<String> extensions() {
         return List.copyOf(extensions);
@@ -596,6 +618,15 @@ public final class TaskEngine implements AutoCloseable {
         @Override
         public void job(HousekeepingJob job) {
             extensionJobs.add(Objects.requireNonNull(job, "job"));
+        }
+
+        @Override
+        public void channel(String name, Runnable reload) {
+            Objects.requireNonNull(reload, "reload");
+            if (!Notifier.CHANNEL.matcher(name).matches() || name.equals("ready") || name.equals(Notifier.TOPIC)) {
+                throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready and topic");
+            }
+            channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new Coalesced("channel-" + name, "channel " + name, reload::run));
         }
 
         @Override

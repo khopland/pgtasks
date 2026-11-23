@@ -21,7 +21,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,7 +67,8 @@ public final class InMemoryTaskStore implements TaskStore {
 
     private final InstantSource clock;
     private final ReentrantLock lock = new ReentrantLock(true);
-    private final List<Notifier.Listener> listeners = new CopyOnWriteArrayList<>();
+    /** Each engine's listener, with the channels it listens to. */
+    private final Map<Notifier.Listener, Set<String>> listeners = new ConcurrentHashMap<>();
 
     private final Map<Integer, Rows.Topic> topics = new LinkedHashMap<>();
     private final Map<Integer, Rows.Node> nodes = new HashMap<>();
@@ -98,9 +99,9 @@ public final class InMemoryTaskStore implements TaskStore {
             private @Nullable Listener listener;
 
             @Override
-            public void start(Listener listener) {
+            public void start(Listener listener, Set<String> channels) {
                 this.listener = Objects.requireNonNull(listener);
-                listeners.add(listener);
+                listeners.put(listener, Set.copyOf(channels));
             }
 
             @Override
@@ -124,14 +125,27 @@ public final class InMemoryTaskStore implements TaskStore {
 
     void notifyReady(Set<Integer> topicIds) {
         for (int topicId : topicIds) {
-            listeners.forEach(listener -> listener.ready(topicId));
+            listeners.keySet().forEach(listener -> listener.ready(topicId));
         }
     }
 
-    void notifyTopics(Set<String> names) {
-        for (String name : names) {
-            listeners.forEach(listener -> listener.topicChanged(name));
+    /** Like LISTEN/NOTIFY: each message reaches the listeners of its channel, once committed. */
+    void deliver(Set<MemoryTransaction.Message> messages) {
+        for (MemoryTransaction.Message message : messages) {
+            listeners.forEach((listener, channels) -> {
+                if (channels.contains(message.channel())) {
+                    listener.notified(message.channel(), message.payload());
+                }
+            });
         }
+    }
+
+    @Override
+    public void notify(StoreTransaction transaction, String channel, String payload) {
+        if (!Notifier.CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
+            throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
+        }
+        memory(transaction).send(channel, payload);
     }
 
     private static MemoryTransaction memory(StoreTransaction transaction) {
@@ -161,7 +175,7 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         int id = nextTopic++;
         memory.put(topics, id, new Rows.Topic(id, name, now(), null));
-        memory.topicChanged(name);
+        memory.send(Notifier.TOPIC, name);
         return id;
     }
 
@@ -493,7 +507,7 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         memory.remove(snapshots, topicId);
         memory.remove(topics, topicId);
-        memory.topicChanged(topic.name());
+        memory.send(Notifier.TOPIC, topic.name());
         return true;
     }
 
