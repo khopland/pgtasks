@@ -67,6 +67,9 @@ public final class PostgresNotifier implements Notifier {
         boolean first = true;
         while (running.get()) {
             try (Connection connection = connections.open()) {
+                // A pool may hand out connections with auto-commit off; LISTEN only takes effect at
+                // commit, so the session would sit idle in transaction and hear nothing.
+                connection.setAutoCommit(true);
                 try (Statement statement = connection.createStatement()) {
                     statement.execute("LISTEN " + ready);
                     statement.execute("LISTEN " + limit);
