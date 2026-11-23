@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
@@ -22,7 +23,6 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TaskWriter;
 import io.github.khopland.pgtasks.Tasks;
-import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
@@ -54,6 +54,8 @@ public final class TaskEngine implements AutoCloseable {
     private final Map<String, Topic<?>> topicsByName = new LinkedHashMap<>();
     private final List<TopicTemplate<?>> templates;
     private final TopicDirectory directory;
+    /** Topics whose dead letters this node is still to revive for its version; see {@link #revivePending}. */
+    private final Set<String> pendingRevivals = ConcurrentHashMap.newKeySet();
     private final DefaultTasks tasks;
     private final TaskAdmin admin;
     private final Map<String, TopicWorker<?>> workersByName = new ConcurrentHashMap<>();
@@ -347,6 +349,7 @@ public final class TaskEngine implements AutoCloseable {
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
                 limits.refresh();
+                revivePending();
                 reviveSweep();
             }, purgeBudget);
             housekeeper = keeper;
@@ -551,7 +554,6 @@ public final class TaskEngine implements AutoCloseable {
      * failed before it. Nodes of the old version may still run some of them during a rolling deploy.
      */
     private void reviveForVersion() {
-        String version = this.version;
         if (version == null) {
             if (topics.stream().anyMatch(topic -> topic.settings().deadLetters().reviveOnNewVersion())) {
                 LOGGER.warn("Some topics revive their dead letters on a new version, but the engine has no version; set it with "
@@ -560,30 +562,68 @@ public final class TaskEngine implements AutoCloseable {
             return;
         }
         for (Topic<?> topic : topics) {
-            if (!topic.settings().deadLetters().reviveOnNewVersion()) {
-                continue;
+            if (topic.settings().deadLetters().reviveOnNewVersion()) {
+                pendingRevivals.add(topic.ref().name());
             }
+        }
+        revivePending();
+    }
+
+    /**
+     * Revives this version's dead letters of the topics still pending. The claim and the revival
+     * commit together, so the version counts as revived only once its dead letters are: a node that
+     * dies on the way rolls the claim back for another node, or its own restart, to take, and one
+     * whose revival fails tries again at its next heartbeat. Another node of the version waits on
+     * the claim meanwhile and then finds the revival done.
+     */
+    private void revivePending() {
+        String version = this.version;
+        if (version == null) {
+            return;
+        }
+        for (String topic : List.copyOf(pendingRevivals)) {
             try {
-                int id = admin.topicId(topic.ref().name());
-                if (EngineCore.transact(store, transaction -> store.claimRevival(transaction, id, version))) {
-                    int revived = admin.revive(topic.ref().name(), DeadLetterQuery.ALL);
-                    LOGGER.info("Revived {} dead letter(s) of {} for version {}", revived, topic.ref(), version);
+                int id = admin.topicId(topic);
+                OptionalInt revived = EngineCore.transact(store, transaction -> store.claimRevival(transaction, id, version)
+                    ? OptionalInt.of(admin.reviveAll(transaction, id))
+                    : OptionalInt.empty());
+                pendingRevivals.remove(topic);
+                if (revived.isPresent()) {
+                    LOGGER.info("Revived {} dead letter(s) of {} for version {}", revived.getAsInt(), topic, version);
+                    if (revived.getAsInt() > 0) {
+                        wake(topic);
+                    }
                 }
             } catch (Exception e) {
-                LOGGER.warn("Could not revive the dead letters of {} for version {}", topic.ref(), version, e);
+                LOGGER.warn("Could not revive the dead letters of {} for version {}; trying again at the next heartbeat", topic, version, e);
             }
         }
     }
 
-    /** Revives the dead letters of topics that sweep them every so often, if it's time, once across the cluster. */
-    private void reviveSweep() throws Exception {
+    /**
+     * Revives the dead letters of topics that sweep them every so often, if it's time, once across
+     * the cluster. The claim commits with the revival: a sweep that fails is tried again at the
+     * next heartbeat, not skipped until the next period.
+     */
+    private void reviveSweep() {
         for (TopicWorker<?> worker : List.copyOf(workersByName.values())) {
             Duration every = worker.topic().settings().deadLetters().reviveEvery();
-            if (every != null && EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, worker.topicId(), every))) {
-                int revived = admin.revive(worker.topic().ref().name(), DeadLetterQuery.ALL);
-                if (revived > 0) {
-                    LOGGER.info("Revived {} dead letter(s) of {}, as it does every {}", revived, worker.topic().ref(), every);
-                }
+            if (every == null) {
+                continue;
+            }
+            int topicId = worker.topicId();
+            int revived;
+            try {
+                revived = EngineCore.transact(store, transaction -> store.claimReviveSweep(transaction, topicId, every)
+                    ? admin.reviveAll(transaction, topicId)
+                    : 0);
+            } catch (Exception e) {
+                LOGGER.warn("Could not sweep the dead letters of {}; trying again at the next heartbeat", worker.topic().ref(), e);
+                continue;
+            }
+            if (revived > 0) {
+                LOGGER.info("Revived {} dead letter(s) of {}, as it does every {}", revived, worker.topic().ref(), every);
+                worker.wake();
             }
         }
     }
