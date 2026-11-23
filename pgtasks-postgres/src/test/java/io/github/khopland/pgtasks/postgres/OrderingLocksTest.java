@@ -3,7 +3,9 @@ package io.github.khopland.pgtasks.postgres;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 
+import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -16,11 +18,13 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import static io.github.khopland.pgtasks.test.tck.StoreFixture.task;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The advisory lock that keeps SINGULAR_* claims apart (the race itself is in the TCK:
- * PollOrderingTck). FIFO claims, the hot path, take none.
+ * The advisory locks that keep per-identifier order (the races themselves are in the TCK:
+ * PollOrderingTck and PushTck). They are taken only where they are needed: APPEND pushes and
+ * FIFO claims, the hot paths, take none.
  */
 class OrderingLocksTest {
 
@@ -35,6 +39,25 @@ class OrderingLocksTest {
         fixture = new PostgresStoreFixture(database);
         topic = fixture.topic("topic");
         node = fixture.node("node-a");
+    }
+
+    @Test
+    void an_append_push_takes_no_lock() throws SQLException {
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            fixture.store().push(transaction, topic, Insertion.APPEND, List.of(task("x"), task("y"), task("x")));
+
+            assertThat(advisoryLocks(transaction)).isZero();
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Insertion.class, names = "APPEND", mode = EnumSource.Mode.EXCLUDE)
+    void other_pushes_lock_each_identifier_once(Insertion insertion) throws SQLException {
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            fixture.store().push(transaction, topic, insertion, List.of(task("x"), task("y"), task("x")));
+
+            assertThat(advisoryLocks(transaction)).isEqualTo(2);
+        }
     }
 
     @Test

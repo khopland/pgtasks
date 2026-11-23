@@ -75,6 +75,15 @@ already claimed is never touched.
 
 Insertion is a queue-management tool, not a uniqueness guarantee. Use a dedup key for that.
 
+Earlier and later mean task-id order. A push draws its ids before it commits, so two pushes for one
+identifier could commit out of id order, and the one that commits first couldn't see the other's
+task. So every push but `APPEND` waits per identifier for another uncommitted non-`APPEND` push of
+the same identifier to finish, and its ids follow commit order (in read committed transactions,
+the Postgres default). A transaction holds these waits until it commits: one that pushes several
+identifiers in separate calls should push them in the same order as other producers, or in one
+call, to avoid deadlocks. `APPEND` waits for nothing, since it is the common, cheapest push, so
+concurrent `APPEND` pushes for one identifier may commit out of id order.
+
 ### Ordering
 
 `FIFO` (default) runs by priority, then by push order, with no per-identifier constraint.
@@ -87,6 +96,11 @@ a later task wait for an earlier one:
 | suspended or delayed | runs | runs | waits |
 | dead-lettered | runs | waits | waits |
 | finished | runs | runs | runs |
+
+"Earlier" is task-id order. When concurrent `APPEND` pushes for one identifier commit out of id
+order, the later task may start first; the earlier one then waits until it is done rather than run
+beside it. Claims under a `SINGULAR_…` ordering take turns per topic until they commit, so a claim
+always sees what the previous one took; `FIFO` claims don't wait for each other.
 
 ## Handlers and decisions
 

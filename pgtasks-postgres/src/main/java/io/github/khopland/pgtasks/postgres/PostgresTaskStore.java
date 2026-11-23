@@ -70,7 +70,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, cancel, runNow;
     private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
-    private final NamedSql singularClaimLock;
+    private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
@@ -154,6 +154,20 @@ public final class PostgresTaskStore implements TaskStore {
             pushes.put(insertion, insertion == Insertion.APPEND ? atCommit.withGenericPlans() : atCommit);
             pushesWokenByCaller.put(insertion, insertion == Insertion.APPEND ? byCaller.withGenericPlans() : byCaller);
         }
+        // Order per identifier is task-id order, and ids are drawn before commit. Two pushes for one
+        // identifier could commit out of id order, and the one that commits first can't see the
+        // other's task to supersede, replace or delete it: an older task would then outlive, or run
+        // after, a newer one. So a push that does more than append locks each of its identifiers,
+        // in one order so two pushes can't deadlock on them, before its statement draws ids, and
+        // holds the locks until it commits; the next push's statement takes its snapshot after
+        // that. APPEND pushes take no lock (they don't touch earlier tasks, and are the hot path),
+        // so concurrent APPEND pushes for one identifier may still commit out of id order.
+        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims and
+        // junctions; topics share a hash only by chance, which merely serializes those pushes.
+        identifierLocks = sql("""
+            SELECT count(pg_advisory_xact_lock(key))
+            FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
+            """);
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)));
         }
@@ -1110,6 +1124,12 @@ public final class PostgresTaskStore implements TaskStore {
             .array("dedup", "text", dedup)
             .array("headers", "text", headers)
             .array("run_ats", "text", runAts);
+        if (insertion != Insertion.APPEND) {
+            try (PreparedStatement statement = identifierLocks.prepare(connection, NamedSql.parameters().set("topic", topicId).array("identifiers", "text", identifiers));
+                 ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+            }
+        }
         List<Pushed> results = new ArrayList<>(tasks.size());
         try (PreparedStatement statement = Objects.requireNonNull((wakeUp == WakeUp.BY_CALLER ? pushesWokenByCaller : pushes).get(insertion)).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {

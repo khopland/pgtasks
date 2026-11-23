@@ -61,7 +61,10 @@ import org.jspecify.annotations.Nullable;
  * proven on Postgres. It is never chosen automatically.
  *
  * <p>Every transaction holds one store-wide lock from begin to commit or rollback, so
- * transactions on different threads never interleave. Time comes from the given clock; pass a
+ * transactions on different threads never interleave. So task ids always follow commit order and
+ * claims always see each other, which Postgres has to arrange with advisory locks: per identifier
+ * for pushes other than APPEND, and per topic for SINGULAR claims. Concurrent APPEND pushes for
+ * one identifier, which Postgres may commit out of id order, are never reordered here. Time comes from the given clock; pass a
  * {@code ManualClock} to jump past backoffs, delays and expiry in tests.
  */
 public final class InMemoryTaskStore implements TaskStore {
