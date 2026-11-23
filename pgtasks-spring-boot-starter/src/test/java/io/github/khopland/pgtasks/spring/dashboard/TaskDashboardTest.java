@@ -10,7 +10,6 @@ import java.util.regex.Pattern;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.engine.Cron;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
@@ -50,8 +49,7 @@ class TaskDashboardTest {
     static class App {
         @Bean
         TaskConfigurer workTasks() {
-            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> { })
-                .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
+            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> { });
         }
 
         @Bean

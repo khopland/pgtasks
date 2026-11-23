@@ -3,7 +3,6 @@ package io.github.khopland.pgtasks.engine;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,10 +17,6 @@ import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
 import io.github.khopland.pgtasks.Outcome;
-import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.admin.Schedule;
-import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -117,11 +112,6 @@ final class Housekeeper {
         schedule(jobs, "promotion", settings.promoteInterval(), () -> {
             if (leading()) {
                 promote();
-            }
-        });
-        schedule(jobs, "recurring tasks", settings.promoteInterval(), () -> {
-            if (leading()) {
-                fireSchedules();
             }
         });
         schedule(slow, "retention", settings.purgeInterval(), () -> {
@@ -246,7 +236,6 @@ final class Housekeeper {
         if (leading()) {
             expire();
             promote();
-            fireSchedules();
             purge();
             snapshot();
         }
@@ -267,74 +256,6 @@ final class Housekeeper {
             promoted = EngineCore.transact(store, transaction -> store.promoteDue(transaction, BATCH));
             promoted.topics().forEach(wake::accept);
         } while (promoted.tasks() == BATCH && leading());
-    }
-
-    /** How soon a recurring task whose push failed is tried again, unless its next run comes first. */
-    static final Duration FAILED_SCHEDULE_RETRY = Duration.ofMinutes(1);
-
-    /**
-     * Pushes the recurring tasks that are due, each in the same transaction as moving its next run
-     * on, so a schedule fires once even if this node dies halfway. A run missed while no node was
-     * up is made up once: the next run counts from now. Each schedule has a savepoint of its own,
-     * so one whose push fails is undone, logged and tried again later, and the others still fire.
-     */
-    private void fireSchedules() throws Exception {
-        int[] due = new int[1];
-        do {
-            // Seen by the observer like any push: traced while written, counted once committed.
-            List<Runnable> committed = new ArrayList<>();
-            List<Integer> fired = EngineCore.transact(store, transaction -> {
-                committed.clear();
-                Instant now = store.clock().instant();
-                List<Integer> topics = new ArrayList<>();
-                List<Schedule> schedules = store.dueSchedules(transaction, BATCH);
-                due[0] = schedules.size();
-                for (Schedule schedule : schedules) {
-                    Instant next;
-                    try {
-                        // The store decides what is due by its own clock (the database server's), this
-                        // node by the JVM's. From whichever is later, so a node a few milliseconds behind
-                        // the server can't give back the slot it just fired and fire it again.
-                        Instant from = now.isAfter(schedule.nextRunAt()) ? now : schedule.nextRunAt();
-                        next = Cron.parse(schedule.cron(), ZoneId.of(schedule.zone())).following(from);
-                    } catch (RuntimeException e) {
-                        // Written by a node with another idea of cron; try again in an hour rather than every second.
-                        LOGGER.warn("Recurring task {} of {} has a schedule this node can't read, '{}' in {}; skipped for an hour",
-                            schedule.name(), schedule.topic(), schedule.cron(), schedule.zone(), e);
-                        store.scheduleFired(transaction, schedule.id(), now, now.plus(Duration.ofHours(1)));
-                        continue;
-                    }
-                    TopicRef<?> topic = TopicRef.of(schedule.topic(), Object.class);
-                    StoreTransaction.Savepoint savepoint = transaction.savepoint();
-                    List<Pushed> results;
-                    try {
-                        try (TaskObserver.PushObservation observation = settings.observer().pushing(topic, 1)) {
-                            results = store.push(transaction, schedule.topicId(), schedule.insertion(), List.of(new TaskStore.NewTask(schedule.identifier(),
-                                schedule.payload(), schedule.payloadType(), null, null, false, 0, null, null, null, observation.headers())));
-                        }
-                        store.scheduleFired(transaction, schedule.id(), now, next);
-                        savepoint.release();
-                    } catch (Exception e) {
-                        // Undone, or the transaction can't go on (a lost connection): then this throws and the whole run is retried.
-                        savepoint.rollback();
-                        if (Transient.is(e)) {
-                            throw e;
-                        }
-                        // Its slot stays unfired: tried again shortly, and made up once when it works.
-                        Instant retry = now.plus(FAILED_SCHEDULE_RETRY);
-                        Instant at = next.isBefore(retry) ? next : retry;
-                        LOGGER.warn("Recurring task {} of {} could not be pushed; tried again at {}", schedule.name(), schedule.topic(), at, e);
-                        store.scheduleFired(transaction, schedule.id(), now, at);
-                        continue;
-                    }
-                    committed.add(() -> settings.observer().pushed(topic, results));
-                    topics.add(schedule.topicId());
-                }
-                return topics;
-            });
-            committed.forEach(Runnable::run);
-            fired.forEach(wake::accept);
-        } while (due[0] == BATCH && leading());
     }
 
     /**

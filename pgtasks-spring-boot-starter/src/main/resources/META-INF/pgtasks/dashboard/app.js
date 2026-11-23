@@ -564,7 +564,7 @@ async function topicView(name) {
     failingPanel(name, failing.failing || []),
     deadLettersPanel(name, dead, paging),
     tasksPanel(name, search),
-    h("div", { class: "grid" }, settingsPanel(topic.settings), recurringPanel(topic.recurring || [])),
+    settingsPanel(topic.settings),
   ];
 }
 
@@ -1005,7 +1005,7 @@ async function purge(topic) {
 async function deleteTopic(topic) {
   const result = await ask({
     title: "Delete " + topic,
-    message: ["Deletes the topic with its history and recurring tasks, on every node. It must have no unfinished tasks. ",
+    message: ["Deletes the topic with its history, on every node. It must have no unfinished tasks. ",
       "A node whose configuration registers it creates it again when it starts, so remove it there first."],
     action: "Delete topic",
     danger: true,
@@ -1035,17 +1035,6 @@ function settingsPanel(settings) {
     { label: "Value", value: row => h("td", { class: "wrap mono" }, row.value) },
     { label: "From", value: row => chip(...(SOURCES[row.source] || [row.source, null])) },
   ], rows, "This node doesn't run the topic, so it doesn't know its settings."));
-}
-
-function recurringPanel(schedules) {
-  return panel("Recurring", null, table([
-    { label: "Name", value: s => h("td", { class: "wrap" }, s.name) },
-    { label: "Cron", value: s => h("td", { class: "mono nowrap" }, s.cron, " ", h("span", { class: "muted" }, s.zone)) },
-    { label: "Identifier", value: s => h("td", { class: "wrap mono" }, s.identifier) },
-    { label: "Insertion", value: s => s.insertion },
-    { label: "Next", value: s => time(s.nextRunAt) },
-    { label: "Last", value: s => time(s.lastRunAt) },
-  ], schedules, "No recurring tasks."));
 }
 
 // --- Task

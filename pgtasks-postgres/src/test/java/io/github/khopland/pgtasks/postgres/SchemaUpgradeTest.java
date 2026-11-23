@@ -168,9 +168,10 @@ class SchemaUpgradeTest {
                 assertThat(view.state()).isEqualTo("succeeded");
                 assertThat(view.output()).isEqualTo("ok");
             });
-            // Rate limits are gone from the code; their 0.1.0 tables stay, unread, until a schema version drops them.
+            // Rate limits and recurring tasks are gone from the code; their 0.1.0 tables stay, unread,
+            // until a schema version drops them.
             assertThat(database.count("SELECT count(*) FROM pgtasks.rate_limit")).isOne();
-            assertThat(store.schedules(transaction)).extracting(schedule -> schedule.name()).containsExactly("nightly");
+            assertThat(database.count("SELECT count(*) FROM pgtasks.schedule")).isOne();
             assertThat(store.promoteDue(transaction, 100).tasks()).as("the delayed task stays delayed").isZero();
 
             List<Long> cancelled = store.cancel(transaction, topic, TaskQuery.ALL.withIdentifier("person-8"), 10);

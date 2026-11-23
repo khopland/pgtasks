@@ -5,7 +5,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchHandler;
-import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TaskHandler;
@@ -87,25 +86,4 @@ public interface TaskRegistry {
      * @param route the push for an event, or null to push nothing for it
      */
     <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route);
-
-    /**
-     * Pushes a task to one of this module's topics on a schedule, the same identifier and payload
-     * each time. Every node that registers the topic records its schedules when it starts, and the
-     * housekeeping leader pushes them when due, once each across the cluster. A run missed while
-     * no node was up is made up once, not once per missed time. Each push supersedes the last one
-     * if that is still waiting; see {@link Recurring#insertion()}.
-     *
-     * <p>A node that starts replaces the topic's schedules with its own, so the schedules are
-     * those of whichever node started last. During a rolling deploy, an old node that restarts
-     * removes a schedule the new version added, until a new node starts again; a schedule the new
-     * version dropped comes back the same way. So change schedules in two steps: add new ones in
-     * one release, and remove old ones, if needed, in the next.
-     *
-     * @param name unique within the topic
-     */
-    default <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload) {
-        return recurring(topic, name, cron, identifier, payload, Insertion.SUPERSEDE);
-    }
-
-    <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload, Insertion insertion);
 }

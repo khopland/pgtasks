@@ -24,7 +24,6 @@ import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.BatchResource;
-import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
@@ -415,7 +414,6 @@ public final class TaskEngineBuilder {
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);
         List<EventRoute<?>> routes = new ArrayList<>();
-        List<Recurring<?>> recurring = new ArrayList<>();
         List<Declared> declared = new ArrayList<>();
         for (Named<TaskConfigurer> configurer : configurers) {
             Spec moduleDefaults = new Spec(Source.MODULE_DEFAULTS);
@@ -458,19 +456,6 @@ public final class TaskEngineBuilder {
                     return this;
                 }
 
-                @Override
-                public <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload,
-                                                  Insertion insertion) {
-                    Recurring<T> schedule = new Recurring<>(topic, name, cron, identifier, payload, insertion, configurer.name());
-                    if (registered.stream().noneMatch(spec -> spec.name.equals(topic.name()))) {
-                        problems.add("Recurring task " + name + " is for topic " + topic.name() + ", which " + configurer.name()
-                            + " doesn't register before it; a module schedules only its own topics");
-                    } else if (recurring.stream().anyMatch(other -> other.topic().name().equals(topic.name()) && other.name().equals(name))) {
-                        problems.add("Two recurring tasks named " + name + " for topic " + topic.name());
-                    }
-                    recurring.add(schedule);
-                    return this;
-                }
             });
             for (TopicSpec<?> topic : registered) {
                 TopicSpec<?> previous = topics.putIfAbsent(topic.name, topic);
@@ -557,8 +542,7 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withEventRoutes(routes)
-            .withRecurring(recurring);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withEventRoutes(routes);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         // A codec for every topic modules push to, now rather than at the first push.

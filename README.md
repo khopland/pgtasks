@@ -3,7 +3,7 @@
 A task queue in the Postgres database you already run. You push a task in the same transaction
 as the data change it reacts to, so there is no outbox table and no two-phase commit. Workers on
 any number of nodes claim batches with `SKIP LOCKED`, and the engine takes care of retries, dead
-letters, recurring tasks, housekeeping, metrics and tracing.
+letters, housekeeping, metrics and tracing.
 
 ```java
 // Push, in the transaction that saves the tax return
@@ -149,7 +149,7 @@ engine.close();                                // drains running batches, then s
 
 ## Further reading
 
-- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion, retries and recurring tasks.
+- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion and retries.
 - [Patterns](docs/patterns.md): effects that must happen exactly once, fan-out and fan-in, producers and consumers in separate services.
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
 - [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.

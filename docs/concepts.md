@@ -55,7 +55,7 @@ such as the start of the next business day. The run time is compared with the st
 database's, on Postgres), so nodes with skewed clocks agree on it, and a time that has already
 come, the past included, makes the task ready at once. Delay, run time and suspension exclude each
 other: each of the three builders replaces the others. Downstream work pushed from a handler
-(`work.push`) takes the same creation. Recurring tasks don't take one: their cron is the time.
+(`work.push`) takes the same creation.
 
 `push` returns one `Pushed` per creation: `QUEUED`, `REDUNDANT` (a later creation in the same
 push has the same identifier), `DUPLICATE` (an unfinished task has the dedup key), or `PENDING`
@@ -195,19 +195,6 @@ Operators can also act on tasks that are still waiting, not only on dead letters
 `redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
 retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
 since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
-
-## Recurring tasks
-
-```java
-tasks.recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", oslo), "nightly-report", new ReportRequest());
-```
-
-The housekeeping leader pushes it when due, once across the cluster. A run missed while no node
-was up is made up once. By default each push supersedes the last one if that is still waiting.
-
-Every node that starts replaces the topic's schedules with its own, so the schedules are those of
-the node that started last. See [rolling deploys](operations.md#deploys-and-shutdown) for what
-that means when versions add or remove schedules.
 
 ## Where settings come from
 

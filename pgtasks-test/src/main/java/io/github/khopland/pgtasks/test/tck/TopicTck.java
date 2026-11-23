@@ -1,10 +1,8 @@
 package io.github.khopland.pgtasks.test.tck;
 
 import java.sql.SQLException;
-import java.time.Instant;
 import java.util.List;
 
-import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.Test;
@@ -76,17 +74,12 @@ public abstract class TopicTck extends StoreTck {
     }
 
     @Test
-    void a_topic_without_tasks_is_deleted_with_its_recurring_tasks() throws SQLException {
+    void a_topic_without_tasks_is_deleted() throws SQLException {
         StoreFixture fixture = fixture();
         int topic = fixture.topic("retired");
         int node = fixture.node("node");
         long id = fixture.push(topic, "a");
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
-        fixture.inTransaction(transaction -> {
-            fixture.store().syncSchedules(transaction, topic, List.of(new TaskStore.ScheduleSpec("nightly", "n", "0 2 * * *", "UTC",
-                Insertion.SUPERSEDE, null, null, Instant.now().plusSeconds(3600))));
-            return null;
-        });
 
         boolean withHistory = fixture.inTransaction(transaction -> fixture.store().deleteTopic(transaction, topic));
         assertThat(withHistory).as("history left").isFalse();
@@ -97,8 +90,6 @@ public abstract class TopicTck extends StoreTck {
         assertThat(deleted).isTrue();
 
         assertThat(topics(fixture, "retired")).isEmpty();
-        List<io.github.khopland.pgtasks.admin.Schedule> schedules = fixture.inTransaction(transaction -> fixture.store().schedules(transaction));
-        assertThat(schedules).noneMatch(schedule -> schedule.topic().equals("retired"));
     }
 
     @Test

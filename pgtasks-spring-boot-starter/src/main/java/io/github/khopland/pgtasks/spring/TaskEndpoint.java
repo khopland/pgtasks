@@ -42,7 +42,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  *
  * <pre>
  * GET    /actuator/tasks                                   topics by module, this node and every node
- * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
+ * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/failing                what is failing, grouped by error
  * GET    /actuator/tasks/topics/{topic}/tasks?after=&amp;limit=&amp;identifier=&amp;reference=&amp;state=ready,retrying&amp;header=tenant=north
@@ -120,7 +120,6 @@ public class TaskEndpoint {
                 Map<String, Object> body = topic(status);
                 engine.effectiveSettings().stream().filter(settings -> settings.topic().equals(name)).findFirst()
                     .ifPresent(settings -> body.put("settings", settings(settings)));
-                body.put("recurring", schedules(name));
                 return body;
             }));
             case "tasks" -> found(number(name).flatMap(this::task).map(view -> {
@@ -359,20 +358,6 @@ public class TaskEndpoint {
         attempt.put("result", view.result());
         attempt.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
         return attempt;
-    }
-
-    private List<Map<String, Object>> schedules(String topic) {
-        return engine.admin().schedules().stream().filter(schedule -> schedule.topic().equals(topic)).map(schedule -> {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("name", schedule.name());
-            body.put("cron", schedule.cron());
-            body.put("zone", schedule.zone());
-            body.put("identifier", schedule.identifier());
-            body.put("insertion", schedule.insertion().name().toLowerCase(Locale.ROOT));
-            body.put("nextRunAt", text(schedule.nextRunAt()));
-            body.put("lastRunAt", text(schedule.lastRunAt()));
-            return body;
-        }).toList();
     }
 
     private Optional<TopicStatus> status(String name) {

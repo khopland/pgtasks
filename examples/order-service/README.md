@@ -15,7 +15,7 @@ POST /orders ──► orders.payment ──┐ marker "<id>:paid"      ┐
                     └─► customer.notify "shipped", and "feedback" 30 s later (delayed)
 declined payment ──► orders.ship REPLACE (cancel: release stock, waits with later() for the stock step)
                         └─► customer.notify "declined"
-orders.reconcile: recurring every minute, once per cluster, counts orders in flight > 5 min
+orders.reconcile: about every minute, once per cluster (each run pushes the next), counts orders in flight > 5 min
 ```
 
 | Topic | Handler | Settings |
@@ -24,7 +24,7 @@ orders.reconcile: recurring every minute, once per cluster, counts orders in fli
 | `orders.stock` | stock reservation in our own tables, staged in a `BatchResource` (`StagedWrites`) | |
 | `orders.ship` | carrier call for the order; markers are filtered; 422 → `failed` (3 attempts, then dead letter) | |
 | `customer.notify` | mailer call | `SINGULAR_BY_IDENTIFIER` per customer, dedup keys |
-| `orders.reconcile` | recurring `* * * * *` | |
+| `orders.reconcile` | counts stuck orders, then pushes the next run a minute later (SUPERSEDE) | |
 
 Every write to our own tables from a handler goes through `StagedWrites`, a `BatchResource` that
 runs the SQL on the completion's connection, so it commits exactly when the task's decision does.

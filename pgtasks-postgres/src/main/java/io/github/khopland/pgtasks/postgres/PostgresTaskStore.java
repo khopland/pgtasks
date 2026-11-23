@@ -36,7 +36,6 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -66,7 +65,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks, cancel, runNow;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, deleteDeadNodes, listNodes;
+    private final NamedSql failingGroups, deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention, junctionLocks;
     private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
@@ -468,39 +467,6 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
             """);
-        // The topic's rows become exactly the given ones. An unchanged cron and zone keep the next run.
-        syncSchedules = sql("""
-            WITH input AS MATERIALIZED (
-                SELECT * FROM unnest(:names::text[], :identifiers::text[], :crons::text[], :zones::text[], :insertions::text[],
-                                     :payloads::text[], :types::text[], :next::timestamptz[])
-                    AS i(name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
-            ),
-            removed AS (
-                DELETE FROM pgtasks.schedule s
-                WHERE s.topic_id = :topic::integer AND s.name NOT IN (SELECT name FROM input)
-            )
-            INSERT INTO pgtasks.schedule AS s (topic_id, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
-            SELECT :topic::integer, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at FROM input
-            ON CONFLICT (topic_id, name) DO UPDATE
-            SET identifier = excluded.identifier, insertion = excluded.insertion, payload = excluded.payload,
-                payload_type = excluded.payload_type,
-                next_run_at = CASE WHEN s.cron = excluded.cron AND s.zone = excluded.zone THEN s.next_run_at ELSE excluded.next_run_at END,
-                cron = excluded.cron, zone = excluded.zone
-            """);
-        String scheduleColumns = """
-            SELECT s.id, s.topic_id, tp.name AS topic, s.name, s.identifier, s.cron, s.zone, s.insertion, s.payload, s.payload_type,
-                   s.next_run_at, s.last_run_at
-            FROM pgtasks.schedule s
-            JOIN pgtasks.topic tp ON tp.id = s.topic_id
-            """;
-        listSchedules = sql(scheduleColumns + "ORDER BY tp.name, s.name");
-        dueSchedules = sql(scheduleColumns + """
-            WHERE s.next_run_at <= clock_timestamp()
-            ORDER BY s.next_run_at
-            LIMIT :limit::integer
-            FOR UPDATE OF s SKIP LOCKED
-            """);
-        scheduleFired = sql("UPDATE pgtasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
         // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
         deleteDeadNodes = sql("""
             DELETE FROM pgtasks.node n
@@ -1583,80 +1549,6 @@ public final class PostgresTaskStore implements TaskStore {
         }
         ids.sort(null);
         return ids;
-    }
-
-    @Override
-    public void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> schedules) throws SQLException {
-        int size = schedules.size();
-        @Nullable Object[] names = new @Nullable Object[size], identifiers = new @Nullable Object[size], crons = new @Nullable Object[size], zones = new @Nullable Object[size];
-        @Nullable Object[] insertions = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], next = new @Nullable Object[size];
-        for (int index = 0; index < size; index++) {
-            ScheduleSpec schedule = schedules.get(index);
-            names[index] = schedule.name();
-            identifiers[index] = schedule.identifier();
-            crons[index] = schedule.cron();
-            zones[index] = schedule.zone();
-            insertions[index] = schedule.insertion().name();
-            payloads[index] = schedule.payload();
-            types[index] = schedule.payloadType();
-            next[index] = schedule.nextRunAt().toString();
-        }
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("topic", topicId)
-            .array("names", "text", names)
-            .array("identifiers", "text", identifiers)
-            .array("crons", "text", crons)
-            .array("zones", "text", zones)
-            .array("insertions", "text", insertions)
-            .array("payloads", "text", payloads)
-            .array("types", "text", types)
-            .array("next", "text", next);
-        try (PreparedStatement statement = syncSchedules.prepare(transaction.connection(), parameters)) {
-            statement.execute();
-        }
-    }
-
-    @Override
-    public List<Schedule> schedules(StoreTransaction transaction) throws SQLException {
-        return schedules(listSchedules, transaction, NamedSql.parameters());
-    }
-
-    @Override
-    public List<Schedule> dueSchedules(StoreTransaction transaction, int limit) throws SQLException {
-        return schedules(dueSchedules, transaction, NamedSql.parameters().set("limit", limit));
-    }
-
-    @Override
-    public void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException {
-        try (PreparedStatement statement = scheduleFired.prepare(transaction.connection(), NamedSql.parameters()
-                 .set("id", scheduleId)
-                 .set("fired", OffsetDateTime.ofInstant(firedAt, ZoneOffset.UTC))
-                 .set("next", OffsetDateTime.ofInstant(nextRunAt, ZoneOffset.UTC)))) {
-            statement.executeUpdate();
-        }
-    }
-
-    private static List<Schedule> schedules(NamedSql sql, StoreTransaction transaction, NamedSql.Parameters parameters) throws SQLException {
-        List<Schedule> result = new ArrayList<>();
-        try (PreparedStatement statement = sql.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                result.add(new Schedule(
-                    resultSet.getInt("id"),
-                    resultSet.getInt("topic_id"),
-                    resultSet.getString("topic"),
-                    resultSet.getString("name"),
-                    resultSet.getString("identifier"),
-                    resultSet.getString("cron"),
-                    resultSet.getString("zone"),
-                    Insertion.valueOf(resultSet.getString("insertion")),
-                    resultSet.getString("payload"),
-                    resultSet.getString("payload_type"),
-                    requiredInstant(resultSet, "next_run_at"),
-                    instant(resultSet, "last_run_at")));
-            }
-        }
-        return result;
     }
 
     @Override

@@ -36,7 +36,6 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -73,8 +72,6 @@ public final class InMemoryTaskStore implements TaskStore {
     private final List<Notifier.Listener> listeners = new CopyOnWriteArrayList<>();
 
     private final Map<Integer, Rows.Topic> topics = new LinkedHashMap<>();
-    private final Map<Integer, Rows.Schedule> schedules = new TreeMap<>();
-    private int nextSchedule = 1;
     private final Map<Integer, Rows.Node> nodes = new HashMap<>();
     private final TreeMap<Long, Rows.Task> tasks = new TreeMap<>();
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
@@ -520,8 +517,6 @@ public final class InMemoryTaskStore implements TaskStore {
         if (topic == null || tasks.values().stream().anyMatch(task -> task.topicId() == topicId)) {
             return false;
         }
-        schedules.values().stream().filter(schedule -> schedule.topicId() == topicId).map(Rows.Schedule::id).toList()
-            .forEach(id -> memory.remove(schedules, id));
         memory.remove(snapshots, topicId);
         memory.remove(topics, topicId);
         memory.topicChanged(topic.name());
@@ -682,59 +677,6 @@ public final class InMemoryTaskStore implements TaskStore {
             .sorted(Comparator.comparingLong(Rows.Queued::taskId))
             .limit(limit)
             .toList();
-    }
-
-    @Override
-    public void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> specs) {
-        MemoryTransaction memory = memory(transaction);
-        Map<String, Rows.Schedule> existing = new HashMap<>();
-        schedules.values().stream().filter(row -> row.topicId() == topicId).forEach(row -> existing.put(row.name(), row));
-        Set<String> wanted = new HashSet<>();
-        for (ScheduleSpec spec : specs) {
-            wanted.add(spec.name());
-            Rows.Schedule old = existing.get(spec.name());
-            boolean same = old != null && old.cron().equals(spec.cron()) && old.zone().equals(spec.zone());
-            int id = old != null ? old.id() : nextSchedule++;
-            memory.put(schedules, id, new Rows.Schedule(id, topicId, spec.name(), spec.identifier(), spec.cron(), spec.zone(),
-                spec.insertion().name(), spec.payload(), spec.payloadType(), old != null && same ? old.nextRunAt() : spec.nextRunAt(),
-                old == null ? null : old.lastRunAt()));
-        }
-        existing.values().stream().filter(row -> !wanted.contains(row.name())).forEach(row -> memory.remove(schedules, row.id()));
-    }
-
-    @Override
-    public List<Schedule> schedules(StoreTransaction transaction) {
-        memory(transaction);
-        return schedules.values().stream()
-            .sorted(Comparator.comparing((Rows.Schedule row) -> topic(row.topicId()).name()).thenComparing(Rows.Schedule::name))
-            .map(this::schedule)
-            .toList();
-    }
-
-    @Override
-    public List<Schedule> dueSchedules(StoreTransaction transaction, int limit) {
-        memory(transaction);
-        Instant now = now();
-        return schedules.values().stream()
-            .filter(row -> !row.nextRunAt().isAfter(now))
-            .sorted(Comparator.comparing(Rows.Schedule::nextRunAt))
-            .limit(limit)
-            .map(this::schedule)
-            .toList();
-    }
-
-    @Override
-    public void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) {
-        MemoryTransaction memory = memory(transaction);
-        Rows.Schedule row = schedules.get(scheduleId);
-        if (row != null) {
-            memory.put(schedules, scheduleId, row.fired(firedAt, nextRunAt));
-        }
-    }
-
-    private Schedule schedule(Rows.Schedule row) {
-        return new Schedule(row.id(), row.topicId(), topic(row.topicId()).name(), row.name(), row.identifier(), row.cron(), row.zone(),
-            Insertion.valueOf(row.insertion()), row.payload(), row.payloadType(), row.nextRunAt(), row.lastRunAt());
     }
 
     /** The topic's dead letters, lowest id first: the given ones, or all, after an id. */

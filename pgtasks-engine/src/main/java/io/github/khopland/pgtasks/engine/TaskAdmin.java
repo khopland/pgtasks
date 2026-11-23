@@ -21,7 +21,6 @@ import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.QueueState;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -62,7 +61,7 @@ public final class TaskAdmin {
     }
 
     /**
-     * Deletes a topic that is no longer used, with its history, recurring tasks and counts, and
+     * Deletes a topic that is no longer used, with its history and counts, and
      * stops it on every node. It must have no unfinished tasks: let them finish, or discard its
      * dead letters, first. A node that registers the topic by name creates it again when it
      * starts, so remove it from the configuration before deleting it.
@@ -154,11 +153,6 @@ public final class TaskAdmin {
      */
     public List<NodeView> nodes() {
         return Unchecked.call("Listing nodes", () -> EngineCore.transact(store, store::nodes));
-    }
-
-    /** Every topic's recurring tasks as stored, with their next and last runs. */
-    public List<Schedule> schedules() {
-        return Unchecked.call("Reading recurring tasks", () -> EngineCore.transact(store, store::schedules));
     }
 
     /** A task, finished or not, as pgtasks.task_view shows it. */

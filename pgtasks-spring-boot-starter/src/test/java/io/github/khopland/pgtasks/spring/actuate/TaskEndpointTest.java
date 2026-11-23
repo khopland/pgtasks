@@ -15,7 +15,6 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.engine.Cron;
 import io.github.khopland.pgtasks.engine.EngineFixture;
 import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
@@ -58,8 +57,7 @@ class TaskEndpointTest {
             Set<String> failedOnce = ConcurrentHashMap.newKeySet();
             return tasks -> tasks.topic(WORK, batch -> batch.decide(task ->
                     task.payload().startsWith("flaky") && failedOnce.add(task.payload()) ? Decision.failed("not yet") : Decision.success()),
-                topic -> topic.retry(Retry.none()))
-                .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
+                topic -> topic.retry(Retry.none()));
         }
 
         @Bean
@@ -134,8 +132,6 @@ class TaskEndpointTest {
         assertThat(topic.status()).isEqualTo(200);
         assertThat(topic.body().path("settings").path("retry").path("source").asString()).isEqualTo("topic");
         assertThat(topic.body().path("settings").path("batch-size").path("source").asString()).isEqualTo("default");
-        assertThat(topic.body().path("recurring").get(0).path("name").asString()).isEqualTo("hourly");
-        assertThat(topic.body().path("recurring").get(0).path("cron").asString()).isEqualTo("@hourly");
         assertThat(get("/tasks/topics/missing").status()).isEqualTo(404);
         assertThat(get("/tasks/nonsense/work").status()).isEqualTo(404);
     }

@@ -82,14 +82,6 @@ final class Rows {
         }
     }
 
-    record Schedule(int id, int topicId, String name, String identifier, String cron, String zone, String insertion,
-                    @Nullable String payload, @Nullable String payloadType, Instant nextRunAt, @Nullable Instant lastRunAt) {
-
-        Schedule fired(Instant at, Instant next) {
-            return new Schedule(id, topicId, name, identifier, cron, zone, insertion, payload, payloadType, next, at);
-        }
-    }
-
     record Queued(
         long taskId,
         int topicId,

@@ -116,7 +116,7 @@ Expose it like any endpoint: `management.endpoints.web.exposure.include=health,t
 
 ```
 GET    /actuator/tasks                                   topics by module, this node and every node
-GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
+GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
@@ -162,7 +162,7 @@ Then open `http://<host>/pgtasks/`. It shows:
   Every registered node with its heartbeat (marked late after the lease term) and what it leads.
 - **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
   list of dead letters to revive or discard by id (or all of them), the topic's effective settings
-  and where each came from, its recurring tasks, pause and resume, purge and delete.
+  and where each came from, pause and resume, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed, then run the selected or every matching task now, or cancel them. A
   search runs when you ask and on a page change or after a change, not on every refresh, since
@@ -418,14 +418,6 @@ push with `tasks.push(...)` in a bound transaction instead.
   `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
-- Recurring tasks follow the node that started last: each node that registers a topic replaces
-  the topic's schedules with its own when it starts. While old and new versions run side by side,
-  an old node that restarts (a crash, a rescheduled pod) removes the schedules the new version
-  added, and they stay gone until a new node starts. A schedule the new version removed comes
-  back the same way. So don't count on a new schedule until the rollout is done, and change
-  schedules in two steps: add new ones in one release, and remove old ones, if needed, in the
-  next. Then no rollout both adds and removes, and a schedule that comes back briefly is one the
-  running versions still expect.
 - Topic changes (paused, resumed, deleted) reach every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another

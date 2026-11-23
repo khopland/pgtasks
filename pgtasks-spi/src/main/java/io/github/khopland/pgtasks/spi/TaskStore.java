@@ -23,7 +23,6 @@ import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -243,8 +242,7 @@ public interface TaskStore {
     int purgeAll(StoreTransaction transaction, int topicId, int limit) throws SQLException;
 
     /**
-     * Deletes a topic that has no tasks left, finished or not, with its recurring tasks and
-     * counts, and tells every node, as for a new topic. Locks the topic first, so a push can't
+     * Deletes a topic that has no tasks left, finished or not, with its counts, and tells every node, as for a new topic. Locks the topic first, so a push can't
      * add a task meanwhile. False, and nothing deleted, if it still has tasks.
      */
     boolean deleteTopic(StoreTransaction transaction, int topicId) throws SQLException;
@@ -345,25 +343,6 @@ public interface TaskStore {
     List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
-     * Makes a topic's recurring tasks these: new ones are added, changed ones updated, the rest
-     * removed. A schedule whose cron or zone is unchanged keeps its next run; one whose cron or
-     * zone changed starts over from {@code nextRunAt}.
-     */
-    void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> schedules) throws SQLException;
-
-    /** Every topic's recurring tasks, by topic and name. */
-    List<Schedule> schedules(StoreTransaction transaction) throws SQLException;
-
-    /**
-     * Recurring tasks due by the store's clock, earliest first, locked until the transaction ends,
-     * so that two nodes never fire one twice.
-     */
-    List<Schedule> dueSchedules(StoreTransaction transaction, int limit) throws SQLException;
-
-    /** Records that a recurring task fired, and when it fires next. */
-    void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException;
-
-    /**
      * A topic's failing tasks grouped by error type (or, for errors without one, by message), the
      * largest group first, with when the longest-failing task of each first failed.
      */
@@ -371,22 +350,6 @@ public interface TaskStore {
 
     /** The logged attempts of a task: failed and expired ones. */
     List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException;
-
-    /**
-     * A recurring task as configured: what to push, when, and how. The payload is encoded; the
-     * cron is read in {@code zone}.
-     */
-    record ScheduleSpec(String name, String identifier, String cron, String zone, Insertion insertion, @Nullable String payload,
-                        @Nullable String payloadType, Instant nextRunAt) {
-        public ScheduleSpec {
-            Objects.requireNonNull(name, "name");
-            Objects.requireNonNull(identifier, "identifier");
-            Objects.requireNonNull(cron, "cron");
-            Objects.requireNonNull(zone, "zone");
-            Objects.requireNonNull(insertion, "insertion");
-            Objects.requireNonNull(nextRunAt, "nextRunAt");
-        }
-    }
 
     /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
