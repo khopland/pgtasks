@@ -30,9 +30,21 @@ public enum Ordering {
     /** By priority, then by sequence. No per-identifier constraint. The cheapest option. */
     FIFO,
 
+    /**
+     * One task per identifier at a time: a later task waits while an earlier one is ready,
+     * active or backing off. A suspended, delayed or dead-lettered task doesn't hold it back.
+     */
     SINGULAR_BY_IDENTIFIER,
 
+    /**
+     * As {@link #SINGULAR_BY_IDENTIFIER}, and a dead-lettered task also holds back later ones,
+     * until it is revived and succeeds or is discarded.
+     */
     SINGULAR_BY_IDENTIFIER_ON_FAILURE,
 
+    /**
+     * Strict order: a later task waits until every earlier one has finished, whatever state it
+     * is in, suspended and delayed included.
+     */
     SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS
 }

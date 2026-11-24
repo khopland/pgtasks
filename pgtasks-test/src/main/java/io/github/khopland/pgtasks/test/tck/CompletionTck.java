@@ -325,11 +325,11 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
-    void suspension_delay_and_throttling_give_the_attempt_back() throws SQLException {
+    void suspension_delay_and_an_uncounted_failure_give_the_attempt_back() throws SQLException {
         StoreFixture fixture = setUp();
         long suspended = fixture.push(topic, "s");
         long delayed = fixture.push(topic, "d");
-        long throttled = fixture.push(topic, "t");
+        long uncounted = fixture.push(topic, "t");
         List<ClaimedTask> claimed = fixture.claim(topic, node);
         assertThat(claimed).extracting(ClaimedTask::attempt).containsOnly(1);
 
@@ -337,13 +337,13 @@ public abstract class CompletionTck extends StoreTck {
             fixture.store().complete(transaction, topic, node, List.of(
                 completion(claimed.get(0), StoreFixture.suspension()),
                 completion(claimed.get(1), StoreFixture.later(Duration.ofSeconds(30))),
-                completion(claimed.get(2), StoreFixture.throttled(Duration.ofSeconds(30)))
+                completion(claimed.get(2), StoreFixture.uncountedRetry(Duration.ofSeconds(30)))
             ));
             return null;
         });
 
-        assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::state).containsExactly("suspended", "scheduled", "retrying");
-        assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::attempt).containsOnly(0);
+        assertThat(List.of(suspended, delayed, uncounted)).extracting(fixture::state).containsExactly("suspended", "scheduled", "retrying");
+        assertThat(List.of(suspended, delayed, uncounted)).extracting(fixture::attempt).containsOnly(0);
     }
 
     @Test

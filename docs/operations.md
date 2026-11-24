@@ -51,6 +51,25 @@ in. With another tool, pass the same name the engine uses:
       .migrate();
   ```
 
+  With Spring Boot, run it from a `FlywayMigrationStrategy` bean, before the application's own
+  migrations (which may refer to the pgtasks schema, for instance to grant the runtime role
+  access), and set `pgtasks.schema-mode=validate`. The engine starts after every bean is ready,
+  so it finds the schema in place:
+
+  ```java
+  @Bean
+  FlywayMigrationStrategy migrations(DataSource dataSource) {
+      return application -> {
+          Flyway.configure()...load().migrate();   // pgtasks, as above
+          application.migrate();
+      };
+  }
+  ```
+
+  Flyway creates the schema it is given before V001 runs, so its log says
+  `schema "pgtasks" already exists, skipping` for V001's `CREATE SCHEMA IF NOT EXISTS`. That is
+  expected.
+
 - **Liquibase**: include `io/github/khopland/pgtasks/postgres/db/changelog.xml` from your changelog.
   The changelog parameter `pgtasks_schema` names the schema and defaults to `pgtasks`. Set it before
   the include is parsed: with `spring.liquibase.parameters.pgtasks_schema=billing_tasks`,
@@ -128,6 +147,10 @@ POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded"
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
 ```
+
+Every `POST` needs `Content-Type: application/json` and a JSON object body, `{}` at least.
+Without one, Actuator answers 415; with Spring Security rules that deny everything else, the
+error dispatch that follows can then show up as a 403 that looks like a CSRF failure.
 
 Payloads, outputs and error messages often contain personal data, so the endpoint hides them
 unless `management.endpoint.tasks.show-values` allows it: `never` (default), `when-authorized`
@@ -248,15 +271,20 @@ shows the same topics, counts, dead letters and nodes, since they come from the 
 
 With Micrometer (Spring Boot Actuator sets it up), the engine records:
 
-| Metric | What |
-|---|---|
-| `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
-| `pgtasks.pushed{topic,status}` | Committed pushes |
-| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
-| `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
-| `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
-| `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
-| `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
+| Metric | In Prometheus | What |
+|---|---|---|
+| `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | `pgtasks_push_seconds_count`, `_sum`, `_max` (and `batch`, `task` alike) | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
+| `pgtasks.pushed{topic,status}` | `pgtasks_pushed_tasks_total` | Committed pushes |
+| `pgtasks.completed{topic,result}` | `pgtasks_completed_tasks_total` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
+| `pgtasks.queue{topic,state}` | `pgtasks_queue_tasks` | Unfinished tasks per state, from the last snapshot |
+| `pgtasks.queue.oldest.ready{topic}` | `pgtasks_queue_oldest_ready_seconds` | Seconds since the oldest ready task was pushed |
+| `pgtasks.queue.failing{topic}` | `pgtasks_queue_failing_tasks` | Tasks whose last run failed |
+| `pgtasks.queue.oldest.failing{topic}` | `pgtasks_queue_oldest_failing_seconds` | Since when the longest-failing task has failed |
+| `pgtasks.queue.snapshot.age{topic}` | `pgtasks_queue_snapshot_age_seconds` | Seconds since the counts were taken |
+| `pgtasks.queue.topics` | `pgtasks_queue_topics` | Topics in the last snapshot |
+
+Prometheus names add the base unit and, for counters, `_total`, as Micrometer's Prometheus
+registry writes them. Write alerts against those.
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
@@ -428,6 +456,12 @@ push with `tasks.push(...)` in a bound transaction instead.
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another
   node if it stops renewing it.
+- A node that dies without stopping (`kill -9`, an OOM kill, a lost VM) keeps its claims until it
+  counts as dead: no heartbeat for the expiry, 10 minutes by default. Then another node requeues
+  its tasks. Under a `SINGULAR_*` ordering those tasks also hold back every later task for their
+  identifiers until then. A `TaskGlobals` bean shortens it, `globals -> globals.heartbeat(interval,
+  expiry)`, at the cost of a more frequent heartbeat write; keep the expiry several heartbeats long
+  so a short pause or a slow database doesn't count as death.
 
 ## Logging
 
