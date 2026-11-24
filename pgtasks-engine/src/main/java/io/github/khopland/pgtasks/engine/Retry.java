@@ -52,6 +52,9 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
 
     public static final int FOREVER = Integer.MAX_VALUE;
 
+    /** The longest backoff, as long as the longest {@link io.github.khopland.pgtasks.Decision#later} delay. */
+    static final Duration MAX_BACKOFF = Duration.ofDays(365_250);
+
     /** What a failure means for its task. */
     public enum Kind {
         /** Uses up an attempt. */
@@ -72,6 +75,10 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
         }
         if (initial.isNegative() || max.compareTo(initial) < 0) {
             throw new IllegalArgumentException("need 0 <= initial <= max");
+        }
+        if (max.compareTo(MAX_BACKOFF) > 0) {
+            // The store adds the backoff to its clock: a longer one would fail the batch's completion.
+            throw new IllegalArgumentException("the max backoff must be at most a thousand years (" + MAX_BACKOFF + ")");
         }
         if (multiplier < 1) {
             throw new IllegalArgumentException("multiplier must be at least 1");

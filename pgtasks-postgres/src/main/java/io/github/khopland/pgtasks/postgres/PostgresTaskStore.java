@@ -1281,7 +1281,7 @@ public final class PostgresTaskStore implements TaskStore {
             throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
         }
         try (PreparedStatement statement = notifyChannel.prepare(transaction.connection(),
-            NamedSql.parameters().set("channel", schema + "_" + channel).set("payload", payload))) {
+            NamedSql.parameters().set("channel", TaskSchema.channel(schema, channel)).set("payload", payload))) {
             statement.execute();
         }
     }

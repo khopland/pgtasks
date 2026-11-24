@@ -190,6 +190,20 @@ class BuilderTest {
         assertThat(retries.get("two").max()).isEqualTo(Duration.ofSeconds(1));
     }
 
+    /** Review 2026-11-24: an interval of zero or less got through the build, then failed the start in the scheduler. */
+    @Test
+    void housekeeping_intervals_that_arent_positive_fail_the_build() {
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore())
+            .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.promoteEvery(Duration.ZERO))).build())
+            .hasMessageContaining("promoteInterval must be positive");
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore())
+            .globals(globals -> globals.heartbeat(Duration.ofSeconds(-1), Duration.ofMinutes(1))).build())
+            .hasMessageContaining("heartbeat must be positive");
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore())
+            .globals(globals -> globals.housekeeping(housekeeping -> housekeeping.expiries(3, Duration.ofSeconds(-1)))).build())
+            .hasMessageContaining("backoff must be between zero and 100 days");
+    }
+
     @Test
     void the_in_memory_store_is_never_chosen_automatically() {
         assertThatThrownBy(() -> TaskEngine.builder().configure(notifyTasks()).build())

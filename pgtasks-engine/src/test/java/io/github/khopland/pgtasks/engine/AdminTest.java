@@ -95,6 +95,14 @@ class AdminTest {
     }
 
     @Test
+    @DisplayName("A page limit below one is refused before the store sees it")
+    void a_page_limit_below_one_is_refused() throws Exception {
+        start(new InMemoryTaskStore());
+        assertThatThrownBy(() -> engine.admin().deadLetters("work", 0, 0)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("limit");
+        assertThatThrownBy(() -> engine.admin().tasks("work", TaskQuery.ALL, -1)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("limit");
+    }
+
+    @Test
     @DisplayName("Purging deletes one outcome's finished tasks up to a time")
     void purge_deletes_finished_tasks_of_one_outcome() throws Exception {
         start(new InMemoryTaskStore());

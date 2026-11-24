@@ -29,6 +29,7 @@ when the engine is built; `TaskEngine.extensions()` lists the installed ones.
 | `claimGate(ClaimGate)` | Asked before every claim on this node: claim at most `n` tasks (`Permit.atMost`), or none for a while (`Permit.waitFor`). The strictest gate wins. `claimed(topic, n)` tells it what the claim got. Return `Permit.ANY` when nothing limits the claim. |
 | `batchListener(BatchListener)` | Told what became of each task of a batch once its completion committed: succeeded, filtered, suspended, delayed, retrying, dead-lettered. |
 | `handlerDecorator(HandlerDecorator)` | Wraps the handler of every topic this node runs; the first registered is outermost. |
+| `observer(TaskObserver)` | Sees this node's pushes and batches, for tracing, metrics, or headers that follow the work, next to the observers given to the builder. For a header name both give, the builder's value is stored. One that throws is logged and ignored. |
 | `channel(name, reload)` | Reloads something that may have changed on another node. The reload runs on a message on the channel, after a lost notification connection and on every heartbeat. Send a message with `store().notify(transaction, name, payload)` in the transaction that made the change. |
 | `onStart` / `onStop` | Runs each time the engine starts (after its topics run) and stops (before they stop), restarts included. |
 

@@ -144,6 +144,7 @@ public final class TaskAdmin {
 
     /** A page of the dead letters that match. */
     public List<TaskView> deadLetters(String topic, DeadLetterQuery query, int limit) {
+        checkLimit(limit);
         return Unchecked.call("Reading the dead letters of " + topic, () -> {
             int id = topicId(topic);
             return EngineCore.transact(store, transaction -> store.deadLetters(transaction, id, query, limit));
@@ -204,6 +205,7 @@ public final class TaskAdmin {
      * counting it does.
      */
     public List<TaskView> tasks(String topic, TaskQuery query, int limit) {
+        checkLimit(limit);
         return Unchecked.call("Searching the tasks of " + topic, () -> {
             int id = topicId(topic);
             return EngineCore.transact(store, transaction -> store.tasks(transaction, id, query, limit));
@@ -223,6 +225,13 @@ public final class TaskAdmin {
                 }
             }
         });
+    }
+
+    /** A page holds at least one task: a limit below that is a mistake, refused alike by every store. */
+    private static void checkLimit(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be at least 1, not " + limit);
+        }
     }
 
     @FunctionalInterface

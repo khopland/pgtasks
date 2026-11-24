@@ -68,7 +68,7 @@ public final class PostgresNotifier implements Notifier {
         this.connections = Objects.requireNonNull(connections);
         TaskSchema.validName(schema);
         this.schema = schema;
-        this.ready = schema + "_ready";
+        this.ready = TaskSchema.channel(schema, "ready");
     }
 
     @Override
@@ -78,7 +78,7 @@ public final class PostgresNotifier implements Notifier {
             if (!CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
                 throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
             }
-            byName.put(schema + "_" + channel, channel);
+            byName.put(TaskSchema.channel(schema, channel), channel);
         }
         if (!running.compareAndSet(false, true)) {
             throw new IllegalStateException("Already started");

@@ -26,7 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Review 2026-11-24: Postgres text and jsonb can't hold a NUL character. A failure message,
+ * Review 2026-11-24: Postgres text and jsonb can't hold a NUL character, nor a time past the year
+ * 294276. A failure message,
  * output or filter reason with one made the whole batch's completion fail, so every task of the
  * batch, the ones that succeeded included, was recorded as failed and ran again.
  */
@@ -62,6 +63,7 @@ class TextLimitsTest {
                     yield Decision.success();
                 }
                 case "hostile" -> Decision.failed(new Hostile());
+                case "forever" -> Decision.later(Duration.ofSeconds(Long.MAX_VALUE));
                 default -> Decision.success();
             };
         }));
@@ -69,13 +71,13 @@ class TextLimitsTest {
         TaskEngine engine = fixture.create("node-a", List.of(topic), settings -> settings);
         List<Long> ids = engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(
             Creation.of("fine", "fine"), Creation.of("fail", "fail"), Creation.of("output", "output"), Creation.of("filter", "filter"),
-            Creation.of("push", "push"), Creation.of("hostile", "hostile")))
+            Creation.of("push", "push"), Creation.of("hostile", "hostile"), Creation.of("forever", "forever")))
             .stream().map(pushed -> pushed.id()).toList();
         engine.start();
 
         EngineFixture.await("the dead letter", Duration.ofSeconds(10),
             () -> database.count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'failed'") == 0
-                && database.count("SELECT count(*) FROM pgtasks.queue") == 3);
+                && database.count("SELECT count(*) FROM pgtasks.queue") == 4);
 
         assertThat(runs.get("fine")).as("ran once: its completion wasn't lost to another task's text").hasValue(1);
         assertThat(engine.admin().find(ids.get(0)).orElseThrow().state()).isEqualTo("succeeded");
@@ -92,6 +94,9 @@ class TextLimitsTest {
         TaskView hostile = engine.admin().find(ids.get(5)).orElseThrow();
         assertThat(hostile.state()).as("recorded and dead-lettered, not handed back uncounted").isEqualTo("failed");
         assertThat(hostile.error()).contains(Hostile.class.getName());
+        TaskView forever = engine.admin().find(ids.get(6)).orElseThrow();
+        assertThat(forever.state()).as("a delay the store can't hold fails only its task").isEqualTo("failed");
+        assertThat(forever.error()).contains("at most a thousand years");
     }
 
     record Item(String text) {

@@ -38,7 +38,8 @@ public sealed interface Decision {
     }
 
     /**
-     * Not yet: the task runs again after the delay. Never uses up an attempt. Like a delayed
+     * Not yet: the task runs again after the delay, at most a thousand years; to wait for
+     * something rather than a time, use {@link #suspended()}. Never uses up an attempt. Like a delayed
      * push, it doesn't hold back later tasks under {@link Ordering#SINGULAR_BY_IDENTIFIER}.
      */
     static Decision later(Duration delay) {
@@ -105,9 +106,7 @@ public sealed interface Decision {
     record Later(Duration delay) implements Decision {
         public Later {
             Objects.requireNonNull(delay, "delay");
-            if (delay.isNegative()) {
-                throw new IllegalArgumentException("delay must not be negative");
-            }
+            Waits.checkDelay("delay", delay);
         }
 
         @Override

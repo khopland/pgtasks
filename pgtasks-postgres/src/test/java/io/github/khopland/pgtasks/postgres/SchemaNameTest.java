@@ -88,6 +88,40 @@ class SchemaNameTest {
         assertThat(TaskSchema.migrate(database.dataSource(), "orders_tasks").applied()).as("each schema keeps its own history").isEmpty();
     }
 
+    /**
+     * Review 2026-11-24: a channel's name in the database is the schema's name, an underscore and
+     * the channel's. Past Postgres's 63 characters, LISTEN cut it short and pg_notify refused it,
+     * so the channel never delivered anything. It fails where it is set up now, with the reason.
+     */
+    @Test
+    void a_channel_whose_name_postgres_would_cut_short_is_refused(PostgresDatabase database) throws Exception {
+        String schema = "s".repeat(50);
+        String channel = "c".repeat(31);
+        TaskSchema.migrate(database.dataSource(), schema);
+        try (Notifier notifier = new PostgresNotifier(database::connect, schema)) {
+            assertThatThrownBy(() -> notifier.start(new Notifier.Listener() {
+                @Override
+                public void ready(int topicId) {
+                }
+
+                @Override
+                public void missed() {
+                }
+            }, Set.of(channel)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("longer than the 63 characters Postgres keeps");
+        }
+        PostgresTaskStore store = new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE, schema);
+        try (var transaction = store.begin()) {
+            assertThatThrownBy(() -> store.notify(transaction, channel, "x"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("longer than the 63 characters Postgres keeps");
+        }
+        try (var transaction = store.begin()) {
+            store.notify(transaction, "c".repeat(12), "fits");
+        }
+    }
+
     @Test
     void notifications_stay_within_their_schema(PostgresDatabase database) throws Exception {
         TaskSchema.migrate(database.dataSource(), "orders_tasks");

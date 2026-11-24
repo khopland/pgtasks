@@ -128,6 +128,25 @@ public final class TaskSchema {
         return schema;
     }
 
+    /** The longest name Postgres keeps for a channel; a longer one is cut when listened to, and refused when notified. */
+    private static final int MAX_CHANNEL = 63;
+
+    /**
+     * A channel's name in the database: {@code <schema>_<channel>}, so two schemas in one database
+     * don't hear each other. Postgres keeps at most 63 bytes of it: a longer one would be listened
+     * to cut short, and refused by pg_notify, so the channel would never deliver anything.
+     *
+     * @throws IllegalArgumentException if the name is longer than Postgres keeps
+     */
+    static String channel(String schema, String channel) {
+        String name = schema + "_" + channel;
+        if (name.length() > MAX_CHANNEL) {
+            throw new IllegalArgumentException("Channel '" + channel + "' of schema " + schema + " is named " + name + " in the database, "
+                + "longer than the " + MAX_CHANNEL + " characters Postgres keeps: shorten the channel or the schema's name");
+        }
+        return name;
+    }
+
     /** Applies whatever is missing to the {@value #DEFAULT_SCHEMA} schema with the built-in runner, then checks the version. */
     public static Status migrate(DataSource dataSource) throws SQLException {
         return migrate(dataSource, DEFAULT_SCHEMA);
