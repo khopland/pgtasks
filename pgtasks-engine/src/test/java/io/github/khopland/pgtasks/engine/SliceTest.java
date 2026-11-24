@@ -114,7 +114,7 @@ class SliceTest {
         assertThat(fixture.count("SELECT count(*) FROM assessment")).isEqualTo(1);
         assertThat(fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'notify'")).isEqualTo(1);
         assertThat(database.rows("SELECT state, attempt FROM pgtasks.task_view WHERE topic = 'assessment'")).containsExactly(List.of("succeeded", 2));
-        assertThat(database.rows("SELECT attempt, error->>'message' FROM pgtasks.attempt")).containsExactly(List.of(1, "crashed after the change, before completing"));
+        assertThat(database.rows("SELECT error->>'message' FROM pgtasks.task WHERE error IS NOT NULL")).containsExactly(List.of("crashed after the change, before completing"));
     }
 
     @Test

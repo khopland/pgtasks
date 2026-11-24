@@ -65,15 +65,11 @@ class TaskEndpointMaskingTest {
         assertThat(found.get("payload")).as("a search masks like the dead letters").isEqualTo("******");
         assertThat(found.get("headers")).isEqualTo(Map.of("korrelasjonsid", "******"));
         assertThat((String) found.get("error")).contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
-        Map<String, Object> group = first(hidden.readPart("topics", "work", "failing", null, null, null, null, null, null, null, null, SecurityContext.NONE).getBody(), "failing");
-        assertThat(group.get("error")).as("a type is shown").isEqualTo("java.lang.IllegalArgumentException");
-        assertThat(group.get("exampleMessage")).isEqualTo("******");
         @SuppressWarnings("unchecked")
         Map<String, Object> task = (Map<String, Object>) hidden.read("tasks", "1", SecurityContext.NONE).getBody();
         assertThat(task.get("payload")).isEqualTo("******");
         assertThat(task.get("headers")).as("names are shown, values hidden").isEqualTo(Map.of("korrelasjonsid", "******"));
-        Map<String, Object> attempt = first(task, "attempts");
-        assertThat((String) attempt.get("error")).as("an attempt's error keeps its type only")
+        assertThat((String) task.get("error")).as("an error keeps its type only")
             .contains("java.lang.IllegalArgumentException").doesNotContain("12345678901");
 
         TaskEndpoint shown = new TaskEndpoint(engine, Show.ALWAYS, Set.of());
@@ -83,7 +79,8 @@ class TaskEndpointMaskingTest {
         assertThat(visible.get("headers")).isEqualTo(Map.of("korrelasjonsid", "k-12345678901"));
         assertThat(first(shown.readPart("topics", "work", "tasks", null, null, null, null, null, "korrelasjonsid=k-12345678901", null, null,
             SecurityContext.NONE).getBody(), "tasks").get("payload")).isEqualTo("type: fnr 12345678901");
-        assertThat((String) first(shown.read("tasks", "1", SecurityContext.NONE).getBody(), "attempts").get("error"))
-            .contains("person 12345678901 is unknown");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> shownTask = (Map<String, Object>) shown.read("tasks", "1", SecurityContext.NONE).getBody();
+        assertThat((String) shownTask.get("error")).contains("person 12345678901 is unknown");
     }
 }

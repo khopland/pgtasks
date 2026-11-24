@@ -111,13 +111,12 @@ class HeadersTest {
                 .topic(WORK, work, topic -> topic.batchSize(10))
                 .eachTask(NEXT, task -> headers.add(task.task().headers())))
             .build()
-            .start();
-        engine.admin().pause(WORK.name());
+            .prepare();
         return engine;
     }
 
     private void run() {
-        engine.admin().resume(WORK.name());
+        engine.start();
         TaskTester.of(engine).awaitIdle();
     }
 
@@ -126,7 +125,7 @@ class HeadersTest {
     void a_creations_headers_are_stored_and_win() {
         engine(new Recording(events), batch -> Decisions.all(batch.tasks(), Decision.success()));
         engine.tasks().independently().push(NEXT, Insertion.APPEND, Creation.of("a", "x").withHeader(KEY, "mine").withHeaders(Map.of("tenant", "t1")));
-        TaskTester.of(engine).awaitIdle();
+        run();
 
         assertThat(headers).containsExactly(Map.of("pushed-from", "null", KEY, "mine", "tenant", "t1"));
     }
@@ -207,8 +206,7 @@ class HeadersTest {
                     headers.add(task.task().headers());
                 }))
             .build()
-            .start();
-        engine.admin().pause(WORK.name());
+            .prepare();
         MDC.put(KEY, "k-a");
         engine.tasks().independently().push(WORK, "a", "x");
         MDC.put(KEY, "k-b");
@@ -241,7 +239,7 @@ class HeadersTest {
         };
         engine(TaskObserver.composite(List.of(new Recording(events), second)), batch -> Decisions.all(batch.tasks(), Decision.success()));
         engine.tasks().independently().push(NEXT, "a", "x");
-        TaskTester.of(engine).awaitIdle();
+        run();
 
         assertThat(headers).containsExactly(Map.of("pushed-from", "null", KEY, "from the observer", "second", "yes"));
     }

@@ -30,7 +30,7 @@ migration's user yourself, for instance with `ALTER ROLE migrator SET lock_timeo
 the schema. Use it when `pgtasks` clashes with a schema of your own, or when two applications share a
 database: each needs its own schema. The name must be a plain lowercase identifier
 (`[a-z_][a-z0-9_]*`), at most 50 characters, not starting with `pg_` and not an SQL keyword. The
-notification channels follow it (`<schema>_ready`, `<schema>_limit`, `<schema>_topic`), so
+notification channels follow it (`<schema>_ready`, `<schema>_topic`), so
 applications in one database don't wake each other's workers.
 
 The SQL files write the name as the placeholder `${pgtasks_schema}`. The built-in runner fills it
@@ -62,11 +62,12 @@ in. With another tool, pass the same name the engine uses:
 
 ### Changing the schema
 
-`V001__tasks_schema.sql` is frozen for 0.1.0. **Never edit a released versioned file**: databases
+Nothing is released yet, so `V001__tasks_schema.sql` still changes in place. Once 0.1.0 ships,
+it is frozen. **Never edit a released versioned file**: databases
 that applied it would no longer match it. The built-in runner refuses to start when an applied
 file's checksum changed, and Flyway and Liquibase do the same. Add the next file instead:
 
-1. The next `V<version>__<what>.sql` (`V002__cancelled_outcome.sql` is the first, unreleased yet): the change, written so that 0.1.0 nodes still run against it during a rolling
+1. The next `V<version>__<what>.sql`: the change, written so that the previous release's nodes still run against it during a rolling
    deploy, or with `compatible_from` raised if they can't. It ends by recording its version in the
    meta table, like V001. Use `${pgtasks_schema}` for every name.
 2. Add it to `TaskSchema.FILES`, as a `changeSet` in `changelog.xml`, and raise `TaskSchema.VERSION`.
@@ -83,11 +84,9 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
    Add the new file's checksum there when it is released. It also pins the checksum of every
    revision of every `R__` file, so changing one without raising its revision fails the build; add
-   the new revision's checksum next to the old ones. `SchemaUpgradeTest` applies the files as
-   0.1.0 released them (kept under `released/0.1.0` in the test resources), with tasks in every
-   state, then the current files, checks the tasks are still usable and runs part of the store TCK
-   on the result. A V002 is covered as soon as it is listed; add a `released/<version>` directory
-   and a seed when a release changes the schema.
+   the new revision's checksum next to the old ones. With the first release, add an upgrade test
+   that applies the released files with tasks in every state, then the current files, and checks
+   the tasks are still usable.
 
 ## Postgres versions
 
@@ -115,33 +114,26 @@ of the leading column instead. The store's statements don't rely on that.
 Expose it like any endpoint: `management.endpoints.web.exposure.include=health,tasks`.
 
 ```
-GET    /actuator/tasks                                   topics by module, limits, this node and every node
-GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from, schedules
+GET    /actuator/tasks                                   topics by module, this node and every node
+GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
-GET    /actuator/tasks/topics/{topic}/failing            what is failing, grouped by error
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
-POST   /actuator/tasks/topics/{topic}/pause | resume | create
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
-POST   /actuator/tasks/topics/{topic}/cancel | run-now   {"ids": "1,2"}, or {"identifier": "...", "reference": "...", "state": "...", "header": "name=value", "createdFrom": "...", "createdUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
-GET    /actuator/tasks/tasks/{id}                        a task with its logged attempts
-GET    /actuator/tasks/limits/{limit}
-POST   /actuator/tasks/limits/{limit}                    {"rate": "20/s", "burst": 10, "until": "PT2H", "version": 3}
-DELETE /actuator/tasks/limits/{limit}?version=3          back to the configured values
+GET    /actuator/tasks/tasks/{id}                        a task
 ```
 
 Payloads, outputs and error messages often contain personal data, so the endpoint hides them
 unless `management.endpoint.tasks.show-values` allows it: `never` (default), `when-authorized`
 (with `management.endpoint.tasks.roles`), or `always`. Errors keep their exception type, so you
-can still tell failures apart and revive them by type. Limit changes carry the limit's
-`version`, so two operators can't overwrite each other: a stale one gets 409. Everything here is
-also library API, on `engine.admin()` and `engine.limits()`.
+can still tell failures apart and revive them by type. Everything here is also library API, on
+`engine.admin()`.
 
 The `tasks` health indicator is UP while the engine runs and its heartbeat is on time. It is
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
-and after stop. Its details show leadership, notifications, claims stuck past their deadline and
-open breakers, without changing the status.
+and after stop. Its details show leadership, notifications, and claims stuck past their deadline,
+without changing the status.
 
 ## Dashboard
 
@@ -162,25 +154,17 @@ management:
 Then open `http://<host>/pgtasks/`. It shows:
 
 - **Overview**: topics grouped by module, with their counts per state, the age of the oldest ready
-  task, failing tasks and dead letters, whether this node's breaker is open, and paused or running.
-  Every registered node with its heartbeat (marked late after the lease term) and what it leads,
-  and the rate limits.
-- **Topic**: counts, what is failing grouped by error, with revive and discard per error, a paged
-  list of dead letters to revive or discard by id (or all of them), the topic's effective settings
-  and where each came from, its recurring tasks, pause and resume, purge and delete.
+  task, failing tasks and dead letters, and whether this node runs it.
+  Every registered node with its heartbeat (marked late after the lease term) and what it leads.
+- **Topic**: counts, a paged list of dead letters to revive or discard by id (or all of them), the topic's effective settings
+  and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
-  when they were pushed, then run the selected or every matching task now, or cancel them. A
-  search runs when you ask and on a page change or after a change, not on every refresh, since
+  when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
   one without an identifier or reference reads the topic's backlog.
-- **Task**: look one up by id in the header, with its attempts and errors; run a waiting task now
-  or cancel it.
-- **Limits**: override a rate, a burst or both, for a while or with no end, and reset. A change
-  sends the version the page loaded; if someone else changed the limit meanwhile, the page says so
-  and shows the current values instead of overwriting them.
+- **Task**: look one up by id in the header, with its error.
 
-Discards, cancels, purges and deletes ask for confirmation, and the ones that can't be undone at
-scale (discarding every dead letter, any cancel, purging, deleting a topic) ask you to type the
-topic's name.
+Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
+(discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
 "Live" refreshes the page every 10 seconds.
 
 **Security.** The page holds no data and has no server logic of its own: it reads and changes
@@ -231,7 +215,7 @@ pgtasks:
 The page is at `/admin/pgtasks/` and its API at `/admin/pgtasks/api/...`, with the same paths,
 bodies and answers as `/actuator/tasks` (the tasks endpoint itself needn't be exposed). Values are
 still hidden as `management.endpoint.tasks.show-values` says, with `when-authorized` checking the
-roles of the request's user, and limit changes still need the current version.
+roles of the request's user.
 
 This puts operations that change tasks on the application's port, so the application's own
 security must protect the whole path, and it is off unless you ask for it. With Spring Security,
@@ -245,8 +229,8 @@ one rule covers the page and its API, and CSRF works as above:
 
 Without Spring Security the dashboard logs a warning at startup. Keep the path off your public
 ingress (route it only through an internal one, or reach it with `kubectl port-forward`). Each pod
-shows the same topics, counts, dead letters, limits and nodes, since they come from the database;
-"running" and breaker state are that pod's own.
+shows the same topics, counts, dead letters and nodes, since they come from the database;
+"running" is that pod's own.
 
 ## Metrics and alerts
 
@@ -256,14 +240,11 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 |---|---|
 | `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
 | `pgtasks.pushed{topic,status}` | Committed pushes |
-| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, throttled, unavailable, retrying, dead-lettered |
+| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
 | `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
 | `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
 | `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
 | `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
-| `pgtasks.breaker.open{topic}` | 1 while this node's breaker for the topic is open |
-| `pgtasks.limit.rate{limit,kind}`, `pgtasks.limit.burst{limit,kind}` | A limit's configured and effective values |
-| `pgtasks.limit.wait{topic,limit}` | Time topics waited for their rate limit |
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
@@ -273,7 +254,7 @@ counts the queue. Alert on:
 - `pgtasks.queue.oldest.failing`: something has been failing for a while. Dead letters can take
   days to appear.
 - `pgtasks.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
-- `pgtasks.breaker.open`, and the health indicator going DOWN.
+- The health indicator going DOWN.
 
 ## Tracing and correlation
 
@@ -327,49 +308,34 @@ their values only where `show-values` allows.
 
 ## Dead letters
 
-1. Look at what fails: `GET .../topics/{topic}/failing` groups the failing tasks by error.
-2. Fix the cause, or let the deploy that fixes it revive them
-   (`DeadLetterPolicy.KEEP.withReviveOnNewVersion()`, with the application version from Spring
-   Boot's `BuildProperties`, `pgtasks.version`, or `builder.version(...)`).
+1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors.
+2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
 
 ## Unfinished tasks
 
-What [concepts](concepts.md#operator-actions-on-unfinished-tasks) describes, from the endpoint or
+What [concepts](concepts.md#searching-unfinished-tasks) describes, from the endpoint or
 `engine.admin()`:
 
 ```java
 TaskQuery stuck = TaskQuery.ALL.withIdentifier("person-42").inStates(QueueState.RETRYING);
 admin.tasks("assessment", stuck, 50);            // a page, lowest id first; next page: stuck.after(lastId)
-admin.runNow("assessment", stuck);               // ready now, attempts kept
-admin.cancel("assessment", List.of(1201L, 1202L));
-admin.cancel("assessment", TaskQuery.ALL.withHeader("tenant", "closed-down"));
 ```
 
-- Like revive and discard, the endpoint acts on every task of a topic only with `"all": "true"`;
-  ids that weren't acted on are reported as `skipped` (active tasks for cancel, tasks that don't
-  wait for a time for run now). Bulk actions go in batches of 1,000 tasks per transaction.
-- Cancelling an active task does nothing: it runs to its end and keeps the outcome its handler
-  gives it. A cancel never interrupts a handler, and a cancelled record never hides work that ran.
-- Cost: a search or bulk action finds its tasks by identifier, reference or ids through an index.
-  With only a state, a header or a time range it reads the topic's whole backlog once per page or
-  batch, as counting the topic does. Fine for occasional use; don't poll it. (An index on
+- Cost: a search finds its tasks by identifier, reference or ids through an index.
+  With only a state, a header or a time range it reads the topic's whole backlog once per page,
+  as counting the topic does. Fine for occasional use; don't poll it. (An index on
   `queue (topic_id, task_id)` would avoid that, at a cost to every push and claim, so there is none.)
 - The search shows payloads, outputs, errors and header values under the same `show-values` rules
   as dead letters. Filtering by a header's value still works when values are hidden.
-- `cancelled` is schema version 2 (`V002__cancelled_outcome.sql`). 0.1.0 nodes keep running against
-  it during a rolling deploy; they show the outcome but don't purge it, so cancelled tasks wait for
-  a new node to lead housekeeping before retention applies.
 
 ## Retention
 
 Finished tasks are deleted by the housekeeping leader, per topic and outcome, counted from
-completion: succeeded and cancelled after 30 days, filtered, redundant and recreated after 7,
+completion: succeeded after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
-A fan-in with `Junction.Counts.ANY` only sees parts whose rows are still there: keep its target
-topic's retention longer than a group can take to arrive (see [patterns](patterns.md#fan-out-and-fan-in)).
 Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
 backlog after downtime can't hold up housekeeping.
 
@@ -431,15 +397,7 @@ push with `tasks.push(...)` in a bound transaction instead.
   `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
-- Recurring tasks follow the node that started last: each node that registers a topic replaces
-  the topic's schedules with its own when it starts. While old and new versions run side by side,
-  an old node that restarts (a crash, a rescheduled pod) removes the schedules the new version
-  added, and they stay gone until a new node starts. A schedule the new version removed comes
-  back the same way. So don't count on a new schedule until the rollout is done, and change
-  schedules in two steps: add new ones in one release, and remove old ones, if needed, in the
-  next. Then no rollout both adds and removes, and a schedule that comes back briefly is one the
-  running versions still expect.
-- Topic changes (created, paused, resumed, deleted) and rate limit overrides reach every node
+- A deleted topic stops on every node
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another
   node if it stops renewing it.

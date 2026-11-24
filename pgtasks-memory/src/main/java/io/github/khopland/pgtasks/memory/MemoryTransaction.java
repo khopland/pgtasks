@@ -6,10 +6,8 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 
@@ -36,8 +34,11 @@ final class MemoryTransaction implements StoreTransaction {
     private final InMemoryTaskStore store;
     private final Deque<Runnable> undo = new ArrayDeque<>();
     private final Set<Integer> readyTopics = new LinkedHashSet<>();
-    private final Set<String> changedLimits = new LinkedHashSet<>();
-    private final Set<String> changedTopics = new LinkedHashSet<>();
+    /** Sent on commit; like NOTIFY, a message sent twice in one transaction is delivered once. */
+    private final Set<Message> messages = new LinkedHashSet<>();
+
+    record Message(String channel, String payload) {
+    }
     private boolean done;
 
     MemoryTransaction(InMemoryTaskStore store) {
@@ -65,37 +66,14 @@ final class MemoryTransaction implements StoreTransaction {
         }
     }
 
-    /** Deletes the rows that match; a rollback puts them back where they were. */
-    <T> void removeIf(List<T> table, Predicate<? super T> which) {
-        check();
-        List<T> before = List.copyOf(table);
-        if (table.removeIf(which)) {
-            undo.push(() -> {
-                table.clear();
-                table.addAll(before);
-            });
-        }
-    }
-
-    <T> void append(List<T> table, T row) {
-        check();
-        table.add(row);
-        undo.push(() -> table.removeLast());
-    }
-
     /** Like the queue's NOTIFY triggers: a row became ready, so wake the topic after commit. */
     void ready(int topicId) {
         readyTopics.add(topicId);
     }
 
-    /** Like the topic NOTIFY triggers: tell every engine after commit. */
-    void topicChanged(String name) {
-        changedTopics.add(name);
-    }
-
-    /** Like the rate limit NOTIFY trigger: tell every engine after commit. */
-    void limitChanged(String name) {
-        changedLimits.add(name);
+    /** Like NOTIFY: tell every engine listening to the channel after commit. */
+    void send(String channel, String payload) {
+        messages.add(new Message(channel, payload));
     }
 
     private void check() {
@@ -111,8 +89,7 @@ final class MemoryTransaction implements StoreTransaction {
         undo.clear();
         store.unlock();
         store.notifyReady(readyTopics);
-        store.notifyTopics(changedTopics);
-        store.notifyLimits(changedLimits);
+        store.deliver(messages);
     }
 
     @Override
@@ -131,8 +108,7 @@ final class MemoryTransaction implements StoreTransaction {
         check();
         int changes = undo.size();
         Set<Integer> ready = Set.copyOf(readyTopics);
-        Set<String> limits = Set.copyOf(changedLimits);
-        Set<String> topics = Set.copyOf(changedTopics);
+        Set<Message> sent = Set.copyOf(messages);
         return new Savepoint() {
             @Override
             public void rollback() {
@@ -141,8 +117,7 @@ final class MemoryTransaction implements StoreTransaction {
                     undo.pop().run();
                 }
                 readyTopics.retainAll(ready);
-                changedLimits.retainAll(limits);
-                changedTopics.retainAll(topics);
+                messages.retainAll(sent);
             }
 
             @Override

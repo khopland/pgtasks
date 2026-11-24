@@ -10,8 +10,6 @@ import java.util.regex.Pattern;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
-import io.github.khopland.pgtasks.engine.Cron;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
@@ -44,19 +42,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TaskDashboardTest {
 
     static final TopicRef<String> WORK = TopicRef.of("work", String.class);
+    /** An empty topic for the delete route. */
+    static final TopicRef<String> SCRATCH = TopicRef.of("scratch", String.class);
 
     @SpringBootApplication(excludeName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
     static class App {
         @Bean
         TaskConfigurer workTasks() {
-            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> topic.limit("register"))
-                .recurring(WORK, "hourly", Cron.parse("@hourly"), "tick", "tick");
+            return tasks -> tasks.topic(WORK, batch -> batch.decide(task -> Decision.success()), topic -> { });
         }
 
         @Bean
-        TaskGlobals taskGlobals() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(100)).burst(10));
+        TaskConfigurer scratchTasks() {
+            return tasks -> tasks.eachTask(SCRATCH, task -> { });
         }
+
     }
 
     record Response(int status, HttpResponse<String> raw) {
@@ -143,20 +143,18 @@ class TaskDashboardTest {
         // config.json, and the one call that every route goes through.
         assertThat(Pattern.compile("\\bfetch\\(").matcher(script).results().count()).isEqualTo(2);
         assertThat(script).contains("fetch(\"config.json\"").contains("const response = await fetch(target,");
-        assertThat(DashboardRoutes.routes()).hasSizeGreaterThanOrEqualTo(10);
+        assertThat(DashboardRoutes.routes()).hasSizeGreaterThanOrEqualTo(9);
     }
 
     /** Every route in the script's table, called against the endpoint the page is pointed at. */
     @Test
     void every_route_the_page_calls_exists() throws Exception {
         long taskId = tasks.independently().push(WORK, "a", "payload").id();
-        engine.admin().createTopic("scratch");
-        long version = engine.limits().find("register").orElseThrow().version();
         String endpoint = json.readTree(get("/app/ops/tasks/config.json").body()).path("endpoint").asString();
 
         DashboardRoutes.callEvery((method, path, body) -> {
             Response response = send(method, path, body);
             return response.status() + " " + response.body();
-        }, endpoint, taskId, version);
+        }, endpoint, taskId);
     }
 }

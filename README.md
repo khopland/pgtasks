@@ -3,7 +3,7 @@
 A task queue in the Postgres database you already run. You push a task in the same transaction
 as the data change it reacts to, so there is no outbox table and no two-phase commit. Workers on
 any number of nodes claim batches with `SKIP LOCKED`, and the engine takes care of retries, dead
-letters, rate limits, recurring tasks, housekeeping, metrics and tracing.
+letters, housekeeping, metrics and tracing.
 
 ```java
 // Push, in the transaction that saves the tax return
@@ -50,13 +50,12 @@ Import the BOM, then add modules without versions:
 
 | Module | What it is |
 |---|---|
-| `pgtasks-spring-boot-starter` | Spring Boot: one engine from every `TaskConfigurer` bean, YAML overrides, Spring transactions, Actuator endpoint and health, Micrometer, Spring Modulith. Most applications need only this. |
-| `pgtasks-engine` | The engine, without Spring: builder, configurers, retries, rate limits, housekeeping, `TaskTester`. |
+| `pgtasks-spring-boot-starter` | Spring Boot: one engine from every `TaskConfigurer` bean, YAML overrides, Spring transactions, Actuator endpoint and health, Micrometer. Most applications need only this. |
+| `pgtasks-engine` | The engine, without Spring: builder, configurers, retries, housekeeping, `TaskTester`. |
 | `pgtasks-postgres` | The Postgres store, its schema and the 1.x importer. |
 | `pgtasks-memory` | An in-memory store for local runs and fast tests. It passes the same TCK as Postgres. |
 | `pgtasks-micrometer` | Metrics and tracing through Micrometer Observation. |
 | `pgtasks-jackson` | JSON payloads with Jackson 3, for payload types without a codec of their own. |
-| `pgtasks-kotlin` | Kotlin helpers: reified topic references, topic registration and a non-null payload accessor, over the same API. |
 | `pgtasks-junit` | A JUnit 5 extension: an engine per test on the in-memory store, with a manual clock. |
 | `pgtasks-api` | What application code sees: `TopicRef`, `Tasks`, handlers, `Decision`, operator views. |
 | `pgtasks-spi` | What stores and integrations implement. Applications never need it directly. |
@@ -100,33 +99,9 @@ Only what differs per environment goes in YAML:
 pgtasks:
   topics:
     assessment: { concurrency: 16, retry.give-up-after: 2d }
-  limits:
-    folkeregister: { rate: 400/s }
 ```
 
-A topic, limit or setting that no code defines fails startup, so a typo can't go unnoticed.
-
-### In Kotlin
-
-Add `pgtasks-kotlin` as well. Kotlin 2.1+ reads the JSpecify annotations, so payloads and other values that may be null are nullable types; `requirePayload()` is an explicit assertion for a topic that always carries a payload.
-
-```kotlin
-object AssessmentTopics {
-    val ASSESSMENT = topic<AssessmentRequest>("assessment")
-}
-
-@Configuration
-class AssessmentTasks {
-    @Bean
-    fun assessmentTasks(assessor: Assessor) = TaskConfigurer { tasks ->
-        tasks.eachTask(AssessmentTopics.ASSESSMENT) { work ->
-            assessor.assess(work.requirePayload())
-        }
-    }
-}
-```
-
-To declare and register a topic in one step, use `tasks.eachTopic<AssessmentRequest>("assessment") { work -> ... }`. Pushing needs no helper: `tasks.push(AssessmentTopics.ASSESSMENT, id, request)` infers the payload type. Building the module requires Kotlin 2.3 or newer, for Java 25 bytecode.
+A topic or setting that no code defines fails startup, so a typo can't go unnoticed.
 
 ## Quick start without Spring
 
@@ -151,9 +126,10 @@ engine.close();                                // drains running batches, then s
 
 ## Further reading
 
-- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion, retries, limits and recurring tasks.
+- [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion and retries.
 - [Patterns](docs/patterns.md): effects that must happen exactly once, fan-out and fan-in, producers and consumers in separate services.
-- [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring and Modulith module tests.
+- [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring tests.
+- [Writing an extension](docs/extensions.md): adding a feature through the engine's hooks: jobs, claim gates, batch listeners, settings and store capabilities.
 - [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
 - [Migrating from 1.x](docs/migrating-from-1.x.md): mapping the concepts, and moving queued tasks with `LegacyImport`.
 - Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [wake-ups, throughput ceiling and latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).

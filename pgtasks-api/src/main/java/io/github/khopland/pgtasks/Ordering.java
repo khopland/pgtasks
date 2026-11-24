@@ -7,7 +7,7 @@ package io.github.khopland.pgtasks;
  *   <caption>The earlier task is...</caption>
  *   <tr><th></th><th>SINGULAR</th><th>..._ON_FAILURE</th><th>..._UNTIL_SUCCESS</th></tr>
  *   <tr><td>ready or active</td><td>waits</td><td>waits</td><td>waits</td></tr>
- *   <tr><td>backing off before a retry, or throttled</td><td>waits</td><td>waits</td><td>waits</td></tr>
+ *   <tr><td>backing off before a retry</td><td>waits</td><td>waits</td><td>waits</td></tr>
  *   <tr><td>expired (requeued)</td><td>waits</td><td>waits</td><td>waits</td></tr>
  *   <tr><td>suspended or delayed</td><td>runs</td><td>runs</td><td>waits</td></tr>
  *   <tr><td>dead-lettered</td><td>runs</td><td>waits</td><td>waits</td></tr>

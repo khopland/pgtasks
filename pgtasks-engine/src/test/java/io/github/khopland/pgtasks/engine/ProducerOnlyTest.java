@@ -32,7 +32,6 @@ class ProducerOnlyTest {
             assertThat(producer.processing()).isEmpty();
             assertThat(producer.health().running()).isFalse();
             assertThat(handled).isEmpty();
-            assertThat(producer.limits().list()).isEmpty();
 
             try (TaskEngine consumer = TaskEngine.builder().store(store).configure("work", work).build().start()) {
                 TaskTester.of(consumer).awaitIdle();

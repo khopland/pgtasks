@@ -23,19 +23,13 @@ public interface TopicOptions {
 
     TopicOptions pollInterval(Duration interval);
 
-    /** Takes claim permits from a limit defined in {@link TaskGlobals}. */
-    TopicOptions limit(String name);
-
     TopicOptions resources(BatchResource<?>... resources);
+
+    /** An extension's setting; see {@link SettingKey}. */
+    <T> TopicOptions set(SettingKey<T> key, T value);
 
     /** How long finished tasks with this outcome are kept, counted from completion. */
     TopicOptions retain(Outcome outcome, Period period);
 
     TopicOptions retainForever(Outcome outcome);
-
-    /** When the topic stops claiming because most of its recent tasks fail; {@link Breaker#off()} for never. */
-    TopicOptions breaker(Breaker breaker);
-
-    /** Whether dead letters are revived on a new application version, or every so often; kept until someone acts by default. */
-    TopicOptions deadLetters(DeadLetterPolicy policy);
 }

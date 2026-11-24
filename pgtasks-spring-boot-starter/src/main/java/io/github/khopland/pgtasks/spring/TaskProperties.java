@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
- * The {@code pgtasks.*} settings. Topics, limits and their defaults are code, in
+ * The {@code pgtasks.*} settings. Topics and their defaults are code, in
  * {@link io.github.khopland.pgtasks.engine.TaskConfigurer} and {@link io.github.khopland.pgtasks.engine.TaskGlobals}
  * beans; these properties hold only what differs per environment.
  *
@@ -17,11 +17,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * pgtasks:
  *   topics:
  *     assessment: { concurrency: 16, retry.give-up-after: 2d }
- *   limits:
- *     folkeregister: { rate: 400/s }
  * </pre>
  *
- * A topic or limit that no configurer defines, or an unknown setting, fails startup.
+ * A topic that no configurer defines, or an unknown setting, fails startup.
  *
  * @param enabled         false for a node that only pushes tasks: it applies the schema and
  *                        registers its configured topics, so its pushes work whichever node starts
@@ -44,11 +42,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        batch-deadline, retry.max-attempts (a number or forever),
  *                        retry.give-up-after (such as 7d, or never), retry.first-backoff,
  *                        retry.max-backoff, retain.&lt;outcome&gt;
- * @param limits          per rate limit: rate (such as 400/s) and burst
- * @param testing         adds a {@code TaskTester} bean, which records every push, for tests;
- *                        Spring Modulith module tests get one without it
- * @param version         the application's version, for topics that revive their dead letters
- *                        on a new version; by default the build's, from {@code BuildProperties}
+ * @param testing         adds a {@code TaskTester} bean, which records every push, for tests
+ * @param version         the application's version, recorded with this node in pgtasks.node;
+ *                        by default the build's, from {@code BuildProperties}
  *                        (the build-info goal of the Spring Boot Maven or Gradle plugin)
  * @param mdcHeaders      MDC keys that follow the work, such as a correlation id: each one the MDC
  *                        has when a task is pushed is stored as a header of the same name, and is
@@ -66,7 +62,6 @@ public record TaskProperties(
     @DefaultValue("true") boolean notifications,
     @DefaultValue("30s") Duration shutdownTimeout,
     Map<String, Map<String, String>> topics,
-    Map<String, Map<String, String>> limits,
     @DefaultValue("false") boolean testing,
     String version,
     List<String> mdcHeaders
@@ -76,15 +71,13 @@ public record TaskProperties(
 
     public TaskProperties {
         topics = topics == null ? Map.of() : topics;
-        limits = limits == null ? Map.of() : limits;
         mdcHeaders = mdcHeaders == null ? List.of() : List.copyOf(mdcHeaders);
     }
 
-    /** As the engine builder takes them: {@code topics.<topic>.<setting>} and {@code limits.<limit>.<setting>}. */
+    /** As the engine builder takes them: {@code topics.<topic>.<setting>}. */
     public Map<String, String> overrides() {
         Map<String, String> overrides = new TreeMap<>();
         topics.forEach((topic, settings) -> settings.forEach((key, value) -> overrides.put("topics." + topic + "." + key, value)));
-        limits.forEach((limit, settings) -> settings.forEach((key, value) -> overrides.put("limits." + limit + "." + key, value)));
         return overrides;
     }
 }

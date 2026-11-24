@@ -34,31 +34,50 @@ class ShippingTasks {
         FROM order_line l JOIN moved ON moved.order_id = l.order_id
         WHERE s.sku = l.sku""";
 
-    /** Whether the stock step has reserved an order's stock. */
-    @FunctionalInterface
-    interface Reservations {
+    /** Where an order is: what the shipping step waits for. */
+    interface OrderStates {
+        /** The stock step has reserved its stock. */
         boolean reserved(String orderId);
+
+        /** The payment step has charged it. */
+        boolean paid(String orderId);
+
+        /** Its payment was declined: it will never ship. */
+        boolean declined(String orderId);
     }
 
     @Bean
-    Reservations reservations(JdbcTemplate jdbc) {
-        return orderId -> Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM stock_movement WHERE order_id = ? AND kind = 'reserve')", Boolean.class, orderId));
+    OrderStates orderStates(JdbcTemplate jdbc) {
+        return new OrderStates() {
+            @Override
+            public boolean reserved(String orderId) {
+                return Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT EXISTS (SELECT 1 FROM stock_movement WHERE order_id = ? AND kind = 'reserve')", Boolean.class, orderId));
+            }
+
+            @Override
+            public boolean paid(String orderId) {
+                return Boolean.TRUE.equals(jdbc.queryForObject("SELECT paid_at IS NOT NULL FROM orders WHERE id = ?", Boolean.class, orderId));
+            }
+
+            @Override
+            public boolean declined(String orderId) {
+                return Boolean.TRUE.equals(jdbc.queryForObject("SELECT status IN ('DECLINED', 'CANCELLED') FROM orders WHERE id = ?",
+                    Boolean.class, orderId));
+            }
+        };
     }
 
     @Bean
-    TaskConfigurer shipping(Partners partners, StagedWrites writes, Reservations reservations) {
+    TaskConfigurer shipping(Partners partners, StagedWrites writes, OrderStates orders) {
         return tasks -> tasks.topic(SHIP, batch -> {
             StagedWrites.Staged staged = batch.resource(writes);
             return batch.decideConcurrently(16, work -> {
                 ShipRequest request = Objects.requireNonNull(work.payload());
                 String id = request.orderId();
                 switch (request.step()) {
-                    case PAID, RESERVED -> {
-                        return Decision.filtered("fan-in marker");
-                    }
                     case CANCEL -> {
-                        if (!reservations.reserved(id)) {
+                        if (!orders.reserved(id)) {
                             return Decision.later(Duration.ofSeconds(5));   // the stock step hasn't run yet
                         }
                         staged.touchesStock(work.task(), id);
@@ -69,6 +88,13 @@ class ShippingTasks {
                         return Decision.success();
                     }
                     case SHIP -> {
+                        // Fan-in: the order ships once payment and stock are both done.
+                        if (orders.declined(id)) {
+                            return Decision.filtered("payment declined");
+                        }
+                        if (!orders.paid(id) || !orders.reserved(id)) {
+                            return Decision.later(Duration.ofSeconds(2));
+                        }
                         try {
                             String tracking = partners.ship(id, work.idempotencyKey());
                             staged.add(work.task(), "UPDATE orders SET status = 'SHIPPED', tracking = ?, shipped_at = now(), updated_at = now() WHERE id = ?",
@@ -80,9 +106,9 @@ class ShippingTasks {
                                 .withDedupKey("notify:" + id + ":feedback"));
                             return Decision.success(tracking);
                         } catch (Throttled throttled) {
-                            return Decision.throttled(throttled.retryAfter());
+                            return Decision.later(throttled.retryAfter());
                         } catch (Unavailable unavailable) {
-                            return Decision.unavailable(unavailable);
+                            return Decision.failed(unavailable);
                         } catch (Declined | Rejected refused) {
                             return Decision.failed(refused);
                         }
@@ -92,8 +118,7 @@ class ShippingTasks {
             });
         }, options -> options
             .resources(writes)
-            .limit("carrier")
-            .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)))
+            .retry(Retry.standard().attempts(3).withBackoff(Duration.ofSeconds(2), Duration.ofSeconds(10)).notCounting(Unavailable.class))
             .concurrency(2)
             .batchSize(32));
     }

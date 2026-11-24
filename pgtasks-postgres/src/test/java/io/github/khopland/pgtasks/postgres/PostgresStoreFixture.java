@@ -110,10 +110,6 @@ class PostgresStoreFixture extends StoreFixture {
         String interval = "interval '" + duration.toMillis() + " milliseconds'";
         execute("UPDATE pgtasks.queue SET run_at = run_at - " + interval + " WHERE run_at IS NOT NULL");
         execute("UPDATE pgtasks.node SET heartbeat_at = heartbeat_at - " + interval);
-        execute("UPDATE pgtasks.rate_admission SET refilled_at = refilled_at - " + interval);
-        execute("UPDATE pgtasks.rate_limit SET until = until - " + interval + " WHERE until IS NOT NULL");
         execute("UPDATE pgtasks.lease SET acquired_at = acquired_at - " + interval + ", expires_at = expires_at - " + interval);
-        execute("UPDATE pgtasks.topic SET revive_swept_at = revive_swept_at - " + interval + " WHERE revive_swept_at IS NOT NULL");
-        execute("UPDATE pgtasks.schedule SET next_run_at = next_run_at - " + interval);
     }
 }

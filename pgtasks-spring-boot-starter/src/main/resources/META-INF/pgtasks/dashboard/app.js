@@ -11,33 +11,25 @@
 const ROUTES = {
   overview: ["GET", ""],
   topic: ["GET", "/topics/{topic}"],
-  failing: ["GET", "/topics/{topic}/failing"],
   deadLetters: ["GET", "/topics/{topic}/dead-letters"],
-  pause: ["POST", "/topics/{topic}/pause"],
-  resume: ["POST", "/topics/{topic}/resume"],
   revive: ["POST", "/topics/{topic}/revive"],
   discard: ["POST", "/topics/{topic}/discard"],
   tasks: ["GET", "/topics/{topic}/tasks"],
-  cancel: ["POST", "/topics/{topic}/cancel"],
-  runNow: ["POST", "/topics/{topic}/run-now"],
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
-  limit: ["GET", "/limits/{limit}"],
-  overrideLimit: ["POST", "/limits/{limit}"],
-  resetLimit: ["DELETE", "/limits/{limit}"],
 };
 // routes:end
 
 const HIDDEN = "******";
 const REFRESH_MS = 10000;
-const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated", "cancelled"];
+const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated"];
 const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "failed"];
 
 const state = {
   config: null,
   deadLetters: {}, // per topic: { cursors: [0], selected: Set }
-  // per topic: { filter: null (no search yet) or the search's fields, cursors: [0], selected: Set, page, stale }. A search can
+  // per topic: { filter: null (no search yet) or the search's fields, cursors: [0], page, stale }. A search can
   // read a topic's whole backlog, so it runs when asked for, on a page change and after a change, not on every refresh.
   searches: {},
   timer: null,
@@ -430,8 +422,6 @@ async function overviewView() {
   showNode(data.node);
   const topics = data.topics || [];
   const total = key => topics.reduce((sum, topic) => sum + (topic.queue ? topic.queue[key] || 0 : 0), 0);
-  const open = topics.filter(topic => topic.breaker === "open").length;
-  const paused = topics.filter(topic => topic.paused).length;
   const oldest = topics.map(topic => topic.queue && topic.queue.oldestReadyAt).filter(Boolean).sort()[0];
   const stats = h("div", { class: "stats" },
     stat("Topics", topics.length),
@@ -439,9 +429,7 @@ async function overviewView() {
     stat("Active", total("active")),
     stat("Oldest ready", oldest ? since(oldest) : "—"),
     stat("Failing", total("failing"), total("failing") ? "warn" : null),
-    stat("Dead letters", total("deadLetters"), total("deadLetters") ? "bad" : null),
-    stat("Open breakers", open, open ? "bad" : null),
-    stat("Paused", paused, paused ? "warn" : null));
+    stat("Dead letters", total("deadLetters"), total("deadLetters") ? "bad" : null));
 
   const byName = new Map(topics.map(topic => [topic.name, topic]));
   const modules = Object.entries(data.modules || {});
@@ -456,7 +444,7 @@ async function overviewView() {
     stale ? h("div", { class: "notice warn" }, "The counts are ", since(counted),
       " old: is any node running housekeeping? (", h("code", null, "pgtasks.queue.snapshot.age"), ")") : null,
     topicPanels,
-    h("div", { class: "grid" }, nodesPanel(data.node, data.nodes || []), limitsPanel(data.limits || [])),
+    nodesPanel(data.node, data.nodes || []),
     counted ? h("p", { class: "muted" }, "Counts as of ", time(counted), ", from the housekeeping leader's snapshot.") : null,
   ];
 }
@@ -468,8 +456,6 @@ function stat(label, val, kind) {
 
 function topicStatus(topic) {
   return h("span", { class: "chips" },
-    topic.paused ? chip("paused", "warn") : null,
-    topic.breaker === "open" ? chip("breaker open", "bad", "This node's circuit breaker for the topic is open") : null,
     topic.processing ? chip("running", "ok", "This node processes it") : chip("not here", null, "This node doesn't process it"));
 }
 
@@ -516,114 +502,6 @@ function nodesPanel(self, nodes) {
   ], nodes, "No nodes registered."));
 }
 
-function rateText(rate) {
-  return rate ? rate.rate + (rate.burst !== null && rate.burst !== undefined ? ", burst " + rate.burst : "") : "—";
-}
-
-function limitsPanel(limits) {
-  return panel("Rate limits", {
-    note: "An override applies on every node. Changes carry the version you saw, so two people can't overwrite each other.",
-  }, table([
-    { label: "Limit", value: limit => h("td", { class: "wrap" }, h("strong", null, limit.name)) },
-    { label: "Configured", value: limit => rateText(limit.configured) },
-    { label: "Effective", value: limit => h("td", null, rateText(limit.effective), limit.override ? [" ", chip("overridden", "warn")] : null) },
-    { label: "Override", value: limit => limit.override ? h("span", null, limit.override.until ? ["until ", time(limit.override.until)] : "no end",
-      limit.override.updatedBy ? [h("br"), h("span", { class: "muted" }, "by " + limit.override.updatedBy)] : null) : "—" },
-    { label: "", value: limit => h("td", { class: "nowrap" }, h("span", { class: "actions" },
-      h("button", { type: "button", class: "small", onclick: () => editLimit(limit.name) }, "Override…"),
-      limit.override ? h("button", { type: "button", class: "small", onclick: () => resetLimit(limit) }, "Reset") : null)) },
-  ], limits, "No rate limits."));
-}
-
-const UNTIL = [["", "No end"], ["PT15M", "15 minutes"], ["PT1H", "1 hour"], ["PT2H", "2 hours"], ["PT8H", "8 hours"], ["P1D", "1 day"]];
-
-async function editLimit(name) {
-  let limit;
-  try {
-    limit = await api("limit", { limit: name });
-  } catch (e) {
-    toast(e.message, true);
-    return;
-  }
-  const changed = await dialog(({ fail }) => {
-    const rate = h("input", { name: "rate", placeholder: limit.configured ? limit.configured.rate : "400/s", autocomplete: "off" });
-    const burst = h("input", { name: "burst", type: "number", min: "1", step: "1", placeholder: limit.configured ? String(limit.configured.burst) : "" });
-    const until = h("select", { name: "until" }, UNTIL.map(([val, text]) => h("option", { value: val }, text)));
-    const current = h("p", { class: "muted" });
-    const show = fill => {
-      current.replaceChildren("Now ", rateText(limit.effective), " (configured ", rateText(limit.configured), "), version " + limit.version + ".");
-      if (!fill) {
-        return;
-      }
-      rate.value = limit.override && limit.override.rate ? limit.override.rate : "";
-      burst.value = limit.override && limit.override.burst !== null && limit.override.burst !== undefined ? String(limit.override.burst) : "";
-    };
-    show(true);
-    const submit = h("button", { type: "submit", class: "primary" }, "Override");
-    return {
-      body: [h("h2", null, "Override " + limit.name), current,
-        h("div", { class: "row" },
-          h("label", { class: "field" }, h("span", null, "Rate, such as 20/s, 100/min, 5000/h"), rate),
-          h("label", { class: "field" }, h("span", null, "Burst"), burst)),
-        h("label", { class: "field" }, h("span", null, "For"), until),
-        h("p", { class: "muted" }, "Leave a field empty to keep its configured value.")],
-      submit,
-      valid: () => {
-        if (!rate.value.trim() && !burst.value.trim()) {
-          fail("Give a rate, a burst, or both.");
-          return false;
-        }
-        return true;
-      },
-      onsubmit: async () => {
-        const body = { version: limit.version };
-        if (rate.value.trim()) body.rate = rate.value.trim();
-        if (burst.value.trim()) body.burst = Number(burst.value);
-        if (until.value) body.until = until.value;
-        try {
-          return await api("overrideLimit", { limit: limit.name }, { body });
-        } catch (e) {
-          if (e.status === 409) {
-            limit = await api("limit", { limit: limit.name });
-            show(false);
-            fail("Someone changed this limit since you opened it: it is now " + rateText(limit.effective)
-              + (limit.override && limit.override.updatedBy ? ", by " + limit.override.updatedBy : "")
-              + ". Your values are kept; override again to replace it.");
-            return undefined;
-          }
-          throw e;
-        }
-      },
-    };
-  });
-  if (changed) {
-    toast("Overrode " + changed.name + ": now " + rateText(changed.effective) + ".");
-    refresh();
-  }
-}
-
-async function resetLimit(limit) {
-  const reset = await ask({
-    title: "Reset " + limit.name,
-    message: "Back to the configured " + rateText(limit.configured) + " on every node.",
-    action: "Reset",
-    run: async () => {
-      try {
-        return await api("resetLimit", { limit: limit.name }, { query: { version: limit.version } });
-      } catch (e) {
-        if (e.status === 409) {
-          throw new Error("Someone changed this limit since the page loaded. Close this, look at the current values, and try again.");
-        }
-        throw e;
-      }
-    },
-  });
-  if (reset) {
-    toast("Reset " + reset.name + " to " + rateText(reset.effective) + ".");
-  }
-  refresh();
-}
-
 // --- Topic
 
 function deadLetterState(topic) {
@@ -637,9 +515,8 @@ async function topicView(name) {
   const paging = deadLetterState(name);
   const after = paging.cursors[paging.cursors.length - 1];
   const search = searchState(name);
-  const [topic, failing, dead, overview] = await Promise.all([
+  const [topic, dead, overview] = await Promise.all([
     api("topic", { topic: name }),
-    api("failing", { topic: name }),
     api("deadLetters", { topic: name }, { query: { after: after || null, limit: 50 } }),
     api("overview").catch(() => null),
     loadSearch(name, search),
@@ -652,9 +529,6 @@ async function topicView(name) {
     h("div", { class: "crumbs" }, link("#/", "Overview"), topic.module ? " / " + topic.module : null),
     h("div", { class: "page-head" }, h("h1", null, topic.name), topicStatus(topic),
       h("div", { class: "actions" },
-        topic.paused
-          ? h("button", { type: "button", class: "primary", onclick: () => act(name, "resume", "Resumed " + name) }, "Resume")
-          : h("button", { type: "button", onclick: () => act(name, "pause", "Paused " + name) }, "Pause"),
         h("button", { type: "button", class: "danger", onclick: () => purge(name) }, "Purge…"),
         h("button", { type: "button", class: "danger", onclick: () => deleteTopic(name) }, "Delete topic…"))));
 
@@ -675,59 +549,10 @@ async function topicView(name) {
     head,
     stats,
     queue && queue.countedAt ? h("p", { class: "muted" }, "Counts as of ", time(queue.countedAt), ".") : null,
-    failingPanel(name, failing.failing || []),
     deadLettersPanel(name, dead, paging),
     tasksPanel(name, search),
-    h("div", { class: "grid" }, settingsPanel(topic.settings), recurringPanel(topic.recurring || [])),
+    settingsPanel(topic.settings),
   ];
-}
-
-async function act(topic, action, done) {
-  try {
-    await api(action, { topic }, { body: {} });
-    toast(done + ".");
-  } catch (e) {
-    toast(e.message, true);
-  }
-  refresh();
-}
-
-function canFilter(error) {
-  return error && error !== HIDDEN;
-}
-
-function failingPanel(topic, groups) {
-  return panel("Failing", {
-    meta: h("span", { class: "muted" }, "tasks whose last run failed, grouped by error"),
-    note: "Revive and discard act on the group's dead letters; tasks still retrying keep their schedule.",
-  }, table([
-    { label: "Error", value: group => h("td", { class: "wrap mono" }, value(group.error)) },
-    { label: "Tasks", num: true, value: group => count(group.tasks, true) },
-    { label: "Failing since", value: group => since(group.oldestFailedAt) },
-    { label: "Example", value: group => h("td", { class: "wrap" }, taskLink(group.example),
-      group.exampleMessage ? [h("br"), h("span", { class: "muted" }, value(group.exampleMessage))] : null) },
-    { label: "", value: group => h("td", { class: "nowrap" }, h("span", { class: "actions" },
-      h("button", { type: "button", class: "small", disabled: !canFilter(group.error),
-        title: canFilter(group.error) ? null : "The error is hidden, so it can't be matched", onclick: () => byError(topic, group.error, "revive") }, "Revive"),
-      h("button", { type: "button", class: "small danger", disabled: !canFilter(group.error),
-        onclick: () => byError(topic, group.error, "discard") }, "Discard…"))) },
-  ], groups, "Nothing is failing."));
-}
-
-async function byError(topic, error, action) {
-  const revive = action === "revive";
-  const result = await ask({
-    title: (revive ? "Revive" : "Discard") + " dead letters",
-    message: [revive ? "Give every dead letter of " : "Give up on every dead letter of ", h("strong", null, topic), " that failed with ",
-      h("code", null, error), revive ? " another round of attempts." : ". They finish as failed; this can't be undone."],
-    action: revive ? "Revive" : "Discard",
-    danger: !revive,
-    run: () => api(action, { topic }, { body: { error } }),
-  });
-  if (result) {
-    toast((revive ? "Revived " + result.revived : "Discarded " + result.discarded) + " dead letter(s).");
-    refresh();
-  }
 }
 
 function deadLettersPanel(topic, page, paging) {
@@ -841,11 +666,11 @@ async function everyDeadLetter(topic, action) {
   }
 }
 
-// --- Unfinished tasks: search, run now, cancel
+// --- Unfinished tasks: search
 
 function searchState(topic) {
   if (!state.searches[topic]) {
-    state.searches[topic] = { filter: null, cursors: [0], selected: new Set(), page: null, stale: true };
+    state.searches[topic] = { filter: null, cursors: [0], page: null, stale: true };
   }
   return state.searches[topic];
 }
@@ -882,42 +707,12 @@ function tasksPanel(topic, search) {
   if (!search.filter) {
     return panel("Unfinished tasks", {
       actions: [open, h("button", { type: "button", class: "small", onclick: () => setSearch(topic, {}) }, "List all")],
-      note: "Find tasks by identifier, reference, state, a header or when they were pushed, then run them now or cancel them. "
+      note: "Find tasks by identifier, reference, state, a header or when they were pushed. "
         + "Without an identifier or a reference a search reads the topic's whole backlog, so it runs when you ask, not on every refresh.",
     }, h("div", { class: "empty" }, "No search yet."));
   }
   const tasks = (search.page && search.page.tasks) || [];
-  const visible = new Set(tasks.map(task => task.id));
-  for (const id of search.selected) {
-    if (!visible.has(id)) search.selected.delete(id);
-  }
-  const selectedCount = () => search.selected.size;
-  const runSelected = h("button", { type: "button", class: "small", disabled: !selectedCount(), onclick: () => tasksByIds(topic, "runNow") },
-    "Run selected now");
-  const cancelSelected = h("button", { type: "button", class: "small danger", disabled: !selectedCount(),
-    onclick: () => tasksByIds(topic, "cancel") }, "Cancel selected…");
-  const all = h("input", { type: "checkbox", "aria-label": "Select all on this page", disabled: !tasks.length });
-  const update = () => {
-    runSelected.disabled = cancelSelected.disabled = !selectedCount();
-    all.checked = tasks.length > 0 && selectedCount() === tasks.length;
-  };
-  all.addEventListener("change", () => {
-    tasks.forEach(task => all.checked ? search.selected.add(task.id) : search.selected.delete(task.id));
-    main().querySelectorAll("input[data-task]").forEach(box => {
-      box.checked = all.checked;
-    });
-    update();
-  });
-  all.checked = tasks.length > 0 && selectedCount() === tasks.length;
   const rows = table([
-    { label: all, value: task => {
-      const box = h("input", { type: "checkbox", "data-task": "", checked: search.selected.has(task.id), "aria-label": "Select task " + task.id });
-      box.addEventListener("change", () => {
-        box.checked ? search.selected.add(task.id) : search.selected.delete(task.id);
-        update();
-      });
-      return box;
-    } },
     { label: "Task", value: task => taskLink(task.id) },
     { label: "Identifier", value: task => h("td", { class: "wrap mono" }, task.identifier) },
     { label: "State", value: task => chip(task.state, task.state === "failed" ? "bad" : task.state === "retrying" ? "warn" : "info") },
@@ -929,7 +724,6 @@ function tasksPanel(topic, search) {
   const page = search.page || {};
   const go = cursors => {
     search.cursors = cursors;
-    search.selected.clear();
     search.stale = true;
     refresh();
   };
@@ -942,12 +736,7 @@ function tasksPanel(topic, search) {
     h("span", { class: "muted" }, "Page " + search.cursors.length + ", lowest id first"));
   return panel("Unfinished tasks", {
     meta: filterChips(search.filter),
-    actions: [open, h("button", { type: "button", class: "small ghost", onclick: () => setSearch(topic, null) }, "Clear"),
-      runSelected, cancelSelected,
-      h("button", { type: "button", class: "small", onclick: () => tasksByFilter(topic, "runNow") }, "Run matching now…"),
-      h("button", { type: "button", class: "small danger", onclick: () => tasksByFilter(topic, "cancel") }, "Cancel matching…")],
-    note: "Run now makes delayed and retrying tasks ready, keeping their attempts. Cancel takes tasks out of the queue as cancelled, "
-      + "dead letters included; active tasks are skipped, since a node runs them.",
+    actions: [open, h("button", { type: "button", class: "small ghost", onclick: () => setSearch(topic, null) }, "Clear")],
   }, rows, pager);
 }
 
@@ -955,7 +744,6 @@ function setSearch(topic, filter) {
   const search = searchState(topic);
   search.filter = filter;
   search.cursors = [0];
-  search.selected.clear();
   search.page = null;
   search.stale = true;
   refresh();
@@ -1015,69 +803,6 @@ async function searchTasks(topic) {
   }
 }
 
-function doneText(action, result) {
-  const skipped = result.skipped ? " (" + number(result.skipped) + " skipped)" : "";
-  return action === "cancel" ? "Cancelled " + number(result.cancelled) + " task(s)" + skipped + "."
-    : "Made " + number(result.madeReady) + " task(s) ready" + skipped + ".";
-}
-
-async function tasksByIds(topic, action, ids) {
-  const search = searchState(topic);
-  const chosen = ids || [...search.selected].sort((a, b) => a - b);
-  if (!chosen.length) {
-    return null;
-  }
-  const run = () => api(action, { topic }, { body: { ids: chosen.join(",") } });
-  let result;
-  if (action === "runNow") {
-    try {
-      result = await run();
-    } catch (e) {
-      toast(e.message, true);
-      return null;
-    }
-  } else {
-    result = await ask({
-      title: "Cancel " + chosen.length + " task(s)",
-      message: ["Take tasks ", chosen.map(id => "#" + id).join(", "), " out of the queue. They finish as cancelled and never run; ",
-        "active ones are skipped. This can't be undone."],
-      action: "Cancel tasks",
-      danger: true,
-      typed: topic,
-      run,
-    });
-  }
-  if (result) {
-    search.selected.clear();
-    toast(doneText(action, result));
-    refresh();
-  }
-  return result;
-}
-
-async function tasksByFilter(topic, action) {
-  const search = searchState(topic);
-  const fields = filterFields(search.filter || {});
-  const every = !Object.keys(fields).length;
-  const cancel = action === "cancel";
-  const result = await ask({
-    title: (cancel ? "Cancel" : "Run now") + (every ? " every unfinished task" : " every matching task"),
-    message: [cancel ? "Take every " : "Make every delayed and retrying ", every ? "unfinished task of " : "task of ", h("strong", null, topic),
-      every ? "" : " that matches ", every ? "" : filterChips(search.filter),
-      cancel ? " out of the queue. They finish as cancelled and never run; active ones are skipped. This can't be undone."
-        : " ready now, keeping their attempts. Tasks in other states are left alone."],
-    action: cancel ? "Cancel tasks" : "Run now",
-    danger: cancel,
-    typed: cancel ? topic : null,
-    run: () => api(action, { topic }, { body: every ? { all: "true" } : fields }),
-  });
-  if (result) {
-    search.cursors = [0];
-    toast(doneText(action, result));
-    refresh();
-  }
-}
-
 function localInput(date) {
   const pad = n => String(n).padStart(2, "0");
   return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
@@ -1119,7 +844,7 @@ async function purge(topic) {
 async function deleteTopic(topic) {
   const result = await ask({
     title: "Delete " + topic,
-    message: ["Deletes the topic with its history and recurring tasks, on every node. It must have no unfinished tasks. ",
+    message: ["Deletes the topic with its history, on every node. It must have no unfinished tasks. ",
       "A node whose configuration registers it creates it again when it starts, so remove it there first."],
     action: "Delete topic",
     danger: true,
@@ -1149,17 +874,6 @@ function settingsPanel(settings) {
     { label: "Value", value: row => h("td", { class: "wrap mono" }, row.value) },
     { label: "From", value: row => chip(...(SOURCES[row.source] || [row.source, null])) },
   ], rows, "This node doesn't run the topic, so it doesn't know its settings."));
-}
-
-function recurringPanel(schedules) {
-  return panel("Recurring", null, table([
-    { label: "Name", value: s => h("td", { class: "wrap" }, s.name) },
-    { label: "Cron", value: s => h("td", { class: "mono nowrap" }, s.cron, " ", h("span", { class: "muted" }, s.zone)) },
-    { label: "Identifier", value: s => h("td", { class: "wrap mono" }, s.identifier) },
-    { label: "Insertion", value: s => s.insertion },
-    { label: "Next", value: s => time(s.nextRunAt) },
-    { label: "Last", value: s => time(s.lastRunAt) },
-  ], schedules, "No recurring tasks."));
 }
 
 // --- Task
@@ -1236,13 +950,9 @@ async function taskView(idText) {
     ["Payload type", task.payloadType ? h("span", { class: "mono" }, task.payloadType) : "—"],
   ];
   const headers = Object.entries(task.headers || {});
-  const waits = task.state === "scheduled" || task.state === "retrying";
-  const actions = task.finished || task.state === "active" ? null : h("div", { class: "actions" },
-    waits ? h("button", { type: "button", onclick: () => tasksByIds(task.topic, "runNow", [task.id]) }, "Run now") : null,
-    h("button", { type: "button", class: "danger", onclick: () => tasksByIds(task.topic, "cancel", [task.id]) }, "Cancel…"));
   return [
     h("div", { class: "crumbs" }, link("#/", "Overview"), " / ", topicLink(task.topic)),
-    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id), actions),
+    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id)),
     hidden ? h("div", { class: "notice" }, "Payloads, outputs and error messages are hidden by ",
       h("code", null, "management.endpoint.tasks.show-values"), ". Error types are still shown.") : null,
     h("div", { class: "grid" },
@@ -1256,12 +966,6 @@ async function taskView(idText) {
           { label: "Name", value: ([name]) => h("td", { class: "mono" }, name) },
           { label: "Value", value: ([, val]) => h("td", { class: "wrap mono" }, value(val)) },
         ], headers, "No headers.")))),
-    panel("Attempts", { note: "Failed and expired attempts are logged: the first and the last ten." }, table([
-      { label: "Attempt", num: true, value: attempt => count(attempt.attempt) },
-      { label: "Node", value: attempt => attempt.node === null || attempt.node === undefined ? "—" : "#" + attempt.node },
-      { label: "Result", value: attempt => chip(attempt.result, attempt.result === "failed" || attempt.result === "expired" ? "bad" : null) },
-      { label: "Error", value: attempt => h("td", { class: "wrap mono" }, errorSummary(attempt.error)) },
-    ], task.attempts || [], "No failed attempts.")),
   ];
 }
 

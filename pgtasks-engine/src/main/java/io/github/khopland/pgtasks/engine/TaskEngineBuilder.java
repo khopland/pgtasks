@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Period;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -17,18 +18,15 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.BatchResource;
-import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
-import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Setting;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
@@ -79,6 +77,7 @@ public final class TaskEngineBuilder {
     private Map<String, String> overrides = Map.of();
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
+    private final List<Extension> extensions = new ArrayList<>();
     private @Nullable String version;
     private @Nullable PayloadCodecs fallbackCodecs;
     private boolean topicsCreatedOnPush;
@@ -149,9 +148,7 @@ public final class TaskEngineBuilder {
      * {@code topics.<topic>.batch-size}, {@code ordering}, {@code poll-interval},
      * {@code batch-deadline}, {@code retry.max-attempts} (a number or {@code forever}),
      * {@code retry.give-up-after} (such as 7d, or {@code never}), {@code retry.first-backoff},
-     * {@code retry.max-backoff}, {@code retain.<outcome>};
-     * {@code limits.<limit>.rate} (such as 400/s) and {@code limits.<limit>.burst}. An unknown
-     * topic, limit or key fails the build.
+     * {@code retry.max-backoff}, {@code retain.<outcome>}. An unknown topic or key fails the build.
      */
     public TaskEngineBuilder overrides(Map<String, String> overrides) {
         this.overrides = Map.copyOf(overrides);
@@ -177,8 +174,7 @@ public final class TaskEngineBuilder {
     }
 
     /**
-     * The application's version, recorded with this node in pgtasks.node, and what a topic that
-     * revives its dead letters on a new version compares; see {@link DeadLetterPolicy}.
+     * The application's version, recorded with this node in pgtasks.node.
      */
     public TaskEngineBuilder version(@Nullable String version) {
         this.version = version;
@@ -199,6 +195,14 @@ public final class TaskEngineBuilder {
     public TaskEngineBuilder observer(TaskObserver observer) {
         Objects.requireNonNull(observer);
         this.observer = this.observer == TaskObserver.NONE ? observer : TaskObserver.composite(List.of(this.observer, observer));
+        return this;
+    }
+
+    /** Adds features from outside the core; installed in this order when the engine is built. */
+    public TaskEngineBuilder extension(Extension... extensions) {
+        for (Extension extension : extensions) {
+            this.extensions.add(Objects.requireNonNull(extension, "extension"));
+        }
         return this;
     }
 
@@ -225,19 +229,17 @@ public final class TaskEngineBuilder {
         return lambda < 0 ? name : name.substring(0, lambda);
     }
 
-    /** One topic, or topic pattern, as registered, before overrides. */
+    /** One topic as registered, before overrides. */
     private static final class TopicSpec<T> {
         final String name;
         final Class<T> type;
-        final boolean pattern;
         final BatchHandler<T> handler;
         final String module;
         final Spec spec;
 
-        TopicSpec(String name, Class<T> type, boolean pattern, BatchHandler<T> handler, String module, Spec spec) {
+        TopicSpec(String name, Class<T> type, BatchHandler<T> handler, String module, Spec spec) {
             this.name = name;
             this.type = type;
-            this.pattern = pattern;
             this.handler = handler;
             this.module = module;
             this.spec = spec;
@@ -249,6 +251,8 @@ public final class TaskEngineBuilder {
         final Map<String, Object> values = new LinkedHashMap<>();
         final Map<String, Source> sources = new LinkedHashMap<>();
         final List<BatchResource<?>> resources = new ArrayList<>();
+        /** Extension settings set through {@link #set(SettingKey, Object)}, by name. */
+        final Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
         Source layer;
 
         Spec(Source layer) {
@@ -303,8 +307,9 @@ public final class TaskEngineBuilder {
         }
 
         @Override
-        public TopicOptions limit(String name) {
-            return set("limit", name);
+        public <T> TopicOptions set(SettingKey<T> key, T value) {
+            keys.put(key.name(), key);
+            return set(key.name(), key.checked(Objects.requireNonNull(value, key.name())));
         }
 
         @Override
@@ -316,16 +321,6 @@ public final class TaskEngineBuilder {
         @Override
         public TopicOptions retain(Outcome outcome, Period period) {
             return set("retain." + outcome.label(), period);
-        }
-
-        @Override
-        public TopicOptions breaker(Breaker breaker) {
-            return set("breaker", Objects.requireNonNull(breaker));
-        }
-
-        @Override
-        public TopicOptions deadLetters(DeadLetterPolicy policy) {
-            return set("dead-letters", Objects.requireNonNull(policy));
         }
 
         @Override
@@ -341,38 +336,9 @@ public final class TaskEngineBuilder {
         }
     }
 
-    private static final class LimitSpec implements GlobalOptions.LimitOptions {
-        @Nullable Rate rate;
-        @Nullable Integer burst;
-        final List<RateWindow> windows = new ArrayList<>();
-
-        @Override
-        public GlobalOptions.LimitOptions window(Cron from, Rate rate) {
-            windows.add(new RateWindow(from, rate));
-            return this;
-        }
-
-        @Override
-        public GlobalOptions.LimitOptions rate(Rate rate) {
-            this.rate = Objects.requireNonNull(rate);
-            return this;
-        }
-
-        @Override
-        public GlobalOptions.LimitOptions burst(int permits) {
-            if (permits < 1) {
-                throw new IllegalArgumentException("burst must be at least 1");
-            }
-            this.burst = permits;
-            return this;
-        }
-
-    }
-
     private final class Globals implements GlobalOptions, GlobalOptions.HousekeepingOptions {
         EngineSettings settings = EngineSettings.defaults(node);
         final Spec defaults = new Spec(Source.GLOBAL_DEFAULTS);
-        final Map<String, LimitSpec> limits = new LinkedHashMap<>();
 
         @Override
         public GlobalOptions node(String name) {
@@ -401,19 +367,6 @@ public final class TaskEngineBuilder {
         @Override
         public GlobalOptions defaults(Consumer<TopicOptions> defaults) {
             this.defaults.apply(Source.GLOBAL_DEFAULTS, defaults);
-            return this;
-        }
-
-        @Override
-        public GlobalOptions limit(String name, Consumer<LimitOptions> limit) {
-            LimitSpec spec = new LimitSpec();
-            limit.accept(spec);
-            if (spec.rate == null) {
-                throw new IllegalArgumentException("Limit " + name + " needs a rate");
-            }
-            if (limits.putIfAbsent(name, spec) != null) {
-                throw new IllegalArgumentException("Limit " + name + " is defined twice");
-            }
             return this;
         }
 
@@ -476,8 +429,6 @@ public final class TaskEngineBuilder {
 
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);
-        List<EventRoute<?>> routes = new ArrayList<>();
-        List<Recurring<?>> recurring = new ArrayList<>();
         List<Declared> declared = new ArrayList<>();
         for (Named<TaskConfigurer> configurer : configurers) {
             Spec moduleDefaults = new Spec(Source.MODULE_DEFAULTS);
@@ -493,16 +444,7 @@ public final class TaskEngineBuilder {
                 public <T> TaskRegistry topic(TopicRef<T> topic, BatchHandler<T> handler, Consumer<TopicOptions> options) {
                     Spec spec = new Spec(Source.TOPIC);
                     options.accept(spec);
-                    registered.add(new TopicSpec<>(topic.name(), topic.payloadType(), false, Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
-                    return this;
-                }
-
-                @Override
-                public <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler, Consumer<TopicOptions> options) {
-                    Spec spec = new Spec(Source.TOPIC);
-                    options.accept(spec);
-                    registered.add(new TopicSpec<>(Objects.requireNonNull(pattern, "pattern"), Objects.requireNonNull(type, "type"), true,
-                        Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
+                    registered.add(new TopicSpec<>(topic.name(), topic.payloadType(), Objects.requireNonNull(handler, "handler"), configurer.name(), spec));
                     return this;
                 }
 
@@ -523,25 +465,7 @@ public final class TaskEngineBuilder {
                     return this;
                 }
 
-                @Override
-                public <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route) {
-                    routes.add(new EventRoute<>(event, route, configurer.name()));
-                    return this;
-                }
 
-                @Override
-                public <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload,
-                                                  Insertion insertion) {
-                    Recurring<T> schedule = new Recurring<>(topic, name, cron, identifier, payload, insertion, configurer.name());
-                    if (registered.stream().noneMatch(spec -> !spec.pattern && spec.name.equals(topic.name()))) {
-                        problems.add("Recurring task " + name + " is for topic " + topic.name() + ", which " + configurer.name()
-                            + " doesn't register before it; a module schedules only its own topics");
-                    } else if (recurring.stream().anyMatch(other -> other.topic().name().equals(topic.name()) && other.name().equals(name))) {
-                        problems.add("Two recurring tasks named " + name + " for topic " + topic.name());
-                    }
-                    recurring.add(schedule);
-                    return this;
-                }
             });
             for (TopicSpec<?> topic : registered) {
                 TopicSpec<?> previous = topics.putIfAbsent(topic.name, topic);
@@ -555,6 +479,7 @@ public final class TaskEngineBuilder {
                         topic.spec.sources.put(key, Source.MODULE_DEFAULTS);
                     }
                 });
+                moduleDefaults.keys.forEach(topic.spec.keys::putIfAbsent);
                 // Global defaults' resources first, then the module's, then the topic's own.
                 topic.spec.resources.addAll(0, moduleDefaults.resources);
                 topic.spec.resources.addAll(0, global.defaults.resources);
@@ -562,27 +487,20 @@ public final class TaskEngineBuilder {
         }
 
         Map<String, Map<String, String>> topicOverrides = new LinkedHashMap<>();
-        Map<String, Map<String, String>> limitOverrides = new LinkedHashMap<>();
-        splitOverrides(topics.keySet(), global.limits.keySet(), topicOverrides, limitOverrides, problems);
-        limitOverrides.forEach((name, values) -> values.forEach((key, value) -> {
-            try {
-                switch (key) {
-                    case "rate" -> limitSpec(global, name).rate = Rate.parse(value);
-                    case "burst" -> limitSpec(global, name).burst(Integer.parseInt(value.trim()));
-                    default -> problems.add("Unknown limit setting limits." + name + "." + key + "; known: rate, burst");
-                }
-            } catch (IllegalArgumentException e) {
-                problems.add("limits." + name + "." + key + ": " + e.getMessage());
-            }
-        }));
+        splitOverrides(topics.keySet(), topicOverrides, problems);
+        Map<String, SettingKey<?>> keys = settingKeys(global, topics.values(), problems);
 
         List<Topic<?>> resolved = new ArrayList<>();
-        List<TopicTemplate<?>> templates = new ArrayList<>();
         List<EffectiveSettings> effective = new ArrayList<>();
+        Map<String, Map<String, Object>> extensionSettings = new LinkedHashMap<>();
         for (TopicSpec<?> topic : topics.values()) {
             Map<String, Object> values = new LinkedHashMap<>();
             Map<String, Source> sources = new LinkedHashMap<>();
             layer(values, sources, defaults(), Source.DEFAULT);
+            keys.values().forEach(key -> {
+                values.put(key.name(), key.defaultValue());
+                sources.put(key.name(), Source.DEFAULT);
+            });
             layer(values, sources, global.defaults.values, Source.GLOBAL_DEFAULTS);
             topic.spec.values.forEach((key, value) -> {
                 values.put(key, value);
@@ -590,7 +508,8 @@ public final class TaskEngineBuilder {
             });
             topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
                 try {
-                    Object parsed = parseOverride(key, value, setting(values, "retry", Retry.class));
+                    SettingKey<?> extensionKey = keys.get(key);
+                    Object parsed = extensionKey != null ? extensionKey.parse(value) : parseOverride(key, value, setting(values, "retry", Retry.class));
                     // Each retry.* key changes one part of the retry policy, which is one setting.
                     String setting = key.startsWith("retry.") ? "retry" : key;
                     values.put(setting, parsed);
@@ -599,13 +518,11 @@ public final class TaskEngineBuilder {
                     problems.add("topics." + topic.name + "." + key + ": " + e.getMessage());
                 }
             });
+            Map<String, Object> extensionValues = new LinkedHashMap<>();
+            keys.keySet().forEach(name -> extensionValues.put(name, values.get(name)));
+            extensionSettings.put(topic.name, extensionValues);
             try {
-                Object built = build(topic, values, global, allCodecs, fallbackCodecs);
-                if (built instanceof TopicTemplate<?> template) {
-                    templates.add(template);
-                } else {
-                    resolved.add((Topic<?>) built);
-                }
+                resolved.add(build(topic, values, allCodecs, fallbackCodecs));
             } catch (IllegalArgumentException e) {
                 problems.add("Topic " + topic.name + " (" + topic.module + "): " + e.getMessage());
             }
@@ -646,8 +563,7 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved, templates).withEffectiveSettings(effective).withEventRoutes(routes)
-            .withRecurring(recurring);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withExtensionSettings(extensionSettings);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         // A codec for every topic modules push to, now rather than at the first push.
@@ -663,7 +579,17 @@ public final class TaskEngineBuilder {
             throw new IllegalStateException("The task setup is invalid:\n - " + String.join("\n - ", problems));
         }
         engine.withPushedTo(pushedTo.keySet());
-        return topicsCreatedOnPush ? engine.withTopicsCreatedOnPush() : engine;
+        if (topicsCreatedOnPush) {
+            engine.withTopicsCreatedOnPush();
+        }
+        for (Extension extension : extensions) {
+            try {
+                engine.install(extension);
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("Extension " + extension.name() + " could not be installed: " + e.getMessage(), e);
+            }
+        }
+        return engine;
     }
 
     /** Connections the engine may use besides claims and completions: heartbeat, housekeeping, retention, reloads. */
@@ -704,8 +630,6 @@ public final class TaskEngineBuilder {
         values.put("retry", defaults.retry());
         values.put("batch-deadline", defaults.batchDeadline());
         values.put("poll-interval", defaults.pollInterval());
-        values.put("breaker", defaults.breaker());
-        values.put("dead-letters", defaults.deadLetters());
         for (Outcome outcome : Outcome.values()) {
             Period period = defaults.retention().get(outcome);
             values.put("retain." + outcome.label(), period == null ? "forever" : period);
@@ -720,9 +644,8 @@ public final class TaskEngineBuilder {
         });
     }
 
-    /** A {@link Topic}, or a {@link TopicTemplate} for a pattern. */
     @SuppressWarnings("unchecked")
-    private static <T> Object build(TopicSpec<T> topic, Map<String, Object> values, Globals global, Map<Class<?>, PayloadCodec<?>> codecs,
+    private static <T> Topic<T> build(TopicSpec<T> topic, Map<String, Object> values, Map<Class<?>, PayloadCodec<?>> codecs,
                                      @Nullable PayloadCodecs fallback) {
         PayloadCodec<T> codec = (PayloadCodec<T>) codecs.get(topic.type);
         if (codec == null && topic.type == String.class) {
@@ -733,17 +656,6 @@ public final class TaskEngineBuilder {
         }
         if (codec == null) {
             throw new IllegalArgumentException("no payload codec for " + topic.type.getName() + "; register one with codec(...), or give the builder codecs(...)");
-        }
-        RateLimit rateLimit = null;
-        if (values.containsKey("limit")) {
-            String name = (String) values.get("limit");
-            LimitSpec limit = global.limits.get(name);
-            if (limit == null) {
-                throw new IllegalArgumentException("unknown limit '" + name + "'; define it in TaskGlobals; known: " + global.limits.keySet());
-            }
-            Rate rate = Objects.requireNonNull(limit.rate, "rate");
-            int burst = limit.burst != null ? limit.burst : (int) Math.max(1, Math.ceil(rate.perSecond()));
-            rateLimit = new RateLimit(name, rate.perSecond(), burst, limit.windows);
         }
         Map<Outcome, Period> retention = new EnumMap<>(Outcome.class);
         for (Outcome outcome : Outcome.values()) {
@@ -758,19 +670,12 @@ public final class TaskEngineBuilder {
             setting(values, "retry", Retry.class),
             setting(values, "batch-deadline", Duration.class),
             setting(values, "poll-interval", Duration.class),
-            rateLimit,
-            retention,
-            setting(values, "breaker", Breaker.class),
-            setting(values, "dead-letters", DeadLetterPolicy.class)
+            retention
         );
-        return topic.pattern
-            ? new TopicTemplate<>(topic.name, topic.type, topic.handler, codec, settings, topic.spec.resources)
-            : new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
+        return new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
 
-    private void splitOverrides(Set<String> topics, Set<String> limits,
-                                Map<String, Map<String, String>> topicOverrides, Map<String, Map<String, String>> limitOverrides,
-                                List<String> problems) {
+    private void splitOverrides(Set<String> topics, Map<String, Map<String, String>> topicOverrides, List<String> problems) {
         for (Map.Entry<String, String> override : new TreeMap<>(overrides).entrySet()) {
             String key = override.getKey();
             if (key.startsWith("topics.")) {
@@ -781,27 +686,40 @@ public final class TaskEngineBuilder {
                 } else {
                     topicOverrides.computeIfAbsent(topic, ignored -> new LinkedHashMap<>()).put(rest.substring(topic.length() + 1), override.getValue());
                 }
-            } else if (key.startsWith("limits.")) {
-                String rest = key.substring("limits.".length());
-                String limit = longestPrefix(limits, rest);
-                if (limit == null) {
-                    problems.add("Override " + key + " names an unknown limit; known limits: " + limits);
-                } else {
-                    limitOverrides.computeIfAbsent(limit, ignored -> new LinkedHashMap<>()).put(rest.substring(limit.length() + 1), override.getValue());
-                }
             } else {
-                problems.add("Unknown override " + key + "; overrides start with topics. or limits.");
+                problems.add("Unknown override " + key + "; overrides start with topics.");
             }
         }
+    }
+
+    /**
+     * The extension settings: those the extensions declare, and those any topic or defaults set.
+     * One name means one key; an extension's name can't be the engine's own.
+     */
+    private Map<String, SettingKey<?>> settingKeys(Globals global, Collection<TopicSpec<?>> topics, List<String> problems) {
+        Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
+        List<Map<String, SettingKey<?>>> sources = new ArrayList<>();
+        for (Extension extension : extensions) {
+            Map<String, SettingKey<?>> declared = new LinkedHashMap<>();
+            extension.settings().forEach(key -> declared.put(key.name(), key));
+            sources.add(declared);
+        }
+        sources.add(global.defaults.keys);
+        topics.forEach(topic -> sources.add(topic.spec.keys));
+        for (Map<String, SettingKey<?>> source : sources) {
+            source.forEach((name, key) -> {
+                SettingKey<?> other = keys.putIfAbsent(name, key);
+                if (other != null && !other.equals(key)) {
+                    problems.add("Two settings named " + name + ": " + other + " and " + key);
+                }
+            });
+        }
+        return keys;
     }
 
     /** A setting every topic has, from the defaults if nothing else set it. */
     private static <V> V setting(Map<String, Object> values, String key, Class<V> type) {
         return type.cast(Objects.requireNonNull(values.get(key), key));
-    }
-
-    private static LimitSpec limitSpec(Globals global, String name) {
-        return Objects.requireNonNull(global.limits.get(name), name);
     }
 
     private static @Nullable String longestPrefix(Set<String> names, String key) {
@@ -819,11 +737,6 @@ public final class TaskEngineBuilder {
             }
             case "ordering" -> Ordering.valueOf(value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
             case "batch-deadline", "poll-interval" -> duration(value);
-            case "breaker" -> switch (value.trim().toLowerCase(Locale.ROOT)) {
-                case "off" -> Breaker.off();
-                case "on" -> Breaker.standard();
-                default -> throw new IllegalArgumentException("breaker is on or off");
-            };
             case "retry.max-attempts" -> value.trim().equalsIgnoreCase("forever") ? retry.forever() : retry.attempts(Integer.parseInt(value.trim()));
             case "retry.give-up-after" -> Set.of("never", "forever").contains(value.trim().toLowerCase(Locale.ROOT))
                 ? retry.forever() : retry.giveUpAfter(duration(value));
@@ -834,7 +747,7 @@ public final class TaskEngineBuilder {
                     yield value.trim().equalsIgnoreCase("forever") ? "forever" : period(value);
                 }
                 throw new IllegalArgumentException("unknown setting; known: batch-size, concurrency, ordering, batch-deadline, "
-                    + "poll-interval, breaker (on or off), retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");
+                    + "poll-interval, retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");
             }
         };
     }
@@ -876,8 +789,6 @@ public final class TaskEngineBuilder {
     private static String describe(Object value) {
         return switch (value) {
             case Retry retry -> retry.describe();
-            case Breaker breaker -> breaker.describe();
-            case DeadLetterPolicy policy -> policy.describe();
             default -> String.valueOf(value);
         };
     }

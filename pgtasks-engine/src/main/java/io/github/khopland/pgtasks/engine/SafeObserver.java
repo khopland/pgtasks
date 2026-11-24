@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -43,16 +42,6 @@ final class SafeObserver implements TaskObserver {
                 run(observation::close);
             }
         };
-    }
-
-    @Override
-    public void breaker(TopicRef<?> topic, boolean open) {
-        run(() -> observer.breaker(topic, open));
-    }
-
-    @Override
-    public void limitWait(TopicRef<?> topic, String limit, Duration wait) {
-        run(() -> observer.limitWait(topic, limit, wait));
     }
 
     @Override

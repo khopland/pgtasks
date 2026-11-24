@@ -41,7 +41,6 @@ final class QueueDesign implements Design {
         try (StoreTransaction transaction = store.begin()) {
             topic = store.createTopic(transaction, "bench");
             node = store.registerNode(transaction, "bench", "bench");
-            store.ensureAdmission(transaction, "bench", 1_000_000);
             transaction.commit();
         }
     }
@@ -92,10 +91,9 @@ final class QueueDesign implements Design {
     }
 
     @Override
-    public List<Claimed> claim(int ignored, Ordering ordering, int limit, boolean admission) throws SQLException {
+    public List<Claimed> claim(int ignored, Ordering ordering, int limit) throws SQLException {
         try (StoreTransaction transaction = store.begin()) {
-            TaskStore.Claim claim = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit,
-                admission ? new TaskStore.Admission("bench", 1e9, 1_000_000) : null));
+            TaskStore.Claim claim = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit));
             transaction.commit();
             return claim.tasks().stream().map(task -> new Claimed(task.id(), task.attempt())).toList();
         }

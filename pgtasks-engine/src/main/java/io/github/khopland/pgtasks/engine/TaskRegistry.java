@@ -2,12 +2,9 @@ package io.github.khopland.pgtasks.engine;
 
 import java.util.List;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchHandler;
-import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.PayloadCodec;
-import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.TaskHandler;
 import io.github.khopland.pgtasks.TopicRef;
 
@@ -75,50 +72,6 @@ public interface TaskRegistry {
         return topics(topics, handler, options -> { });
     }
 
-    /**
-     * Every topic whose name matches the pattern, such as {@code assessment-*}, including topics
-     * created later at runtime, by any node or in SQL: they run with this handler and these
-     * options. A star matches any run of characters, none included. A pattern never creates or
-     * destroys topics, and a topic that matches a pattern and is also registered by name runs as
-     * the named one. Overrides address the pattern, as in {@code topics.assessment-*.concurrency}.
-     */
-    <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler, Consumer<TopicOptions> options);
-
-    default <T> TaskRegistry topicsMatching(String pattern, Class<T> type, BatchHandler<T> handler) {
-        return topicsMatching(pattern, type, handler, options -> { });
-    }
-
     /** How payloads of this type are stored, for this module's topics and pushes. */
     <T> TaskRegistry codec(Class<T> type, PayloadCodec<T> codec);
-
-    /**
-     * Turns an application event into a task, so the publisher needs no dependency on the topic.
-     * The push happens when the event is published, inside the publisher's transaction, so the
-     * event's changes and the task commit or roll back together; an event published outside a
-     * transaction pushes on its own. With Spring, the starter routes every application event.
-     *
-     * @param route the push for an event, or null to push nothing for it
-     */
-    <E> TaskRegistry onEvent(Class<E> event, Function<? super E, Push<?>> route);
-
-    /**
-     * Pushes a task to one of this module's topics on a schedule, the same identifier and payload
-     * each time. Every node that registers the topic records its schedules when it starts, and the
-     * housekeeping leader pushes them when due, once each across the cluster. A run missed while
-     * no node was up is made up once, not once per missed time. Each push supersedes the last one
-     * if that is still waiting; see {@link Recurring#insertion()}.
-     *
-     * <p>A node that starts replaces the topic's schedules with its own, so the schedules are
-     * those of whichever node started last. During a rolling deploy, an old node that restarts
-     * removes a schedule the new version added, until a new node starts again; a schedule the new
-     * version dropped comes back the same way. So change schedules in two steps: add new ones in
-     * one release, and remove old ones, if needed, in the next.
-     *
-     * @param name unique within the topic
-     */
-    default <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload) {
-        return recurring(topic, name, cron, identifier, payload, Insertion.SUPERSEDE);
-    }
-
-    <T> TaskRegistry recurring(TopicRef<T> topic, String name, Cron cron, String identifier, T payload, Insertion insertion);
 }

@@ -71,9 +71,10 @@ class TopicsCreatedOnPushTest {
         TaskEngine producer = fixture.create("producer", List.of(), settings -> settings).prepare();
         TaskEngine operator = fixture.create("operator", List.of(), settings -> settings).prepare();
         producer.tasks().independently().push(FRESH, "a", "x");
-        operator.admin().cancel(FRESH.name(), TaskQuery.ALL);
+        fixture.database.execute("DELETE FROM pgtasks.queue");
+        fixture.database.execute("DELETE FROM pgtasks.task");
         operator.admin().deleteTopic(FRESH.name());
-        operator.admin().createTopic(FRESH.name());
+        fixture.createTopics(FRESH.name());
 
         // The cached id is stale: this push fails on the foreign key, and drops it.
         assertThatThrownBy(() -> producer.tasks().independently().push(FRESH, "b", "y")).isInstanceOf(TaskStorageException.class);

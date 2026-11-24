@@ -6,7 +6,6 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.Period;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -21,23 +20,18 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.FailureGroup;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -52,7 +46,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * Tasks in memory, for running an app locally without a database and for fast tests. It passes
  * the same TCK as the Postgres store, so ordering, insertion policies, fencing, junctures,
- * retries and rate admission behave the same way. Several engines in one JVM can share one
+ * and retries behave the same way. Several engines in one JVM can share one
  * instance; {@link #notifier()} gives each of them in-process wake-ups.
  *
  * <p>Limits: nothing survives a restart; wake-ups only reach engines in this JVM; and the store
@@ -71,17 +65,13 @@ public final class InMemoryTaskStore implements TaskStore {
 
     private final InstantSource clock;
     private final ReentrantLock lock = new ReentrantLock(true);
-    private final List<Notifier.Listener> listeners = new CopyOnWriteArrayList<>();
+    /** Each engine's listener, with the channels it listens to. */
+    private final Map<Notifier.Listener, Set<String>> listeners = new ConcurrentHashMap<>();
 
     private final Map<Integer, Rows.Topic> topics = new LinkedHashMap<>();
-    private final Map<Integer, Rows.Schedule> schedules = new TreeMap<>();
-    private int nextSchedule = 1;
     private final Map<Integer, Rows.Node> nodes = new HashMap<>();
     private final TreeMap<Long, Rows.Task> tasks = new TreeMap<>();
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
-    private final List<Rows.Attempt> attempts = new ArrayList<>();
-    private final Map<String, Rows.Bucket> buckets = new HashMap<>();
-    private final Map<String, LimitOverride> limitOverrides = new TreeMap<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
     private final Map<String, Held> leases = new HashMap<>();
     private int nextTopic = 1, nextNode = 1;
@@ -107,9 +97,9 @@ public final class InMemoryTaskStore implements TaskStore {
             private @Nullable Listener listener;
 
             @Override
-            public void start(Listener listener) {
+            public void start(Listener listener, Set<String> channels) {
                 this.listener = Objects.requireNonNull(listener);
-                listeners.add(listener);
+                listeners.put(listener, Set.copyOf(channels));
             }
 
             @Override
@@ -133,20 +123,27 @@ public final class InMemoryTaskStore implements TaskStore {
 
     void notifyReady(Set<Integer> topicIds) {
         for (int topicId : topicIds) {
-            listeners.forEach(listener -> listener.ready(topicId));
+            listeners.keySet().forEach(listener -> listener.ready(topicId));
         }
     }
 
-    void notifyTopics(Set<String> names) {
-        for (String name : names) {
-            listeners.forEach(listener -> listener.topicChanged(name));
+    /** Like LISTEN/NOTIFY: each message reaches the listeners of its channel, once committed. */
+    void deliver(Set<MemoryTransaction.Message> messages) {
+        for (MemoryTransaction.Message message : messages) {
+            listeners.forEach((listener, channels) -> {
+                if (channels.contains(message.channel())) {
+                    listener.notified(message.channel(), message.payload());
+                }
+            });
         }
     }
 
-    void notifyLimits(Set<String> names) {
-        for (String name : names) {
-            listeners.forEach(listener -> listener.limitChanged(name));
+    @Override
+    public void notify(StoreTransaction transaction, String channel, String payload) {
+        if (!Notifier.CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
+            throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
         }
+        memory(transaction).send(channel, payload);
     }
 
     private static MemoryTransaction memory(StoreTransaction transaction) {
@@ -175,29 +172,15 @@ public final class InMemoryTaskStore implements TaskStore {
             return existing.getAsInt();
         }
         int id = nextTopic++;
-        memory.put(topics, id, new Rows.Topic(id, name, now(), false, null));
-        memory.topicChanged(name);
+        memory.put(topics, id, new Rows.Topic(id, name, now(), null));
+        memory.send(Notifier.TOPIC, name);
         return id;
     }
 
     @Override
     public List<TopicInfo> topics(StoreTransaction transaction) {
         memory(transaction);
-        return topics.values().stream().map(topic -> new TopicInfo(topic.id(), topic.name(), topic.paused())).toList();
-    }
-
-    @Override
-    public boolean setPaused(StoreTransaction transaction, String name, boolean paused) {
-        MemoryTransaction memory = memory(transaction);
-        Optional<Rows.Topic> topic = topics.values().stream().filter(candidate -> candidate.name().equals(name)).findFirst();
-        if (topic.isEmpty()) {
-            return false;
-        }
-        if (topic.get().paused() != paused) {
-            memory.put(topics, topic.get().id(), topic.get().withPaused(paused));
-            memory.topicChanged(name);
-        }
-        return true;
+        return topics.values().stream().map(topic -> new TopicInfo(topic.id(), topic.name())).toList();
     }
 
     @Override
@@ -228,10 +211,6 @@ public final class InMemoryTaskStore implements TaskStore {
         for (int index = 0; index < newTasks.size(); index++) {
             NewTask task = newTasks.get(index);
             boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
-            if (superseded && insertion == Insertion.DELETE) {
-                results.add(new Pushed(task.identifier(), Pushed.Status.REDUNDANT, null));
-                continue;
-            }
             long id = nextTask++;
             Rows.Task row = new Rows.Task(topicId, id, task.identifier(), task.reference(), task.payload(), task.payloadType(),
                 task.parentId(), task.rootId(), now, null, null, null, null, 0, null, task.headers());
@@ -262,22 +241,15 @@ public final class InMemoryTaskStore implements TaskStore {
                 if (before.contains(old.taskId()) && old.topicId() == topicId
                     && queuedIdentifiers.contains(old.identifier()) && covered.contains(old.state())) {
                     memory.remove(queue, old.taskId());
-                    if (insertion == Insertion.DELETE) {
-                        deleteTask(memory, old.taskId());
-                    } else {
-                        memory.put(tasks, old.taskId(), task(old.taskId()).redundant(now));
-                    }
+                    memory.put(tasks, old.taskId(), task(old.taskId()).redundant(now));
                 }
             }
             if (insertion != Insertion.SUPERSEDE) {
                 for (Rows.Task old : List.copyOf(tasks.values())) {
                     if (beforeTasks.contains(old.id()) && old.topicId() == topicId && queuedIdentifiers.contains(old.identifier())
-                        && old.outcome() != null && !queue.containsKey(old.id())) {
-                        if (insertion == Insertion.DELETE) {
-                            deleteTask(memory, old.id());
-                        } else if (Set.of("succeeded", "filtered", "failed").contains(old.outcome())) {
-                            memory.put(tasks, old.id(), old.replaced());
-                        }
+                        && old.outcome() != null && !queue.containsKey(old.id())
+                        && Set.of("succeeded", "filtered", "failed").contains(old.outcome())) {
+                        memory.put(tasks, old.id(), old.replaced());
                     }
                 }
             }
@@ -286,57 +258,15 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) {
-        MemoryTransaction memory = memory(transaction);
-        Set<String> complete = new HashSet<>();
-        for (Set<String> group : groups) {
-            if (group.stream().allMatch(identifier -> counts(topicId, counts, identifier))) {
-                complete.addAll(group);
-            }
-        }
-        Set<String> released = new LinkedHashSet<>();
-        for (Rows.Queued row : List.copyOf(queue.values())) {
-            if (row.topicId() == topicId && row.state() == State.SUSPENDED && complete.contains(row.identifier())) {
-                putQueued(memory, row.with(State.READY, null, row.attempt(), null, null));
-                released.add(row.identifier());
-            }
-        }
-        return released;
-    }
-
-    private boolean counts(int topicId, Junction.Counts counts, String identifier) {
-        return switch (counts) {
-            case SUSPENDED -> queue.values().stream().anyMatch(row ->
-                row.topicId() == topicId && row.identifier().equals(identifier) && row.state() == State.SUSPENDED);
-            case ANY -> tasks.values().stream().anyMatch(row ->
-                row.topicId() == topicId && row.identifier().equals(identifier)
-                && !"redundant".equals(row.outcome()) && !"cancelled".equals(row.outcome()));
-        };
-    }
-
-    @Override
     public Claim claim(StoreTransaction transaction, ClaimRequest request) {
         MemoryTransaction memory = memory(transaction);
         Instant now = now();
-        Admission admission = request.admission();
-        int limit = request.limit();
-        double available = 0;
-        if (admission != null) {
-            Rows.Bucket bucket = bucket(memory, admission.name(), admission.burst());
-            available = refilled(bucket, admission, now);
-            int permits = (int) Math.min(limit, Math.floor(available));
-            if (permits < 1) {
-                long waitNanos = (long) Math.ceil((1 - available) / admission.perSecond() * 1_000_000_000L);
-                return new Claim(List.of(), Duration.ofNanos(Math.max(waitNanos, 1_000_000L)));
-            }
-            limit = permits;
-        }
         Set<State> blocking = blocking(request.ordering());
         List<Rows.Queued> picked = queue.values().stream()
             .filter(row -> row.topicId() == request.topicId() && row.state() == State.READY)
             .filter(row -> blocking == null || !blocked(row, blocking))
             .sorted(Comparator.comparingInt(Rows.Queued::priority).reversed().thenComparingLong(Rows.Queued::taskId))
-            .limit(limit)
+            .limit(request.limit())
             .toList();
         List<ClaimedTask> claimed = new ArrayList<>(picked.size());
         for (Rows.Queued row : picked) {
@@ -346,12 +276,7 @@ public final class InMemoryTaskStore implements TaskStore {
             claimed.add(new ClaimedTask(row.taskId(), row.identifier(), active.attempt(), row.priority(), task.payload(), task.payloadType(),
                 task.reference(), task.parentId(), task.rootId(), task.createdAt(), now, task.headers(), row.failures(), row.firstFailedAt()));
         }
-        if (admission != null && !claimed.isEmpty()) {
-            Rows.Bucket bucket = Objects.requireNonNull(buckets.get(admission.name()), "bucket");
-            Instant refilledAt = bucket.refilledAt().isAfter(now) ? bucket.refilledAt() : now;
-            memory.put(buckets, admission.name(), new Rows.Bucket(admission.name(), Math.max(0, available - claimed.size()), refilledAt));
-        }
-        return claimed.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(claimed), null);
+        return claimed.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(claimed));
     }
 
     private static @Nullable Set<State> blocking(Ordering ordering) {
@@ -369,20 +294,6 @@ public final class InMemoryTaskStore implements TaskStore {
             && other.identifier().equals(candidate.identifier())
             && other.taskId() != candidate.taskId()
             && (other.state() == State.ACTIVE || (other.taskId() < candidate.taskId() && blocking.contains(other.state()))));
-    }
-
-    private Rows.Bucket bucket(MemoryTransaction memory, String name, int burst) {
-        Rows.Bucket bucket = buckets.get(name);
-        if (bucket == null) {
-            bucket = new Rows.Bucket(name, burst, now());
-            memory.put(buckets, name, bucket);
-        }
-        return bucket;
-    }
-
-    private static double refilled(Rows.Bucket bucket, Admission admission, Instant now) {
-        double elapsed = Math.max(0, Duration.between(bucket.refilledAt(), now).toNanos() / 1e9);
-        return Math.min(admission.burst(), bucket.tokens() + admission.perSecond() * elapsed);
     }
 
     @Override
@@ -446,13 +357,6 @@ public final class InMemoryTaskStore implements TaskStore {
                             // The last error stays on the task from the first failure on, as on Postgres.
                             memory.put(tasks, task.id(), task.failed(waiting.error(), attempt));
                         }
-                        if (waiting.error() != null && waiting.counted()) {
-                            // The first attempt and the last ten stay, as on Postgres.
-                            memory.removeIf(attempts, logged -> logged.taskId() == row.taskId() && logged.attempt() > 1
-                                && logged.attempt() <= completion.attempt() - 10);
-                            memory.append(attempts, new Rows.Attempt(topicId, row.taskId(), completion.attempt(), nodeId,
-                                completion.claimedAt() == null ? now : completion.claimedAt(), now, "failed", waiting.error()));
-                        }
                     }
                 }
             }
@@ -497,8 +401,6 @@ public final class InMemoryTaskStore implements TaskStore {
                 Rows.Task task = task(row.taskId());
                 memory.put(tasks, task.id(), task.failed("{\"message\":\"" + (dead ? "Expired " + (row.expiries() + 1)
                     + " times: the node running it stopped every time" : "Expired: the node running it stopped") + "\",\"type\":\"expired\"}", row.attempt()));
-                memory.append(attempts, new Rows.Attempt(row.topicId(), row.taskId(), row.attempt(), row.nodeId(),
-                    row.claimedAt() == null ? now : row.claimedAt(), now, "expired", null));
                 requeued.add(row.topicId());
             }
         }
@@ -561,11 +463,9 @@ public final class InMemoryTaskStore implements TaskStore {
         if (topic == null || tasks.values().stream().anyMatch(task -> task.topicId() == topicId)) {
             return false;
         }
-        schedules.values().stream().filter(schedule -> schedule.topicId() == topicId).map(Rows.Schedule::id).toList()
-            .forEach(id -> memory.remove(schedules, id));
         memory.remove(snapshots, topicId);
         memory.remove(topics, topicId);
-        memory.topicChanged(topic.name());
+        memory.send(Notifier.TOPIC, topic.name());
         return true;
     }
 
@@ -633,35 +533,6 @@ public final class InMemoryTaskStore implements TaskStore {
         return true;
     }
 
-    @Override
-    public void ensureAdmission(StoreTransaction transaction, String name, int burst) {
-        bucket(memory(transaction), name, burst);
-    }
-
-    @Override
-    public List<LimitOverride> limitOverrides(StoreTransaction transaction) {
-        memory(transaction);
-        return List.copyOf(limitOverrides.values());
-    }
-
-    @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
-                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) {
-        MemoryTransaction memory = memory(transaction);
-        if (!buckets.containsKey(name)) {
-            throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
-        }
-        LimitOverride current = limitOverrides.get(name);
-        long version = current == null ? 0 : current.version();
-        if (expectedVersion != null && expectedVersion != version) {
-            return Optional.empty();
-        }
-        LimitOverride changed = new LimitOverride(name, perSecond, burst, until, version + 1, now(), by);
-        memory.put(limitOverrides, name, changed);
-        memory.limitChanged(name);
-        return Optional.of(changed);
-    }
-
     /** A task that must exist, such as the task of a queued row. */
     private Rows.Task task(long id) {
         return Objects.requireNonNull(tasks.get(id), () -> "No task " + id);
@@ -672,10 +543,8 @@ public final class InMemoryTaskStore implements TaskStore {
         return Objects.requireNonNull(topics.get(id), () -> "No topic " + id);
     }
 
-    /** Deletes a task and its attempt log. */
     private void deleteTask(MemoryTransaction memory, long taskId) {
         memory.remove(tasks, taskId);
-        memory.removeIf(attempts, attempt -> attempt.taskId() == taskId);
     }
 
     @Override
@@ -716,30 +585,6 @@ public final class InMemoryTaskStore implements TaskStore {
             .toList();
     }
 
-    @Override
-    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
-        MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> cancelled = unfinished(topicId, query, EnumSet.complementOf(EnumSet.of(State.ACTIVE)), limit);
-        Instant now = now();
-        for (Rows.Queued row : cancelled) {
-            memory.remove(queue, row.taskId());
-            Rows.Task task = task(row.taskId());
-            memory.put(tasks, task.id(), task.finish("cancelled", task.output(), row.attempt(), now));
-        }
-        if (!cancelled.isEmpty()) {
-            memory.ready(topicId);
-        }
-        return cancelled.stream().map(Rows.Queued::taskId).toList();
-    }
-
-    @Override
-    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
-        MemoryTransaction memory = memory(transaction);
-        List<Rows.Queued> due = unfinished(topicId, query, EnumSet.of(State.SCHEDULED, State.RETRYING), limit);
-        due.forEach(row -> putQueued(memory, row.with(State.READY, null, row.attempt(), null, null)));
-        return due.stream().map(Rows.Queued::taskId).toList();
-    }
-
     /** The topic's unfinished tasks in these states that match, lowest id first. */
     private List<Rows.Queued> unfinished(int topicId, TaskQuery query, Set<State> states, int limit) {
         return queue.values().stream()
@@ -752,59 +597,6 @@ public final class InMemoryTaskStore implements TaskStore {
             .sorted(Comparator.comparingLong(Rows.Queued::taskId))
             .limit(limit)
             .toList();
-    }
-
-    @Override
-    public void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> specs) {
-        MemoryTransaction memory = memory(transaction);
-        Map<String, Rows.Schedule> existing = new HashMap<>();
-        schedules.values().stream().filter(row -> row.topicId() == topicId).forEach(row -> existing.put(row.name(), row));
-        Set<String> wanted = new HashSet<>();
-        for (ScheduleSpec spec : specs) {
-            wanted.add(spec.name());
-            Rows.Schedule old = existing.get(spec.name());
-            boolean same = old != null && old.cron().equals(spec.cron()) && old.zone().equals(spec.zone());
-            int id = old != null ? old.id() : nextSchedule++;
-            memory.put(schedules, id, new Rows.Schedule(id, topicId, spec.name(), spec.identifier(), spec.cron(), spec.zone(),
-                spec.insertion().name(), spec.payload(), spec.payloadType(), old != null && same ? old.nextRunAt() : spec.nextRunAt(),
-                old == null ? null : old.lastRunAt()));
-        }
-        existing.values().stream().filter(row -> !wanted.contains(row.name())).forEach(row -> memory.remove(schedules, row.id()));
-    }
-
-    @Override
-    public List<Schedule> schedules(StoreTransaction transaction) {
-        memory(transaction);
-        return schedules.values().stream()
-            .sorted(Comparator.comparing((Rows.Schedule row) -> topic(row.topicId()).name()).thenComparing(Rows.Schedule::name))
-            .map(this::schedule)
-            .toList();
-    }
-
-    @Override
-    public List<Schedule> dueSchedules(StoreTransaction transaction, int limit) {
-        memory(transaction);
-        Instant now = now();
-        return schedules.values().stream()
-            .filter(row -> !row.nextRunAt().isAfter(now))
-            .sorted(Comparator.comparing(Rows.Schedule::nextRunAt))
-            .limit(limit)
-            .map(this::schedule)
-            .toList();
-    }
-
-    @Override
-    public void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) {
-        MemoryTransaction memory = memory(transaction);
-        Rows.Schedule row = schedules.get(scheduleId);
-        if (row != null) {
-            memory.put(schedules, scheduleId, row.fired(firedAt, nextRunAt));
-        }
-    }
-
-    private Schedule schedule(Rows.Schedule row) {
-        return new Schedule(row.id(), row.topicId(), topic(row.topicId()).name(), row.name(), row.identifier(), row.cron(), row.zone(),
-            Insertion.valueOf(row.insertion()), row.payload(), row.payloadType(), row.nextRunAt(), row.lastRunAt());
     }
 
     /** The topic's dead letters, lowest id first: the given ones, or all, after an id. */
@@ -905,48 +697,6 @@ public final class InMemoryTaskStore implements TaskStore {
         return dead.size();
     }
 
-    @Override
-    public boolean claimRevival(StoreTransaction transaction, int topicId, String version) {
-        MemoryTransaction memory = memory(transaction);
-        Rows.Topic topic = topics.get(topicId);
-        if (topic == null || Objects.equals(topic.revivedVersion(), version)) {
-            return false;
-        }
-        memory.put(topics, topicId, topic.revivedFor(version));
-        return true;
-    }
-
-    @Override
-    public boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) {
-        MemoryTransaction memory = memory(transaction);
-        Rows.Topic topic = topics.get(topicId);
-        Instant now = now();
-        if (topic == null || (topic.reviveSweptAt() != null && topic.reviveSweptAt().isAfter(now.minus(every)))) {
-            return false;
-        }
-        memory.put(topics, topicId, topic.sweptAt(now));
-        return true;
-    }
-
-    @Override
-    public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) {
-        memory(transaction);
-        Map<String, List<Rows.Queued>> groups = new HashMap<>();
-        queue.values().stream()
-            .filter(row -> row.topicId() == topicId && row.failures() > 0)
-            .forEach(row -> groups.computeIfAbsent(errorKey(task(row.taskId()).error()), ignored -> new ArrayList<>()).add(row));
-        return groups.entrySet().stream()
-            .map(group -> {
-                Rows.Queued example = group.getValue().stream().min(Comparator.comparingLong(Rows.Queued::taskId)).orElseThrow();
-                Instant oldest = group.getValue().stream().map(row -> Objects.requireNonNull(row.firstFailedAt())).min(Comparator.naturalOrder()).orElseThrow();
-                return new FailureGroup(group.getKey(), group.getValue().size(), oldest, example.taskId(),
-                    jsonField(task(example.taskId()).error(), "message"));
-            })
-            .sorted(Comparator.comparingLong(FailureGroup::tasks).reversed().thenComparing(FailureGroup::error))
-            .limit(limit)
-            .toList();
-    }
-
     /** The error's type, or its message if it has none, as Postgres groups them. */
     private static String errorKey(@Nullable String error) {
         String type = jsonField(error, "type");
@@ -976,16 +726,6 @@ public final class InMemoryTaskStore implements TaskStore {
                 leases.entrySet().stream()
                     .filter(lease -> lease.getValue().nodeId() == node.id() && !lease.getValue().until().isBefore(now))
                     .map(Map.Entry::getKey).sorted().toList()))
-            .toList();
-    }
-
-    @Override
-    public List<AttemptView> attempts(StoreTransaction transaction, long taskId) {
-        memory(transaction);
-        return attempts.stream()
-            .filter(attempt -> attempt.taskId() == taskId)
-            .sorted(Comparator.comparingInt(Rows.Attempt::attempt).thenComparing(Rows.Attempt::finishedAt))
-            .map(attempt -> new AttemptView(attempt.taskId(), attempt.attempt(), attempt.nodeId(), attempt.result(), attempt.error()))
             .toList();
     }
 

@@ -8,7 +8,7 @@ import java.sql.Statement;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
-import io.github.khopland.pgtasks.test.tck.JunctionTck;
+import io.github.khopland.pgtasks.test.tck.PollOrderingTck;
 import io.github.khopland.pgtasks.test.tck.StoreFixture;
 
 import com.zaxxer.hikari.HikariDataSource;
@@ -19,12 +19,12 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The fan-in TCK on a database whose default isolation is REPEATABLE READ, as a pool's
+ * The ordering TCK on a database whose default isolation is REPEATABLE READ, as a pool's
  * transactionIsolation or a role's default_transaction_isolation can make it. The store pins its
- * own transactions to READ COMMITTED; without that, two parts completing at once each miss the
- * other and the group stays suspended.
+ * own transactions to READ COMMITTED; without that, a claim's snapshot would miss pushes and
+ * claims that committed after its transaction began.
  */
-class RepeatableReadDefaultTest extends JunctionTck {
+class RepeatableReadDefaultTest extends PollOrderingTck {
 
     @RegisterExtension
     static PostgresExtension postgres = PostgresExtension.migrated(database -> {

@@ -24,27 +24,10 @@ final class Rows {
     }
 
     /** @param retention per outcome, or null if no node set it */
-    record Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention,
-                 @Nullable String revivedVersion, @Nullable Instant reviveSweptAt) {
-
-        Topic(int id, String name, Instant createdAt, boolean paused, @Nullable Map<Outcome, Period> retention) {
-            this(id, name, createdAt, paused, retention, null, null);
-        }
+    record Topic(int id, String name, Instant createdAt, @Nullable Map<Outcome, Period> retention) {
 
         Topic withRetention(Map<Outcome, Period> retention) {
-            return new Topic(id, name, createdAt, paused, Map.copyOf(retention), revivedVersion, reviveSweptAt);
-        }
-
-        Topic withPaused(boolean paused) {
-            return new Topic(id, name, createdAt, paused, retention, revivedVersion, reviveSweptAt);
-        }
-
-        Topic revivedFor(String version) {
-            return new Topic(id, name, createdAt, paused, retention, version, reviveSweptAt);
-        }
-
-        Topic sweptAt(Instant now) {
-            return new Topic(id, name, createdAt, paused, retention, revivedVersion, now);
+            return new Topic(id, name, createdAt, Map.copyOf(retention));
         }
     }
 
@@ -95,14 +78,6 @@ final class Rows {
         }
     }
 
-    record Schedule(int id, int topicId, String name, String identifier, String cron, String zone, String insertion,
-                    @Nullable String payload, @Nullable String payloadType, Instant nextRunAt, @Nullable Instant lastRunAt) {
-
-        Schedule fired(Instant at, Instant next) {
-            return new Schedule(id, topicId, name, identifier, cron, zone, insertion, payload, payloadType, next, at);
-        }
-    }
-
     record Queued(
         long taskId,
         int topicId,
@@ -139,12 +114,5 @@ final class Rows {
         Queued withoutFailures() {
             return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null, 0);
         }
-    }
-
-    record Attempt(int topicId, long taskId, int attempt, @Nullable Integer nodeId, Instant startedAt, Instant finishedAt, String result,
-                   @Nullable String error) {
-    }
-
-    record Bucket(String name, double tokens, Instant refilledAt) {
     }
 }

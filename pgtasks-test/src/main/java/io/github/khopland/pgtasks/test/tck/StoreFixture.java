@@ -12,7 +12,6 @@ import java.util.stream.IntStream;
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -112,7 +111,7 @@ public abstract class StoreFixture implements AutoCloseable {
     }
 
     public List<ClaimedTask> claim(int topic, int node, Ordering ordering, int limit) throws SQLException {
-        return inTransaction(transaction -> store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit, null)).tasks());
+        return inTransaction(transaction -> store().claim(transaction, new TaskStore.ClaimRequest(topic, node, ordering, limit)).tasks());
     }
 
     public List<ClaimedTask> claim(int topic, int node) throws SQLException {
@@ -191,10 +190,6 @@ public abstract class StoreFixture implements AutoCloseable {
         } catch (SQLException e) {
             throw new IllegalStateException(e);
         }
-    }
-
-    public List<AttemptView> attempts(long task) throws SQLException {
-        return inTransaction(transaction -> store().attempts(transaction, task));
     }
 
     public QueueCounts counts(int topic) throws SQLException {

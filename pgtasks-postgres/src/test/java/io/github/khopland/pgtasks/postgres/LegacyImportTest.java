@@ -84,7 +84,7 @@ class LegacyImportTest {
         try (StoreTransaction transaction = store.begin()) {
             int topic = store.findTopic(transaction, "assessment").orElseThrow();
             int node = store.registerNode(transaction, "importer-test", null);
-            List<TaskStore.ClaimedTask> claimed = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10, null)).tasks();
+            List<TaskStore.ClaimedTask> claimed = store.claim(transaction, new TaskStore.ClaimRequest(topic, node, Ordering.FIFO, 10)).tasks();
             assertThat(claimed).extracting(TaskStore.ClaimedTask::identifier).containsExactly("p1", "p2", "p7");
             transaction.rollback();
         }

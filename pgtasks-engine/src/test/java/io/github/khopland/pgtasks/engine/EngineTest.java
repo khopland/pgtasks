@@ -20,7 +20,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.Pushed;
@@ -206,40 +205,10 @@ class EngineTest {
         engine.stop(Duration.ofMillis(500));
 
         // The handler's work was fine and the database will be again: like a batch cut short by
-        // stop, the task goes back without a counted attempt or a failure the breaker would see.
+        // stop, the task goes back without a counted attempt or a failure.
         assertThat(view(tester, id).state()).isIn("retrying", "ready");
         assertThat(view(tester, id).attempt()).isZero();
         assertThat(view(tester, id).failures()).isZero();
-    }
-
-    @Test
-    @DisplayName("Fan-in: parts release the merge task once every part has arrived")
-    void junction_releases_the_merge_once_every_part_arrived() throws Exception {
-        TopicRef<String> parts = TopicRef.of("parts", String.class);
-        TopicRef<String> merge = TopicRef.of("merge", String.class);
-        List<String> merged = new CopyOnWriteArrayList<>();
-        TaskEngine engine = engines.start("node-a", List.of(
-            Topic.of(parts, batch -> batch.decide(task -> {
-                // Each part waits in "merge" for its sibling; the group is both parts' identifiers.
-                task.push(merge, Insertion.APPEND, Creation.of(task.identifier(), task.payload()).asSuspended());
-                task.junction(merge, Junction.Counts.SUSPENDED, Set.of(task.payload()));
-                return Decision.success();
-            })),
-            Topic.of(merge, batch -> batch.decide(task -> {
-                merged.add(task.identifier());
-                return Decision.success();
-            }))
-        ));
-        TaskTester tester = engines.tester();
-
-        engine.tasks().independently().push(parts, "left", "right");
-        tester.awaitIdle();
-        assertThat(merged).isEmpty();
-        assertThat(tester.counts(merge).suspended()).isEqualTo(1);
-
-        engine.tasks().independently().push(parts, "right", "left");
-        tester.awaitIdle();
-        assertThat(merged).containsExactlyInAnyOrder("left", "right");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -480,7 +449,7 @@ class EngineTest {
         try (var transaction = engines.store.begin()) {
             int topicId = engines.store.findTopic(transaction, TOPIC.name()).orElseThrow();
             id = engines.store.push(transaction, topicId, Insertion.APPEND, List.of(new TaskStore.NewTask("lost", null, null, null, null, false, 0, null, null, null, Map.of()))).getFirst().id();
-            engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1, null));
+            engines.store.claim(transaction, new TaskStore.ClaimRequest(topicId, engine.nodeId(), Ordering.FIFO, 1));
             transaction.commit();
         }
         assertThat(view(tester, id).state()).isEqualTo("active");

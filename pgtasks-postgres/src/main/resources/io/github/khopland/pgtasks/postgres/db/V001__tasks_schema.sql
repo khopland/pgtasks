@@ -1,5 +1,6 @@
--- pgtasks schema, version 1 (plan section 10). Released with 0.1.0: never edit this file, add
--- V002 instead (docs/operations.md, "Changing the schema"). SchemaFreezeTest holds its checksum.
+-- pgtasks schema, version 1. Not released yet, so it may still change in place. Once released,
+-- never edit it: add V002 instead (docs/operations.md, "Changing the schema"), and pin its
+-- checksum in SchemaFreezeTest.
 --
 -- The small, hot queue table holds unfinished tasks and is the only table polling touches.
 -- The task table is the record of every task, written once at push and once at completion. It is
@@ -15,7 +16,7 @@
 CREATE SCHEMA IF NOT EXISTS ${pgtasks_schema};
 
 -- scheduled: delayed (push delay or later()); doesn't hold back later tasks under SINGULAR.
--- retrying:  backing off after a failure or throttling; holds its place in line.
+-- retrying:  backing off after a failure; holds its place in line.
 -- failed:    dead letter, out of attempts.
 CREATE TYPE ${pgtasks_schema}.queue_state AS ENUM ('scheduled', 'retrying', 'ready', 'active', 'suspended', 'failed');
 CREATE TYPE ${pgtasks_schema}.task_outcome AS ENUM ('succeeded', 'filtered', 'failed', 'redundant', 'recreated');
@@ -32,15 +33,10 @@ CREATE TABLE ${pgtasks_schema}.meta (
 CREATE TABLE ${pgtasks_schema}.topic (
     id          integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        text NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 200),
-    paused      boolean NOT NULL DEFAULT false,
     -- How long finished tasks are kept per outcome, as ISO periods: {"succeeded": "P30D"}. Set by
     -- the nodes that run the topic, so whichever node leads housekeeping applies it. NULL: kept forever.
     retention   jsonb CHECK (jsonb_typeof(retention) = 'object'),
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    -- The application version the dead letters were last revived for, and when they were last
-    -- swept, so a cluster revives them once per version and once per sweep interval.
-    revived_version  text,
-    revive_swept_at  timestamptz
+    created_at  timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE ${pgtasks_schema}.node (
@@ -81,7 +77,7 @@ CREATE TABLE ${pgtasks_schema}.task (
     -- indexes bloat meanwhile, as the sustained-load benchmark showed. 1 % vacuums every 250,000.
     autovacuum_vacuum_scale_factor = 0.01
 );
--- History per identifier: REPLACE, DELETE, junctions that count any task, and recreate.
+-- History per identifier: REPLACE, and recreate.
 CREATE INDEX task_identifier_idx ON ${pgtasks_schema}.task (topic_id, identifier, id);
 CREATE INDEX task_reference_idx ON ${pgtasks_schema}.task (reference) WHERE reference IS NOT NULL;
 CREATE INDEX task_root_idx ON ${pgtasks_schema}.task (root_id) WHERE root_id IS NOT NULL;
@@ -118,13 +114,13 @@ CREATE TABLE ${pgtasks_schema}.queue (
 );
 -- Polling: holds only ready rows, so it stays tiny.
 CREATE INDEX queue_ready_idx ON ${pgtasks_schema}.queue (topic_id, priority DESC, task_id) WHERE state = 'ready';
--- Per-identifier ordering, SUPERSEDE/REPLACE/DELETE and junctures.
+-- Per-identifier ordering, SUPERSEDE and REPLACE.
 CREATE INDEX queue_identifier_idx ON ${pgtasks_schema}.queue (topic_id, identifier, task_id);
 -- Promoting due retries and delayed tasks.
 CREATE INDEX queue_due_idx ON ${pgtasks_schema}.queue (run_at) WHERE state IN ('scheduled', 'retrying');
 -- Requeueing tasks from dead nodes.
 CREATE INDEX queue_active_idx ON ${pgtasks_schema}.queue (node_id) WHERE state = 'active';
--- What is failing, and since when: the failing tasks of a topic, few next to its backlog.
+-- How many tasks are failing, and since when, for the count snapshots: few next to the backlog.
 CREATE INDEX queue_failing_idx ON ${pgtasks_schema}.queue (topic_id, first_failed_at) WHERE failures > 0;
 -- Listing, reviving and discarding a topic's dead letters, which are few next to its backlog.
 CREATE INDEX queue_failed_idx ON ${pgtasks_schema}.queue (topic_id, task_id) WHERE state = 'failed';
@@ -132,60 +128,6 @@ CREATE INDEX queue_failed_idx ON ${pgtasks_schema}.queue (topic_id, task_id) WHE
 -- because most tasks have no key, and because a full index led by topic_id would compete with
 -- queue_identifier_idx in claims whenever the queue's statistics say it is empty.
 CREATE UNIQUE INDEX queue_dedup_idx ON ${pgtasks_schema}.queue (topic_id, dedup_key) WHERE dedup_key IS NOT NULL;
-
--- Append-only log of attempts. Records failed and expired attempts.
-CREATE TABLE ${pgtasks_schema}.attempt (
-    topic_id     integer NOT NULL,
-    task_id      bigint NOT NULL,
-    attempt      integer NOT NULL,
-    node_id      integer,
-    started_at   timestamptz NOT NULL,
-    finished_at  timestamptz NOT NULL DEFAULT now(),
-    result       text NOT NULL,
-    error        jsonb
-);
-CREATE INDEX attempt_task_idx ON ${pgtasks_schema}.attempt (task_id, attempt);
-
--- Strict admission: one token bucket per limit, shared by every node. A claim locks the row,
--- polls at most the available tokens and charges what it got. A node creates the row when it
--- starts with a limit, so it also lists every limit some node has configured.
-CREATE TABLE ${pgtasks_schema}.rate_admission (
-    name         text PRIMARY KEY,
-    tokens       double precision NOT NULL CHECK (tokens >= 0),
-    refilled_at  timestamptz NOT NULL
-);
-
--- Runtime overrides of configured limits (plan section 08). A NULL rate or burst keeps the
--- configured one; with both NULL the limit is back to its configured values. The row stays when
--- reset, so version only grows and can serve as an ETag. Changes are broadcast by NOTIFY
--- <schema>_limit (R__notify_limit.sql), so every node applies them within about a second.
-CREATE TABLE ${pgtasks_schema}.rate_limit (
-    name        text PRIMARY KEY REFERENCES ${pgtasks_schema}.rate_admission (name),
-    rate        double precision CHECK (rate > 0),
-    burst       integer CHECK (burst > 0),
-    until       timestamptz,
-    version     bigint NOT NULL DEFAULT 1,
-    updated_at  timestamptz NOT NULL DEFAULT now(),
-    updated_by  text
-);
-
--- Recurring tasks. The nodes that register a topic write its rows when they start, from their
--- configuration; the housekeeping leader pushes the due ones and moves next_run_at on.
-CREATE TABLE ${pgtasks_schema}.schedule (
-    id            integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    topic_id      integer NOT NULL REFERENCES ${pgtasks_schema}.topic (id),
-    name          text NOT NULL,
-    identifier    text NOT NULL,
-    cron          text NOT NULL,
-    zone          text NOT NULL,
-    insertion     text NOT NULL,
-    payload       text,
-    payload_type  text,
-    next_run_at   timestamptz NOT NULL,
-    last_run_at   timestamptz,
-    UNIQUE (topic_id, name)
-);
-CREATE INDEX schedule_due_idx ON ${pgtasks_schema}.schedule (next_run_at);
 
 -- Queue counts per topic, snapshotted by the housekeeping leader, so dashboards and health
 -- checks don't count live.

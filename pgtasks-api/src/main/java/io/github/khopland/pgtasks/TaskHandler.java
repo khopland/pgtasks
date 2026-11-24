@@ -6,7 +6,7 @@ package io.github.khopland.pgtasks;
  * through {@link Work#push}, committed with the task's completion. Register it with
  * {@code tasks.eachTask(TOPIC, task -> ...)}, or wrap it with {@link BatchHandler#each}.
  *
- * <p>For other decisions (filtered, later, suspended, throttled, unavailable), or to do work once
+ * <p>For other decisions (filtered, later, suspended), or to do work once
  * per batch, write a {@link BatchHandler} and use {@link Batch#decide}.
  */
 @FunctionalInterface

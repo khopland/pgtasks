@@ -14,7 +14,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
@@ -186,41 +185,5 @@ class FailureHandlingTest {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
-    }
-
-    /** Review F3: covering() rebuilt the decisions without the junctions. */
-    @Test
-    @DisplayName("Junctions staged by decided tasks survive when the handler leaves other tasks out")
-    void junctions_survive_a_partial_set_of_decisions() throws Exception {
-        List<String> merged = new CopyOnWriteArrayList<>();
-        engine = TaskEngine.builder()
-            .store(new InMemoryTaskStore())
-            .configure("flow", tasks -> tasks
-                .topic(PARTS, batch -> {
-                    Decisions all = batch.decide(task -> {
-                        if (task.identifier().equals("a")) {
-                            task.junction(MERGE, Junction.Counts.SUSPENDED, Set.of("b"));
-                        }
-                        return Decision.success();
-                    });
-                    // Decide only task a; x is left out and fails.
-                    Decisions.Builder some = Decisions.builder();
-                    all.verdicts().stream().filter(verdict -> verdict.task().identifier().equals("a"))
-                        .forEach(verdict -> some.decide(verdict.task(), verdict.decision(), verdict.downstream(), verdict.junctions()));
-                    return some.build();
-                }, topic -> topic.batchSize(10).retry(Retry.none()))
-                .topic(MERGE, batch -> batch.decide(task -> {
-                    merged.add(task.identifier());
-                    return Decision.success();
-                })))
-            .build()
-            .start();
-        engine.tasks().independently().push(MERGE, Insertion.APPEND, List.of(Creation.of("a", "a").asSuspended(), Creation.of("b", "b").asSuspended()));
-        engine.admin().pause("parts");
-        engine.tasks().independently().push(PARTS, Insertion.APPEND, List.of(Creation.of("a", "a"), Creation.of("x", "x")));
-        engine.admin().resume("parts");
-        TaskTester.of(engine).awaitIdle();
-
-        assertThat(merged).containsExactlyInAnyOrder("a", "b");
     }
 }

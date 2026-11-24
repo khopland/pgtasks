@@ -137,8 +137,8 @@ class MilestoneOneTest {
         await("the failed first attempt", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE topic = 'notify' AND state = 'retrying'") == 2);
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).as("publications").isZero();
         assertThat(tasksIn(Slice.ARCHIVE)).as("child tasks").isZero();
-        assertThat(database.rows("SELECT DISTINCT result, error->>'message' FROM pgtasks.attempt"))
-            .containsExactly(List.of("failed", "Simulated failure while publishing"));
+        assertThat(database.rows("SELECT DISTINCT error->>'message' FROM pgtasks.task WHERE error IS NOT NULL"))
+            .containsExactly(List.of("Simulated failure while publishing"));
 
         fixture.makeDue();
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
@@ -182,7 +182,7 @@ class MilestoneOneTest {
         fixture.awaitQueueEmpty(Duration.ofSeconds(10));
 
         assertThat(tasksIn(Slice.NOTIFY)).as("notices: only node B's").isEqualTo(1);
-        assertThat(database.rows("SELECT result, node_id FROM pgtasks.attempt WHERE result = 'expired'")).containsExactly(List.of("expired", nodeA.nodeId()));
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task WHERE error->>'type' = 'expired'")).as("node A's task expired").isOne();
         assertThat(fixture.count("SELECT count(*) FROM published_feed")).isEqualTo(1);
         assertThat(ledger.calls).as("both nodes made the external call").hasValue(2);
         assertThat(fixture.count("SELECT count(*) FROM assessment")).as("deduplicated by the stable idempotency key").isEqualTo(1);
@@ -259,44 +259,6 @@ class MilestoneOneTest {
             assertThat(database.rows("SELECT payload, state FROM pgtasks.task_view WHERE identifier = 'x' ORDER BY id"))
                 .containsExactly(List.of("poison", "failed"), List.of("later-1", "ready"), List.of("later-2", "ready"));
         }
-    }
-
-    @Test
-    @DisplayName("5. The hard rate ceiling holds across several workers and pods")
-    void rate_ceiling_holds_across_pods() throws Exception {
-        TopicRef<String> topic = TopicRef.of("limited", String.class);
-        double rate = 20;
-        int burst = 5;
-        List<Instant> claims = new CopyOnWriteArrayList<>();
-        Set<String> nodes = ConcurrentHashMap.newKeySet();
-        for (String node : List.of("pod-a", "pod-b", "pod-c")) {
-            fixture.start(node, List.of(Topic.of(topic, batch -> {
-                nodes.add(node);
-                batch.tasks().forEach(task -> claims.add(task.claimedAt()));
-                return Decisions.all(batch.tasks(), Decision.success());
-            }).with(TopicSettings.defaults().withConcurrency(3).withBatchSize(10).withRateLimit(RateLimit.perSecond("downstream", rate, burst)))));
-        }
-        int total = 70;
-        fixture.engines().getFirst().tasks().independently().push(topic, Insertion.APPEND,
-            IntStream.range(0, total).mapToObj(index -> Creation.of("t" + index, "x")).toList());
-
-        fixture.awaitQueueEmpty(Duration.ofSeconds(30));
-
-        List<Instant> sorted = new ArrayList<>(claims);
-        Collections.sort(sorted);
-        assertThat(sorted).hasSize(total);
-        // Over any window from claim i to claim j: j - i + 1 <= burst + rate * (t_j - t_i), with 50 ms for clock reads.
-        for (int i = 0; i < sorted.size(); i++) {
-            for (int j = i; j < sorted.size(); j++) {
-                double seconds = Duration.between(sorted.get(i), sorted.get(j)).toNanos() / 1e9;
-                assertThat((double) (j - i + 1))
-                    .as("claims %d..%d within %.3f s", i, j, seconds)
-                    .isLessThanOrEqualTo(burst + rate * (seconds + 0.05));
-            }
-        }
-        double elapsed = Duration.between(sorted.getFirst(), sorted.getLast()).toNanos() / 1e9;
-        assertThat(elapsed).as("70 claims at 20/s with a burst of 5 need at least 3.25 s").isGreaterThan((total - burst) / rate - 0.05);
-        assertThat(nodes).as("several pods took part").hasSizeGreaterThan(1);
     }
 
     /** Vetoes notices for blocked persons during review, without writing anything. */
@@ -413,10 +375,6 @@ class MilestoneOneTest {
                         yield Decision.suspended();
                     }
                     case "later" -> Decision.later(Duration.ofHours(1));
-                    case "throttled" -> {
-                        task.push(first, task.identifier(), "never");
-                        yield Decision.throttled(Duration.ofHours(1));
-                    }
                     case "throws" -> throw new IllegalStateException("handler bug for one task");
                     default -> throw new IllegalArgumentException(task.payload());
                 });
@@ -424,7 +382,7 @@ class MilestoneOneTest {
             Topic.of(first, batch -> batch.decide(task -> Decision.success())),
             Topic.of(second, batch -> batch.decide(task -> Decision.success()))
         ), settings -> settings);
-        List<String> kinds = List.of("success-both", "filtered", "success-first", "failed", "suspended", "success-both", "later", "throttled", "success-none", "throws");
+        List<String> kinds = List.of("success-both", "filtered", "success-first", "failed", "suspended", "success-both", "later", "success-none", "throws");
         engine.tasks().independently().push(mixed, Insertion.APPEND, IntStream.range(0, kinds.size())
             .mapToObj(index -> Creation.of(kinds.get(index) + "-" + index, kinds.get(index))).toList());
         engine.start();
@@ -445,7 +403,6 @@ class MilestoneOneTest {
             List.of("suspended", "suspended", 0),
             List.of("success-both", "succeeded", 1),
             List.of("later", "scheduled", 0),
-            List.of("throttled", "retrying", 0),
             List.of("success-none", "succeeded", 1),
             List.of("throws", "retrying", 1)
         );

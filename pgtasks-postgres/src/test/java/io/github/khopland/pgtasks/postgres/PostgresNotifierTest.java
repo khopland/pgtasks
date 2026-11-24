@@ -10,12 +10,14 @@ import java.net.URI;
 import java.sql.DriverManager;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import io.github.khopland.pgtasks.spi.Notifier;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 
@@ -73,6 +75,24 @@ class PostgresNotifierTest {
     }
 
     @Test
+    void a_message_on_a_channel_arrives_once_committed_and_only_on_channels_it_listens_to() throws Exception {
+        start(new PostgresNotifier(database::connect));
+        PostgresTaskStore store = new PostgresTaskStore(database.dataSource());
+        try (StoreTransaction transaction = store.begin()) {
+            store.notify(transaction, "custom", "rolled back");
+            transaction.rollback();
+        }
+        try (StoreTransaction transaction = store.begin()) {
+            store.notify(transaction, "other", "not listened to");
+            store.notify(transaction, "custom", "hello");
+            transaction.commit();
+        }
+
+        assertThat(heard.events.poll(5, TimeUnit.SECONDS)).isEqualTo("custom hello");
+        assertThat(heard.events.poll(300, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
     void reconnects_when_the_backend_is_terminated() throws Exception {
         String url = withApplicationName(database.jdbcUrl());
         PostgresNotifier notifier = start(new PostgresNotifier(() -> DriverManager.getConnection(url, database.user(), database.password())));
@@ -108,7 +128,7 @@ class PostgresNotifierTest {
 
     private PostgresNotifier start(PostgresNotifier notifier) throws InterruptedException {
         resources.add(notifier::close);
-        notifier.start(heard);
+        notifier.start(heard, Set.of(Notifier.TOPIC, "custom"));
         awaitConnected(notifier);
         Thread.sleep(200); // LISTEN has run
         return notifier;
@@ -133,6 +153,11 @@ class PostgresNotifierTest {
         @Override
         public void ready(int topicId) {
             events.add("ready " + topicId);
+        }
+
+        @Override
+        public void notified(String channel, String payload) {
+            events.add(channel + " " + payload);
         }
 
         @Override

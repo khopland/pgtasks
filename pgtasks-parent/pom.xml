@@ -38,8 +38,6 @@
     <!-- Compile-time checks on main code; javac needs the exports in .mvn/jvm.config. -->
     <errorprone.version>2.53.0</errorprone.version>
     <nullaway.version>0.14.4</nullaway.version>
-    <!-- Kotlin 2.3+ emits Java 25 bytecode, which every module targets. -->
-    <kotlin.version>2.4.21</kotlin.version>
   </properties>
 
   <dependencyManagement>
@@ -108,11 +106,6 @@
       <dependency>
         <groupId>io.github.khopland.pgtasks</groupId>
         <artifactId>pgtasks-jackson</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>io.github.khopland.pgtasks</groupId>
-        <artifactId>pgtasks-kotlin</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -253,18 +246,6 @@
               </configuration>
             </execution>
           </executions>
-        </plugin>
-        <!-- Registers src/main/kotlin and src/test/kotlin, adds kotlin-stdlib, and compiles Kotlin before Java. -->
-        <plugin>
-          <groupId>org.jetbrains.kotlin</groupId>
-          <artifactId>kotlin-maven-plugin</artifactId>
-          <version>${kotlin.version}</version>
-          <extensions>true</extensions>
-          <configuration>
-            <jvmTarget>25</jvmTarget>
-            <apiVersion>2.3</apiVersion>
-            <languageVersion>2.3</languageVersion>
-          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

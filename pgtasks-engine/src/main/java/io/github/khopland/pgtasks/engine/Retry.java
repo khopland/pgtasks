@@ -43,8 +43,7 @@ import org.jspecify.annotations.Nullable;
  *                    outage without using attempts gives up at its first counted failure after
  *                    the budget
  * @param notCounting failures caused by these types, anywhere in the cause chain, are the
- *                    system's, not the task's: retried with the backoff, the attempt not counted,
- *                    as if the handler had said {@link io.github.khopland.pgtasks.Decision#unavailable}
+ *                    system's, not the task's: retried with the backoff, the attempt not counted
  * @param deadLetterAt failures caused by these types go straight to the dead letters, such as
  *                    bad input that no retry will fix. Checked before {@code notCounting}
  */

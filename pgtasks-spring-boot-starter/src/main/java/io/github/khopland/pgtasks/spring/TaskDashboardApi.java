@@ -24,7 +24,7 @@ import tools.jackson.databind.json.JsonMapper;
  * for {@code pgtasks.dashboard.api=dashboard}: when Actuator runs on a port the browser can't
  * reach. The same paths, bodies and answers as {@code /actuator/tasks}, because it calls
  * {@link TaskEndpoint}: values are hidden as {@code management.endpoint.tasks.show-values} says,
- * with the roles of the request's user, and limit changes are versioned. Its security is the
+ * with the roles of the request's user. Its security is the
  * application's, like any other path.
  */
 final class TaskDashboardApi implements HttpRequestHandler {
@@ -80,19 +80,12 @@ final class TaskDashboardApi implements HttpRequestHandler {
                 longValue(request.getParameter("after"), "after"), intValue(request.getParameter("limit"), "limit"),
                 request.getParameter("identifier"), request.getParameter("reference"), request.getParameter("state"),
                 request.getParameter("header"), request.getParameter("createdFrom"), request.getParameter("createdUntil"), security);
-            case "POST 2" -> {
-                Map<String, Object> body = body(request);
-                yield endpoint.override(parts.get(0), parts.get(1), text(body, "rate"), intValue(body.get("burst"), "burst"),
-                    text(body, "until"), longValue(body.get("version"), "version"), security);
-            }
             case "POST 3" -> {
                 Map<String, Object> body = body(request);
                 yield endpoint.act(parts.get(0), parts.get(1), parts.get(2), text(body, "ids"), text(body, "outcome"), text(body, "before"),
-                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"),
-                    text(body, "identifier"), text(body, "reference"), text(body, "state"), text(body, "header"),
-                    text(body, "createdFrom"), text(body, "createdUntil"));
+                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"));
             }
-            case "DELETE 2" -> endpoint.delete(parts.get(0), parts.get(1), longValue(request.getParameter("version"), "version"), security);
+            case "DELETE 2" -> endpoint.delete(parts.get(0), parts.get(1));
             default -> method.equals("GET") || method.equals("POST") || method.equals("DELETE")
                 ? new WebEndpointResponse<>(WebEndpointResponse.STATUS_NOT_FOUND)
                 : new WebEndpointResponse<>(405);

@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
@@ -23,6 +22,7 @@ import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.postgres.PostgresNotifier;
 import io.github.khopland.pgtasks.spi.ManualClock;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 
@@ -108,17 +108,19 @@ class AdminTest {
     }
 
     @Test
-    @DisplayName("Topic status: every topic with its pause flag, module and whether this node runs it")
+    @DisplayName("Topic status: every topic with its module and whether this node runs it")
     void topic_status_lists_every_topic() throws Exception {
-        start(new InMemoryTaskStore());
-        engine.admin().createTopic("elsewhere");
-        engine.admin().pause("elsewhere");
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        start(store);
+        try (StoreTransaction transaction = store.begin()) {
+            store.createTopic(transaction, "elsewhere");
+            transaction.commit();
+        }
 
-        assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::paused,
-                TopicStatus::processing, TopicStatus::module)
+        assertThat(engine.admin().topics()).extracting(TopicStatus::name, TopicStatus::processing, TopicStatus::module)
             .containsExactly(
-                Tuple.tuple("elsewhere", true, false, null),
-                Tuple.tuple("work", false, true, "work-module"));
+                Tuple.tuple("elsewhere", false, null),
+                Tuple.tuple("work", true, "work-module"));
     }
 
     @Test
@@ -147,8 +149,8 @@ class AdminTest {
     }
 
     @Test
-    @DisplayName("Unfinished tasks are found, run now and cancelled; a run time waits, one in the past doesn't")
-    void unfinished_tasks_are_found_run_now_and_cancelled() throws Exception {
+    @DisplayName("Unfinished tasks are found; a run time waits, one in the past doesn't")
+    void unfinished_tasks_are_found() throws Exception {
         ManualClock clock = new ManualClock(Instant.parse("2026-11-21T10:00:00Z"));
         TopicRef<String> next = TopicRef.of("next", String.class);
         Set<String> ran = ConcurrentHashMap.newKeySet();
@@ -182,17 +184,6 @@ class AdminTest {
         assertThat(engine.admin().tasks("next", TaskQuery.ALL.inStates(QueueState.SCHEDULED), 10)).singleElement()
             .satisfies(task -> assertThat(task.runAt()).as("downstream work keeps its run time").isEqualTo(clock.instant().plus(Duration.ofHours(2))));
 
-        assertThat(engine.admin().runNow("work", List.of(later))).isOne();
-        tester.awaitIdle();
-        assertThat(ran).contains("later");
-
-        assertThat(engine.admin().cancel("work", TaskQuery.ALL.withIdentifier("a"))).isOne();
-        assertThat(engine.admin().cancel("next", TaskQuery.ALL)).isOne();
-        tester.advance(Duration.ofDays(2));
-        tester.awaitIdle();
-        assertThat(ran).doesNotContain("tomorrow", "chained");
-        assertThat(tester.task(tomorrow).state()).isEqualTo(Outcome.CANCELLED.label());
-        assertThat(engine.admin().cancel("work", TaskQuery.ALL)).as("nothing left").isZero();
     }
 
     @Test
@@ -237,12 +228,11 @@ class AdminTest {
         InMemoryTaskStore store = new InMemoryTaskStore();
         TopicRef<String> retired = TopicRef.of("retired-2025", String.class);
         try (TaskEngine one = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
+                .eachTask(retired, task -> { }))
                 .build().start();
              TaskEngine other = TaskEngine.builder().store(store).configure("work", tasks -> tasks
-                .topicsMatching("retired-*", String.class, BatchHandler.each(task -> { })))
+                .eachTask(retired, task -> { }))
                 .build().start()) {
-            one.admin().createTopic("retired-2025");
             one.tasks().independently().push(retired, "a", "done");
             TaskTester.of(one, other).awaitIdle();
             assertThat(other.processing()).contains("retired-2025");
@@ -258,8 +248,7 @@ class AdminTest {
     @Test
     void a_topic_with_unfinished_tasks_is_not_deleted() throws Exception {
         try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
-            .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().start()) {
-            engine.admin().pause("work");
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { })).build().prepare()) {
             engine.tasks().independently().push(WORK, "a", "waiting");
 
             assertThatThrownBy(() -> engine.admin().deleteTopic("work")).hasMessageContaining("has 1 unfinished task(s)");

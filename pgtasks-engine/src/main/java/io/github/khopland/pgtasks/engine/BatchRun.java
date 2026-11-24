@@ -6,7 +6,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,7 +23,6 @@ import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Decisions;
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
@@ -66,30 +64,17 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
-    /** A single task sent while the topic's breaker is open: its failure doesn't count. */
-    private final boolean probe;
     private @Nullable BatchScope scope;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private @Nullable VirtualMachineError fatal;
-    /**
-     * Tasks whose failure says nothing about whether a downstream system is down, so the breaker
-     * leaves them out: those the retry policy blames on the task itself, such as bad input, and
-     * dead-letters at once, and those decided without running, such as one out of attempts.
-     */
-    private final Set<Long> taskFaults = new HashSet<>();
     private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
     /** Each task's own observation, by task id, created the first time the engine needs it. */
     private final Map<Long, TaskObserver.TaskObservation> taskObservations = new ConcurrentHashMap<>();
 
     BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
-        this(worker, core, claimed, false);
-    }
-
-    BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed, boolean probe) {
         this.worker = worker;
         this.core = core;
         this.claimed = claimed;
-        this.probe = probe;
     }
 
     void run() {
@@ -144,13 +129,11 @@ final class BatchRun<T> {
         if (scope != null && scope.abandoned()) {
             // The handler still runs: handing its tasks back would let them run twice at once.
             observation.released();
-            returnProbe();
             return;
         }
         if (decisions == null) {
             release(claims, claimed.stream().map(ClaimedTask::id).toList());
             observation.released();
-            returnProbe();
             return;
         }
         try (TaskObserver.Scope ignored = observation.open()) {
@@ -269,8 +252,7 @@ final class BatchRun<T> {
             return handled;
         }
         Decisions.Builder complete = Decisions.builder();
-        // With their junctions: without them, a fan-in group a decided task belongs to stays suspended for good.
-        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream(), verdict.junctions()));
+        handled.verdicts().forEach(verdict -> complete.decide(verdict.task(), verdict.decision(), verdict.downstream()));
         runnable.stream().filter(task -> !handled.covers(task)).forEach(task -> complete.decide(task, Decision.failed("The handler returned no decision for this task")));
         return complete.build();
     }
@@ -304,16 +286,8 @@ final class BatchRun<T> {
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                                 TaskObserver.BatchObservation observation) {
         List<Completion> completions = new ArrayList<>(claims.size());
-        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision(), probe)));
-        // Decided without running the handler, so not a probe of anything, even when sent as one:
-        // a task out of attempts is dead-lettered rather than retried as an uncounted probe failure.
-        Set<Long> notRun = new HashSet<>();
-        early.verdicts().forEach(verdict -> {
-            ClaimedTask claim = claimOf(claims, verdict.task());
-            notRun.add(claim.id());
-            taskFaults.add(claim.id());
-            completions.add(completion(claim, verdict.decision(), false));
-        });
+        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         Set<String> targets = new LinkedHashSet<>();
         Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
@@ -324,7 +298,6 @@ final class BatchRun<T> {
                 ready.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
                 targets.addAll(pushDownstream(transaction, decisions, observations, ready));
-                targets.addAll(applyJunctions(transaction, decisions));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
                 }
@@ -334,7 +307,6 @@ final class BatchRun<T> {
             LOGGER.warn("Discarded the completion of a batch in {}: {}", topic.ref(), stale.getMessage());
             release(claims, claims.keySet().stream().filter(id -> !stale.lost().contains(id)).toList());
             observation.released();
-            returnProbe();
             return;
         } catch (Exception | Error e) {
             if (e instanceof VirtualMachineError vm) {
@@ -348,24 +320,22 @@ final class BatchRun<T> {
                     topic.ref(), e.toString());
                 release(claims, List.copyOf(claims.keySet()));
                 observation.released();
-                returnProbe();
                 return;
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
-            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e), probe && !notRun.contains(claim.id()))).toList();
+            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
-                worker.recordResults(breakerResults(failures), probe);
+                tell(topic, failures, claims);
             } catch (Exception recording) {
                 LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
-                returnProbe();
             }
             return;
         }
         observation.completed(results(completions));
-        worker.recordResults(breakerResults(completions), probe);
+        tell(topic, completions, claims);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -417,40 +387,6 @@ final class BatchRun<T> {
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 
-    /**
-     * Applies the junctions of continuing tasks, after their downstream pushes, so a suspended
-     * task pushed in the same completion can complete a group. One call per target and counts,
-     * in topic-name order like the pushes, since each call locks its groups' members until commit.
-     */
-    private Set<String> applyJunctions(StoreTransaction transaction, Decisions decisions) throws SQLException {
-        record Target(String topic, Junction.Counts counts) {
-        }
-        Map<Target, List<Set<String>>> groups = new LinkedHashMap<>();
-        for (Decisions.Verdict verdict : decisions.verdicts()) {
-            if (!verdict.decision().continues()) {
-                continue;
-            }
-            for (Junction junction : verdict.junctions()) {
-                Set<String> group = new LinkedHashSet<>(junction.identifiers());
-                group.add(verdict.task().identifier());
-                groups.computeIfAbsent(new Target(junction.topic().name(), junction.counts()), ignored -> new ArrayList<>()).add(group);
-            }
-        }
-        Set<String> released = new LinkedHashSet<>();
-        for (Map.Entry<Target, List<Set<String>>> entry : byTopicName(groups, Target::topic)) {
-            int topicId = core.tasks().topicId(transaction, entry.getKey().topic());
-            try {
-                if (!core.store().junction(transaction, topicId, entry.getKey().counts(), entry.getValue()).isEmpty()) {
-                    released.add(entry.getKey().topic());
-                }
-            } catch (SQLException e) {
-                core.tasks().failed(entry.getKey().topic(), topicId, e);
-                throw e;
-            }
-        }
-        return released;
-    }
-
     /** The entries sorted by topic name; a stable sort, so entries for one topic keep their order. */
     private static <K, V> List<Map.Entry<K, V>> byTopicName(Map<K, V> map, Function<K, String> topic) {
         return map.entrySet().stream().sorted(Comparator.comparing(entry -> topic.apply(entry.getKey()))).toList();
@@ -458,7 +394,11 @@ final class BatchRun<T> {
 
     /** The claim of a task in this batch. */
     private static ClaimedTask claimOf(Map<Long, ClaimedTask> claims, Task<?> task) {
-        return Objects.requireNonNull(claims.get(task.id()), () -> "Task " + task.id() + " is not in this batch");
+        return claimOf(claims, task.id());
+    }
+
+    private static ClaimedTask claimOf(Map<Long, ClaimedTask> claims, long taskId) {
+        return Objects.requireNonNull(claims.get(taskId), () -> "Task " + taskId + " is not in this batch");
     }
 
     private void release(Map<Long, ClaimedTask> claims, List<Long> ids) {
@@ -476,32 +416,20 @@ final class BatchRun<T> {
         }
     }
 
-    /** @param asProbe whether a counted failure is a probe's, and so isn't counted */
-    private Completion completion(ClaimedTask claim, Decision decision, boolean asProbe) {
+    private Completion completion(ClaimedTask claim, Decision decision) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
             case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, success.output());
             case Decision.Filtered filtered -> new Resolution.Finished(Outcome.FILTERED, filtered.reason());
             case Decision.Suspended ignored -> new Resolution.Waiting(WaitState.SUSPENDED, null, false, null);
             case Decision.Later later -> new Resolution.Waiting(WaitState.SCHEDULED, later.delay(), false, null);
-            case Decision.Throttled throttled -> new Resolution.Waiting(WaitState.RETRYING, throttled.retryAfter(), false, null);
-            // Not the task's fault: back off, keep the error, give the attempt back.
-            case Decision.Unavailable unavailable -> new Resolution.Waiting(WaitState.RETRYING,
-                retry.uncountedBackoff(claim.failures() + 1, core.random()), false, ErrorJson.of(unavailable.message(), unavailable.cause()));
             case Decision.Failed failed -> {
                 String error = ErrorJson.of(failed.message(), failed.cause());
                 // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
                 yield switch (retry.classify(failed.cause())) {
                     case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                    case DEAD_LETTER -> {
-                        taskFaults.add(claim.id());
-                        yield new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
-                    }
-                    // A probe fails while the breaker is open: likely the outage, not the task.
+                    case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
                     case COUNTED -> {
-                        if (asProbe) {
-                            yield new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                        }
                         Duration backoff = retry.backoff(claim.failures() + 1, core.random());
                         yield retry.allowsAnotherAfter(claim.attempt(), claim.firstFailedAt(), core.clock().instant(), backoff)
                             ? new Resolution.Waiting(WaitState.RETRYING, backoff, true, error)
@@ -513,48 +441,43 @@ final class BatchRun<T> {
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
     }
 
-    /**
-     * For the breaker: true for a task that failed, false for one that finished. Waits that aren't
-     * failures are left out, and so are failures the retry policy blames on the task.
-     */
-    private Map<Long, Boolean> breakerResults(List<Completion> completions) {
-        Map<Long, Boolean> results = new LinkedHashMap<>();
-        for (Completion completion : completions) {
-            if (taskFaults.contains(completion.taskId())) {
-                continue;
-            }
-            switch (completion.resolution()) {
-                case Resolution.Finished ignored -> results.put(completion.taskId(), false);
-                case Resolution.Waiting waiting when waiting.error() != null -> results.put(completion.taskId(), true);
-                case Resolution.Waiting ignored -> { }
-            }
-        }
-        return results;
-    }
-
-    private void returnProbe() {
-        if (probe) {
-            worker.probeReturned();
-        }
-    }
-
     /** How many of the completions ended in each result. */
     private static Map<TaskObserver.Result, Integer> results(List<Completion> completions) {
         Map<TaskObserver.Result, Integer> results = new EnumMap<>(TaskObserver.Result.class);
         for (Completion completion : completions) {
-            TaskObserver.Result result = switch (completion.resolution()) {
-                case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;
-                case Resolution.Waiting waiting -> switch (waiting.state()) {
-                    case SUSPENDED -> TaskObserver.Result.SUSPENDED;
-                    case SCHEDULED -> TaskObserver.Result.DELAYED;
-                    case RETRYING -> waiting.counted() ? TaskObserver.Result.RETRYING
-                        : waiting.error() != null ? TaskObserver.Result.UNAVAILABLE : TaskObserver.Result.THROTTLED;
-                    case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
-                };
-            };
-            results.merge(result, 1, Integer::sum);
+            results.merge(result(completion), 1, Integer::sum);
         }
         return results;
+    }
+
+    private static TaskObserver.Result result(Completion completion) {
+        return switch (completion.resolution()) {
+            case Resolution.Finished finished -> finished.outcome() == Outcome.SUCCEEDED ? TaskObserver.Result.SUCCEEDED : TaskObserver.Result.FILTERED;
+            case Resolution.Waiting waiting -> switch (waiting.state()) {
+                case SUSPENDED -> TaskObserver.Result.SUSPENDED;
+                case SCHEDULED -> TaskObserver.Result.DELAYED;
+                case RETRYING -> waiting.counted() || waiting.error() == null ? TaskObserver.Result.RETRYING : TaskObserver.Result.UNAVAILABLE;
+                case DEAD_LETTER -> TaskObserver.Result.DEAD_LETTERED;
+            };
+        };
+    }
+
+    /** Tells the extensions' batch listeners what became of each task. */
+    private void tell(Topic<T> topic, List<Completion> completions, Map<Long, ClaimedTask> claims) {
+        if (core.listeners().isEmpty()) {
+            return;
+        }
+        List<BatchListener.Completed> results = completions.stream()
+            .map(completion -> new BatchListener.Completed(completion.taskId(), claimOf(claims, completion.taskId()).identifier(),
+                completion.attempt(), result(completion)))
+            .toList();
+        for (BatchListener listener : core.listeners()) {
+            try {
+                listener.completed(topic.ref(), results);
+            } catch (RuntimeException e) {
+                LOGGER.warn("A batch listener failed for {}", topic.ref(), e);
+            }
+        }
     }
 
     private static void closeQuietly(Object value) {

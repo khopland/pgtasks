@@ -7,15 +7,12 @@ import java.util.List;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
-import io.github.khopland.pgtasks.admin.AttemptView;
-import io.github.khopland.pgtasks.admin.FailureGroup;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 
-import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
 
 import static io.github.khopland.pgtasks.test.tck.StoreFixture.completion;
@@ -131,12 +128,6 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(view.attempt()).isEqualTo(1);
         assertThat(view.nodeId()).isNull();
         assertThat(view.runAt()).isBetween(before.plusSeconds(50), before.plusSeconds(70));
-        assertThat(fixture.attempts(id)).singleElement().satisfies(attempt -> {
-            assertThat(attempt.attempt()).isEqualTo(1);
-            assertThat(attempt.result()).isEqualTo("failed");
-            assertThat(attempt.error()).contains("boom");
-            assertThat(attempt.nodeId()).isEqualTo(node);
-        });
         assertThat(fixture.claim(topic, node)).as("not ready before its time").isEmpty();
         assertThat(fixture.promoteDue()).isEmpty();
         assertThat(fixture.counts(topic).due()).isZero();
@@ -173,7 +164,6 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(view.failures()).isEqualTo(1);
         assertThat(view.firstFailedAt()).isNotNull();
         assertThat(view.error()).contains("downstream down");
-        assertThat(fixture.attempts(id)).as("uncounted failures aren't logged").isEmpty();
 
         fixture.promoteDue();
         ClaimedTask again = fixture.claim(topic, node).getFirst();
@@ -198,7 +188,7 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
-    void failing_tasks_are_counted_and_grouped_by_error() throws Exception {
+    void failing_tasks_are_counted() throws Exception {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, task("a"), task("b"), task("c"), task("fine"));
         String refused = "{\"message\":\"refused\",\"type\":\"java.net.ConnectException\"}";
@@ -214,45 +204,6 @@ public abstract class CompletionTck extends StoreTck {
         QueueCounts counts = fixture.counts(topic);
         assertThat(counts.failing()).as("retrying and dead-lettered alike").isEqualTo(3);
         assertThat(counts.oldestFailingAt()).isNotNull();
-        List<FailureGroup> groups = fixture.inTransaction(transaction -> fixture.store().failing(transaction, topic, 10));
-        assertThat(groups).extracting(FailureGroup::error, FailureGroup::tasks).containsExactly(
-            Tuple.tuple("java.net.ConnectException", 2L),
-            Tuple.tuple("gave up", 1L));
-        assertThat(groups.getFirst().exampleMessage()).isEqualTo("refused");
-        assertThat(groups.getFirst().oldestFailedAt()).isNotNull();
-    }
-
-    @Test
-    void the_attempt_log_keeps_a_tasks_first_attempt_and_its_last_ten() throws Exception {
-        StoreFixture fixture = setUp();
-        long id = fixture.push(topic, "a");
-        for (int attempt = 1; attempt <= 15; attempt++) {
-            failAndRetry(fixture, id);
-        }
-
-        assertThat(fixture.attempts(id)).extracting(AttemptView::attempt).containsExactly(1, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    }
-
-    @Test
-    void a_tasks_attempts_go_when_retention_or_a_delete_push_removes_it() throws Exception {
-        StoreFixture fixture = setUp();
-        long purged = fixture.push(topic, "a");
-        failAndRetry(fixture, purged);
-        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
-        long replaced = fixture.push(topic, "b");
-        failAndRetry(fixture, replaced);
-        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.succeeded());
-        assertThat(fixture.attempts(purged)).hasSize(1);
-        assertThat(fixture.attempts(replaced)).hasSize(1);
-
-        int deleted = fixture.inTransaction(transaction -> fixture.store().purge(transaction, topic, io.github.khopland.pgtasks.Outcome.SUCCEEDED,
-            fixture.store().clock().instant().plusSeconds(60), 1));
-        assertThat(deleted).isEqualTo(1);
-        assertThat(fixture.attempts(purged)).isEmpty();
-
-        fixture.push(topic, Insertion.DELETE, StoreFixture.task("b"));
-        assertThat(fixture.view(replaced)).isEmpty();
-        assertThat(fixture.attempts(replaced)).isEmpty();
     }
 
     @Test
@@ -313,9 +264,6 @@ public abstract class CompletionTck extends StoreTck {
 
         assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::state).containsExactly("suspended", "scheduled", "retrying");
         assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::attempt).containsOnly(0);
-        for (long id : List.of(suspended, delayed, throttled)) {
-            assertThat(fixture.attempts(id)).isEmpty();
-        }
     }
 
     @Test
@@ -346,7 +294,6 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(fixture.state(mine)).as("a node never expires itself").isEqualTo("active");
         assertThat(fixture.state(theirs)).isEqualTo("ready");
         assertThat(fixture.attempt(theirs)).isEqualTo(1);
-        assertThat(fixture.attempts(theirs)).extracting(AttemptView::result, AttemptView::nodeId).containsExactly(Tuple.tuple("expired", crashed));
     }
 
     @Test
@@ -376,7 +323,6 @@ public abstract class CompletionTck extends StoreTck {
                 assertThat(view.error()).contains("Expired 3 times");
             }
         }
-        assertThat(fixture.attempts(id)).extracting(AttemptView::result).containsOnly("expired");
     }
 
     @Test

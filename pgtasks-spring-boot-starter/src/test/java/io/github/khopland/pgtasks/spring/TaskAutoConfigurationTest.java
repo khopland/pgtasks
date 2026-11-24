@@ -1,20 +1,23 @@
 package io.github.khopland.pgtasks.spring;
 
 import java.time.Duration;
+import java.time.Period;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
 import io.github.khopland.pgtasks.engine.EngineFixture;
-import io.github.khopland.pgtasks.engine.Rate;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
+import io.github.khopland.pgtasks.engine.Extension;
+import io.github.khopland.pgtasks.engine.ExtensionContext;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
@@ -91,12 +94,12 @@ class TaskAutoConfigurationTest {
         @Bean
         TaskConfigurer assessmentTasks() {
             return tasks -> tasks.defaults(options -> options.concurrency(8))
-                .topic(ASSESSMENT, batch -> batch.decide(task -> Decision.success()), options -> options.limit("register"));
+                .topic(ASSESSMENT, batch -> batch.decide(task -> Decision.success()));
         }
 
         @Bean
         TaskGlobals taskSettings() {
-            return globals -> globals.limit("register", limit -> limit.rate(Rate.perSecond(200)));
+            return globals -> globals.housekeeping(housekeeping -> housekeeping.retain(Outcome.SUCCEEDED, Period.ofDays(90)));
         }
     }
 
@@ -120,14 +123,13 @@ class TaskAutoConfigurationTest {
     void task_properties_override_what_the_code_sets() {
         postgres().withUserConfiguration(Modules.class)
             .withPropertyValues("pgtasks.topics.assessment.concurrency=3", "pgtasks.topics.assessment.retry.max-attempts=2",
-                "pgtasks.topics.notify.poll-interval=5s", "pgtasks.limits.register.rate=40/s", "pgtasks.node=pod-1")
+                "pgtasks.topics.notify.poll-interval=5s", "pgtasks.node=pod-1")
             .run(context -> {
                 assertThat(context).hasNotFailed();
                 TaskEngine engine = context.getBean(TaskEngine.class);
                 assertThat(setting(engine, "assessment", "concurrency")).isEqualTo(new EffectiveSettings.Setting("3", EffectiveSettings.Source.OVERRIDE));
                 assertThat(setting(engine, "assessment", "retry").value()).startsWith("2 attempts");
                 assertThat(setting(engine, "notify", "poll-interval")).isEqualTo(new EffectiveSettings.Setting("PT5S", EffectiveSettings.Source.OVERRIDE));
-                assertThat(engine.limits().find("register")).hasValueSatisfying(limit -> assertThat(limit.configured().perSecond()).isEqualTo(40.0));
                 assertThat(database.rows("SELECT name FROM pgtasks.node")).containsExactly(List.of("pod-1"));
             });
     }
@@ -173,7 +175,6 @@ class TaskAutoConfigurationTest {
         postgres().withUserConfiguration(Modules.class).withPropertyValues("pgtasks.topics.notify.poll-interval=1h").run(context -> {
             Tasks tasks = context.getBean(Tasks.class);
             TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).admin().pause("notify");
 
             assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
                 tasks.push(NOTIFY, "anna", "rolled back");
@@ -320,37 +321,49 @@ class TaskAutoConfigurationTest {
         });
     }
 
-    record Greeted(String name) {
-    }
-
     @Configuration(proxyBeanMethods = false)
-    static class GreetingRoute {
+    static class Extensions {
+        final List<String> started = new CopyOnWriteArrayList<>();
+
         @Bean
-        TaskConfigurer greetingTasks() {
-            return tasks -> tasks
-                .onEvent(Greeted.class, greeted -> greeted.name().isEmpty() ? null
-                    : new Push<>(NOTIFY, Insertion.APPEND, Creation.of(greeted.name(), "hello " + greeted.name())))
-                .topic(NOTIFY, batch -> batch.decide(task -> Decision.success()));
+        @org.springframework.core.annotation.Order(2)
+        Extension second() {
+            return new Extension() {
+                @Override
+                public String name() {
+                    return "second";
+                }
+
+                @Override
+                public void install(ExtensionContext context) {
+                    context.onStart(() -> started.add("second"));
+                }
+            };
+        }
+
+        @Bean
+        @org.springframework.core.annotation.Order(1)
+        Extension first() {
+            return new Extension() {
+                @Override
+                public String name() {
+                    return "first";
+                }
+
+                @Override
+                public void install(ExtensionContext context) {
+                    context.onStart(() -> started.add("first"));
+                }
+            };
         }
     }
 
     @Test
-    void an_event_becomes_a_task_in_the_publishers_transaction() {
-        postgres().withUserConfiguration(GreetingRoute.class).withPropertyValues("pgtasks.topics.notify.poll-interval=1h").run(context -> {
-            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-            context.getBean(TaskEngine.class).admin().pause("notify");
-
-            assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
-                context.publishEvent(new Greeted("anna"));
-                throw new IllegalStateException("the publisher's work failed");
-            })).hasMessage("the publisher's work failed");
-            assertThat(database.count("SELECT count(*) FROM pgtasks.task")).as("rolled back with the publisher").isZero();
-
-            transaction.executeWithoutResult(status -> context.publishEvent(new Greeted("bob")));
-            context.publishEvent(new Greeted("carl"));
-            context.publishEvent(new Greeted(""));
-            assertThat(database.rows("SELECT payload FROM pgtasks.task ORDER BY id")).as("committed with it, or on its own without one")
-                .containsExactly(List.of("hello bob"), List.of("hello carl"));
+    void extension_beans_are_installed_in_their_order() {
+        memory().withUserConfiguration(Extensions.class).run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(TaskEngine.class).extensions()).containsExactly("first", "second");
+            assertThat(context.getBean(Extensions.class).started).containsExactly("first", "second");
         });
     }
 

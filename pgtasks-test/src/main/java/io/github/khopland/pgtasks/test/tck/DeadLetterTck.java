@@ -1,7 +1,6 @@
 package io.github.khopland.pgtasks.test.tck;
 
 import java.sql.SQLException;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -81,7 +80,6 @@ public abstract class DeadLetterTck extends StoreTck {
         ClaimedTask again = fixture.claim(topic, node).getFirst();
         assertThat(again.id()).isEqualTo(id);
         assertThat(again.attempt()).isEqualTo(1);
-        assertThat(fixture.attempts(id)).as("the earlier failure stays in the log").hasSize(1);
         assertThat(fixture.counts(topic).failed()).isZero();
         assertThat(fixture.view(id).orElseThrow().failures()).as("a revived task starts afresh").isZero();
         assertThat(fixture.view(id).orElseThrow().firstFailedAt()).isNull();
@@ -126,28 +124,6 @@ public abstract class DeadLetterTck extends StoreTck {
 
     private List<Long> find(StoreFixture fixture, DeadLetterQuery query) throws SQLException {
         return fixture.inTransaction(transaction -> fixture.store().deadLetters(transaction, topic, query, 10)).stream().map(TaskView::id).toList();
-    }
-
-    @Test
-    void revival_is_claimed_once_per_version_and_a_sweep_once_per_interval() throws Exception {
-        StoreFixture fixture = setUp();
-        assertThat(claimRevival(fixture, "1.0")).as("the first node of 1.0").isTrue();
-        assertThat(claimRevival(fixture, "1.0")).as("every other node of 1.0").isFalse();
-        assertThat(claimRevival(fixture, "1.1")).isTrue();
-        assertThat(claimRevival(fixture, "1.0")).as("going back is a new version too").isTrue();
-
-        assertThat(claimSweep(fixture)).isTrue();
-        assertThat(claimSweep(fixture)).isFalse();
-        fixture.advance(Duration.ofHours(2));
-        assertThat(claimSweep(fixture)).isTrue();
-    }
-
-    private boolean claimRevival(StoreFixture fixture, String version) throws SQLException {
-        return fixture.inTransaction(transaction -> fixture.store().claimRevival(transaction, topic, version));
-    }
-
-    private boolean claimSweep(StoreFixture fixture) throws SQLException {
-        return fixture.inTransaction(transaction -> fixture.store().claimReviveSweep(transaction, topic, Duration.ofHours(1)));
     }
 
     @Test

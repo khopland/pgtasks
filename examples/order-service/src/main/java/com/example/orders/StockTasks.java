@@ -1,22 +1,16 @@
 package com.example.orders;
 
 import java.util.Objects;
-import java.util.Set;
 
 import io.github.khopland.pgtasks.Decision;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 
 import com.example.orders.Topics.OrderRef;
-import com.example.orders.Topics.ShipRequest;
 import com.example.orders.Topics.Step;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import static com.example.orders.Topics.SHIP;
 import static com.example.orders.Topics.STOCK;
-import static com.example.orders.Topics.paidMarker;
-import static com.example.orders.Topics.reservedMarker;
 
 /** Reserves stock in our own tables, committed with the task's completion. */
 @Configuration
@@ -40,8 +34,6 @@ class StockTasks {
                 staged.touchesStock(work.task(), id);
                 staged.add(work.task(), RESERVE, id);
                 staged.add(work.task(), "UPDATE orders SET reserved_at = now(), updated_at = now() WHERE id = ?", id);
-                work.push(SHIP, reservedMarker(id), new ShipRequest(id, order.customerId(), Step.RESERVED));
-                work.junction(SHIP, Junction.Counts.ANY, Set.of(paidMarker(id), reservedMarker(id)));
                 return Decision.success();
             });
         }, options -> options.resources(writes).concurrency(2).batchSize(50));

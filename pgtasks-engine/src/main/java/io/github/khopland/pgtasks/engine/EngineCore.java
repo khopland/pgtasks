@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.time.InstantSource;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
@@ -31,8 +32,9 @@ record EngineCore(
     Consumer<String> wake,
     Map<Long, Integer> held,
     BooleanSupplier stopping,
-    RateLimits limits,
-    TaskObserver observer
+    TaskObserver observer,
+    List<ClaimGate> gates,
+    List<BatchListener> listeners
 ) {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EngineCore.class);

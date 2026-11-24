@@ -191,7 +191,7 @@ class SustainedBenchmark {
                 running.add(threads.submit(() -> {
                     while (System.nanoTime() < end) {
                         long before = System.nanoTime();
-                        List<Design.Claimed> claimed = design.claim(1, Ordering.FIFO, BATCH, false);
+                        List<Design.Claimed> claimed = design.claim(1, Ordering.FIFO, BATCH);
                         claims.add((System.nanoTime() - before) / 1e6);
                         if (claimed.isEmpty()) {
                             Thread.sleep(5);

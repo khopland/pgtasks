@@ -63,7 +63,7 @@ SELECT topic, state, count(*) FROM pgtasks.task_view WHERE completed_at IS NULL 
 \echo '== pgtasks: finished tasks per topic and outcome'
 SELECT topic, state, count(*) FROM pgtasks.task_view WHERE completed_at IS NOT NULL GROUP BY topic, state ORDER BY topic, state;
 
-\echo '== recurring reconcile: runs per minute (1 is right)'
+\echo '== reconcile: runs per minute (about 1 is right)'
 SELECT runs, count(*) AS minutes FROM (SELECT date_trunc('minute', ran_at), count(*) AS runs FROM orders.reconcile_run GROUP BY 1) r
 GROUP BY runs ORDER BY runs;
 SQL

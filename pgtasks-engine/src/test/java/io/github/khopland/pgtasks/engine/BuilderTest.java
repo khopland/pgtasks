@@ -47,14 +47,13 @@ class BuilderTest {
 
     private static TaskConfigurer assessmentTasks() {
         return tasks -> tasks
-            .defaults(defaults -> defaults.concurrency(8).limit("folkeregister"))
+            .defaults(defaults -> defaults.concurrency(8))
             .topic("assessment", String.class, batch -> batch.decide(task -> Decision.success()), topic -> topic.ordering(Ordering.SINGULAR_BY_IDENTIFIER))
             .topics(List.of("reassessment", "appeal"), String.class, batch -> batch.decide(task -> Decision.success()));
     }
 
     private static TaskGlobals globals() {
         return globals -> globals
-            .limit("folkeregister", limit -> limit.rate(Rate.perSecond(200)).burst(50))
             .housekeeping(housekeeping -> housekeeping.retain(Outcome.SUCCEEDED, Period.ofDays(90)));
     }
 
@@ -112,8 +111,7 @@ class BuilderTest {
                 "topics.assessment.concurrency", "16",
                 "topics.assessment.retry.max-attempts", "2",
                 "topics.appeal.poll-interval", "5s",
-                "topics.appeal.retain.filtered", "forever",
-                "limits.folkeregister.rate", "400/s"))
+                "topics.appeal.retain.filtered", "forever"))
             .build();
 
         EffectiveSettings assessment = settings(engine, "assessment");
@@ -124,7 +122,6 @@ class BuilderTest {
         assertThat(engine.topics()).filteredOn(topic -> topic.ref().name().equals("assessment"))
             .singleElement().satisfies(topic -> assertThat(topic.settings().retry().maxAttempts()).isEqualTo(2));
         assertThat(assessment.get("ordering")).isEqualTo(new EffectiveSettings.Setting("SINGULAR_BY_IDENTIFIER", Source.TOPIC));
-        assertThat(assessment.get("limit")).isEqualTo(new EffectiveSettings.Setting("folkeregister", Source.MODULE_DEFAULTS));
         assertThat(assessment.get("retain.succeeded")).isEqualTo(new EffectiveSettings.Setting("P90D", Source.GLOBAL_DEFAULTS));
 
         EffectiveSettings appeal = settings(engine, "appeal");
@@ -134,7 +131,6 @@ class BuilderTest {
 
         EffectiveSettings notify = settings(engine, "notify");
         assertThat(notify.get("concurrency").source()).as("another module's defaults don't leak").isEqualTo(Source.DEFAULT);
-        assertThat(notify.settings()).doesNotContainKey("limit");
     }
 
     @Test
@@ -144,17 +140,15 @@ class BuilderTest {
             .configure("first", tasks -> tasks.topic("dup", String.class, batch -> batch.decide(task -> Decision.success())))
             .configure("second", tasks -> tasks
                 .topic("dup", String.class, batch -> batch.decide(task -> Decision.success()))
-                .topic("limited", String.class, batch -> batch.decide(task -> Decision.success()), topic -> topic.limit("nonexistent"))
                 .topic(NOTIFY, batch -> batch.decide(task -> Decision.success())))
             .overrides(Map.of("topics.missing.concurrency", "2", "topics.dup.concurency", "2", "limits.nope.rate", "1/s"))
             .build())
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("Topic dup is registered by both first and second")
-            .hasMessageContaining("unknown limit 'nonexistent'")
             .hasMessageContaining("no payload codec for " + Notice.class.getName())
             .hasMessageContaining("topics.missing.concurrency names an unknown topic")
             .hasMessageContaining("topics.dup.concurency: unknown setting")
-            .hasMessageContaining("limits.nope.rate names an unknown limit");
+            .hasMessageContaining("Unknown override limits.nope.rate");
     }
 
     @Test
@@ -166,25 +160,19 @@ class BuilderTest {
     }
 
     @Test
-    void limits_and_retention_reach_the_running_topics() throws Exception {
+    void retention_reaches_the_running_topics() throws Exception {
         engine = TaskEngine.builder()
             .store(new InMemoryTaskStore(ManualClock.startingNow()))
             .globals(globals())
             .configure(assessmentTasks())
-            .overrides(Map.of("limits.folkeregister.burst", "10"))
             .build();
 
         Topic<?> assessment = engine.topics().stream().filter(topic -> topic.ref().name().equals("assessment")).findFirst().orElseThrow();
-        assertThat(assessment.settings().rateLimit()).isEqualTo(RateLimit.perSecond("folkeregister", 200, 10));
         assertThat(assessment.settings().retention()).containsEntry(Outcome.SUCCEEDED, Period.ofDays(90)).doesNotContainKey(Outcome.FAILED);
     }
 
     @Test
-    void rates_and_durations_parse_the_way_people_write_them() {
-        assertThat(Rate.parse("400/s").perSecond()).isEqualTo(400);
-        assertThat(Rate.parse("120 / min").perSecond()).isEqualTo(2);
-        assertThat(Rate.parse("3600/h").perSecond()).isEqualTo(1);
-        assertThatThrownBy(() -> Rate.parse("0/s")).hasMessageContaining("positive");
+    void durations_parse_the_way_people_write_them() {
         assertThat(TaskEngineBuilder.duration("500ms")).isEqualTo(Duration.ofMillis(500));
         assertThat(TaskEngineBuilder.duration("PT2M")).isEqualTo(Duration.ofMinutes(2));
         assertThat(TaskEngineBuilder.period("30d")).isEqualTo(Period.ofDays(30));

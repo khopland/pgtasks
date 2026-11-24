@@ -27,17 +27,12 @@ import java.util.Set;
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Insertion;
-import io.github.khopland.pgtasks.Junction;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
-import io.github.khopland.pgtasks.admin.AttemptView;
 import io.github.khopland.pgtasks.admin.NodeView;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
-import io.github.khopland.pgtasks.admin.FailureGroup;
-import io.github.khopland.pgtasks.admin.LimitOverride;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.QueueState;
-import io.github.khopland.pgtasks.admin.Schedule;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -52,8 +47,7 @@ import org.jspecify.annotations.Nullable;
  * The task store on the pgtasks schema, {@value TaskSchema#DEFAULT_SCHEMA} unless named otherwise
  * (see {@link TaskSchema}). Every operation is one
  * statement, except a claim: it first pins its plan with transaction-local planner settings, and
- * under a strict rate limit also reads and charges the limit's token bucket in the same
- * transaction. When an engine starts, the store migrates or
+ * a SINGULAR_* claim takes the topic's advisory lock. When an engine starts, the store migrates or
  * validates the schema according to its {@link SchemaMode}.
  */
 public final class PostgresTaskStore implements TaskStore {
@@ -64,14 +58,13 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
-    private final NamedSql createTopic, findTopic, listTopics, pauseTopic, registerNode, heartbeat, ensureAdmission, admissionLock, admissionCharge;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, listAttempts, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
-    private final NamedSql deadLetters, revive, discard, notifyReady, purgeAll, lockTopic, topicHasTasks, deleteTopic;
-    private final NamedSql searchTasks, cancel, runNow;
-    private final NamedSql syncSchedules, listSchedules, dueSchedules, scheduleFired, failingGroups, claimRevival, claimReviveSweep, deleteDeadNodes, listNodes;
-    private final NamedSql lead, resign, setRetention, retention, limitOverrides, overrideLimit, limitConfigured, junctionLocks;
+    private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
+    private final NamedSql finish, wait, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
+    private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
+    private final NamedSql searchTasks;
+    private final NamedSql deleteDeadNodes, listNodes;
+    private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks;
-    private final Map<Junction.Counts, NamedSql> junctions = new EnumMap<>(Junction.Counts.class);
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -119,34 +112,9 @@ public final class PostgresTaskStore implements TaskStore {
         // next to 50,000 finished tasks of the same topic.
         createTopic = sql("SELECT pgtasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
-        listTopics = sql("SELECT id, name, paused FROM pgtasks.topic ORDER BY id");
-        // The topic triggers notify every node when paused actually changes (R__notify_topic.sql).
-        pauseTopic = sql("UPDATE pgtasks.topic SET paused = :paused::boolean WHERE name = :name RETURNING id");
+        listTopics = sql("SELECT id, name FROM pgtasks.topic ORDER BY id");
         registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id");
         heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node");
-        ensureAdmission = sql("""
-            INSERT INTO pgtasks.rate_admission (name, tokens, refilled_at)
-            VALUES (:name, :burst, clock_timestamp())
-            ON CONFLICT (name) DO NOTHING
-            """);
-        // Locks the bucket, so claims under one limit are serialized across nodes. The estimate
-        // may use a clock reading from before the lock was granted; that only underestimates.
-        admissionLock = sql("""
-            SELECT least(:burst::double precision,
-                         tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
-            FROM pgtasks.rate_admission
-            WHERE name = :name
-            FOR UPDATE
-            """);
-        // Runs after the poll while the lock is held, so the refill is exact; refilled_at never moves back.
-        admissionCharge = sql("""
-            UPDATE pgtasks.rate_admission
-            SET tokens = greatest(0, least(:burst::double precision,
-                                           tokens + :rate::double precision * greatest(0, extract(epoch FROM clock_timestamp() - refilled_at)::double precision))
-                                     - :claimed::integer),
-                refilled_at = greatest(refilled_at, clock_timestamp())
-            WHERE name = :name
-            """);
         // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
         // most often: a producer may push one task per transaction. The others look up older tasks.
         for (Insertion insertion : Insertion.values()) {
@@ -162,8 +130,8 @@ public final class PostgresTaskStore implements TaskStore {
         // holds the locks until it commits; the next push's statement takes its snapshot after
         // that. APPEND pushes take no lock (they don't touch earlier tasks, and are the hot path),
         // so concurrent APPEND pushes for one identifier may still commit out of id order.
-        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims and
-        // junctions; topics share a hash only by chance, which merely serializes those pushes.
+        // These are single-bigint keys, a keyspace apart from the two-integer keys of claims;
+        // topics share a hash only by chance, which merely serializes those pushes.
         identifierLocks = sql("""
             SELECT count(pg_advisory_xact_lock(key))
             FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
@@ -186,8 +154,7 @@ public final class PostgresTaskStore implements TaskStore {
         // snapshot, where another node's uncommitted claim still looks ready: with an earlier task
         // turned ready meanwhile (a promotion, a release), both nodes would claim one identifier.
         // So SINGULAR_* claims on a topic take turns until commit, and each poll's snapshot shows
-        // the previous claim. The first key is negative and topic ids are positive, so it can't
-        // meet a junction lock (topic, hashtext(identifier)). FIFO claims don't wait.
+        // the previous claim. FIFO claims don't wait.
         singularClaimLock = sql("SELECT pg_advisory_xact_lock(" + SINGULAR_CLAIM_LOCK + ", :topic::integer)");
         // Fenced: only rows still active under this node with the claimed attempt match.
         finish = sql("""
@@ -216,13 +183,13 @@ public final class PostgresTaskStore implements TaskStore {
               AND t.id = done.task_id
             RETURNING t.id
             """);
-        // Non-counted waits (suspended, later, throttled) give the attempt back. That is safe for
+        // Non-counted waits (suspended, later, uncounted failures) give the attempt back. That is safe for
         // fencing: only the current owner can do it, so a stale claim's attempt never comes back.
         wait = sql("""
             WITH d AS (
                 SELECT * FROM unnest(:ids::bigint[], :attempts::integer[], :states::text[], :delays::bigint[],
-                                     :uncounted::integer[], :errors::text[], :started::timestamptz[])
-                    AS d(task_id, attempt, state, delay_ms, uncounted, error, started_at)
+                                     :uncounted::integer[], :errors::text[])
+                    AS d(task_id, attempt, state, delay_ms, uncounted, error)
             ),
             moved AS (
                 UPDATE pgtasks.queue q
@@ -250,21 +217,6 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM moved m JOIN d ON d.task_id = m.task_id
                 WHERE t.id = ANY (ARRAY(SELECT task_id FROM moved))
                   AND t.id = m.task_id AND d.error IS NOT NULL
-            ),
-            -- Only counted attempts are logged, so an outage of uncounted failures doesn't grow the log.
-            logged AS (
-                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result, error)
-                SELECT :topic::integer, d.task_id, d.attempt, :node::integer, coalesce(d.started_at, now()), 'failed', d.error::jsonb
-                FROM moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL AND d.uncounted = 0
-            ),
-            -- The log keeps a task's first attempt and its last ten, so a task that keeps failing
-            -- doesn't grow it without bound. (This statement doesn't see the row it inserts.)
-            trimmed AS (
-                DELETE FROM pgtasks.attempt a
-                USING moved m JOIN d ON d.task_id = m.task_id
-                WHERE d.error IS NOT NULL AND d.uncounted = 0 AND a.task_id = m.task_id
-                  AND a.attempt > 1 AND a.attempt <= d.attempt - 10
             )
             SELECT task_id FROM moved
             """);
@@ -290,7 +242,7 @@ public final class PostgresTaskStore implements TaskStore {
         // The attempt is kept: an expired run counts, since a poison task can take a node down.
         expire = sql("""
             WITH stale AS (
-                SELECT o.ctid AS row, o.task_id, o.topic_id, o.attempt, o.node_id, o.claimed_at
+                SELECT o.ctid AS row
                 FROM pgtasks.queue o
                 WHERE o.state = 'active'
                   AND o.node_id <> :node::integer
@@ -321,24 +273,8 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM requeued r
                 WHERE t.id = ANY (ARRAY(SELECT task_id FROM requeued))
                   AND t.id = r.task_id
-            ),
-            logged AS (
-                INSERT INTO pgtasks.attempt (topic_id, task_id, attempt, node_id, started_at, result)
-                SELECT s.topic_id, s.task_id, s.attempt, s.node_id, coalesce(s.claimed_at, now()), 'expired'
-                FROM stale s JOIN requeued r ON r.task_id = s.task_id
             )
             SELECT topic_id FROM requeued
-            """);
-        for (Junction.Counts counts : Junction.Counts.values()) {
-            junctions.put(counts, sql(junctionSql(counts)));
-        }
-        // Two parts of a group completing at once would each check the group before the other
-        // commits, and neither would release it. Each completion first locks every member of its
-        // groups, in one order so two completions can't deadlock on them, until it commits. The
-        // check is the next statement, so its snapshot already shows a part committed meanwhile.
-        junctionLocks = sql("""
-            SELECT count(pg_advisory_xact_lock(:topic::integer, member))
-            FROM (SELECT DISTINCT hashtext(identifier) AS member FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) members
             """);
         findTask = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, coalesce(q.state::text, t.outcome::text) AS state, q.task_id IS NULL AS finished,
@@ -426,7 +362,6 @@ public final class PostgresTaskStore implements TaskStore {
                   AND (:reference::text IS NULL OR c.task_id = ANY (ARRAY(
                       SELECT r.id FROM pgtasks.task r WHERE r.reference = :reference::text)))
                   AND (:any_state::boolean OR c.state::text = ANY (:states::text[]))
-                  AND %1$s
                   AND (:any_task::boolean OR EXISTS (
                       SELECT 1 FROM pgtasks.task t
                       WHERE t.id = c.task_id
@@ -437,14 +372,13 @@ public final class PostgresTaskStore implements TaskStore {
                       OFFSET 0))))
               AND o.task_id + 0 > :after::bigint
               AND (:any_state::boolean OR o.state::text = ANY (:states::text[]))
-              AND %2$s
             """;
         searchTasks = sql("""
             WITH found AS MATERIALIZED (
                 SELECT o.task_id, o.state, o.attempt, o.run_at, o.priority, o.node_id, o.failures, o.first_failed_at
                 FROM pgtasks.queue o
                 WHERE
-            """ + candidates.formatted("true", "true") + """
+            """ + candidates + """
                 ORDER BY o.task_id + 0
                 LIMIT :limit::integer
             )
@@ -456,76 +390,6 @@ public final class PostgresTaskStore implements TaskStore {
             JOIN pgtasks.task t ON t.id = o.task_id
             ORDER BY o.task_id
             """);
-        // Active tasks are never picked: a node runs them, and its completion must still find them.
-        cancel = sql("""
-            WITH picked AS MATERIALIZED (
-                SELECT o.ctid AS row FROM pgtasks.queue o
-                WHERE
-            """ + candidates.formatted("c.state::text <> 'active'", "o.state::text <> 'active'") + """
-                ORDER BY o.task_id + 0
-                LIMIT :limit::integer
-                FOR UPDATE OF o SKIP LOCKED
-            ),
-            gone AS (
-                DELETE FROM pgtasks.queue q
-                WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
-                RETURNING q.task_id, q.attempt
-            )
-            UPDATE pgtasks.task t
-            SET outcome = 'cancelled', attempts = gone.attempt, completed_at = now()
-            FROM gone
-            WHERE t.id = ANY (ARRAY(SELECT task_id FROM gone))
-              AND t.id = gone.task_id
-            RETURNING t.id
-            """);
-        // The update trigger on pgtasks.queue wakes the workers.
-        runNow = sql("""
-            WITH picked AS MATERIALIZED (
-                SELECT o.ctid AS row FROM pgtasks.queue o
-                WHERE
-            """ + candidates.formatted("c.state::text IN ('scheduled', 'retrying')", "o.state::text IN ('scheduled', 'retrying')") + """
-                ORDER BY o.task_id + 0
-                LIMIT :limit::integer
-                FOR UPDATE OF o SKIP LOCKED
-            )
-            UPDATE pgtasks.queue q
-            SET state = 'ready', run_at = NULL
-            WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
-            RETURNING q.task_id
-            """);
-        // The topic's rows become exactly the given ones. An unchanged cron and zone keep the next run.
-        syncSchedules = sql("""
-            WITH input AS MATERIALIZED (
-                SELECT * FROM unnest(:names::text[], :identifiers::text[], :crons::text[], :zones::text[], :insertions::text[],
-                                     :payloads::text[], :types::text[], :next::timestamptz[])
-                    AS i(name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
-            ),
-            removed AS (
-                DELETE FROM pgtasks.schedule s
-                WHERE s.topic_id = :topic::integer AND s.name NOT IN (SELECT name FROM input)
-            )
-            INSERT INTO pgtasks.schedule AS s (topic_id, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at)
-            SELECT :topic::integer, name, identifier, cron, zone, insertion, payload, payload_type, next_run_at FROM input
-            ON CONFLICT (topic_id, name) DO UPDATE
-            SET identifier = excluded.identifier, insertion = excluded.insertion, payload = excluded.payload,
-                payload_type = excluded.payload_type,
-                next_run_at = CASE WHEN s.cron = excluded.cron AND s.zone = excluded.zone THEN s.next_run_at ELSE excluded.next_run_at END,
-                cron = excluded.cron, zone = excluded.zone
-            """);
-        String scheduleColumns = """
-            SELECT s.id, s.topic_id, tp.name AS topic, s.name, s.identifier, s.cron, s.zone, s.insertion, s.payload, s.payload_type,
-                   s.next_run_at, s.last_run_at
-            FROM pgtasks.schedule s
-            JOIN pgtasks.topic tp ON tp.id = s.topic_id
-            """;
-        listSchedules = sql(scheduleColumns + "ORDER BY tp.name, s.name");
-        dueSchedules = sql(scheduleColumns + """
-            WHERE s.next_run_at <= clock_timestamp()
-            ORDER BY s.next_run_at
-            LIMIT :limit::integer
-            FOR UPDATE OF s SKIP LOCKED
-            """);
-        scheduleFired = sql("UPDATE pgtasks.schedule SET last_run_at = :fired::timestamptz, next_run_at = :next::timestamptz WHERE id = :id::integer");
         // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
         deleteDeadNodes = sql("""
             DELETE FROM pgtasks.node n
@@ -540,31 +404,10 @@ public final class PostgresTaskStore implements TaskStore {
             FROM pgtasks.node n
             ORDER BY n.id
             """);
-        // One row update decides which node of a new version, or which sweep, revives the dead letters.
-        claimRevival = sql("""
-            UPDATE pgtasks.topic SET revived_version = :version::text
-            WHERE id = :topic::integer AND revived_version IS DISTINCT FROM :version::text
-            RETURNING id
-            """);
-        claimReviveSweep = sql("""
-            UPDATE pgtasks.topic SET revive_swept_at = now()
-            WHERE id = :topic::integer AND (revive_swept_at IS NULL OR revive_swept_at <= now() - :every::bigint * interval '1 millisecond')
-            RETURNING id
-            """);
-        // queue_failing_idx keeps this to the topic's failing tasks.
-        failingGroups = sql("""
-            SELECT coalesce(t.error->>'type', t.error->>'message', 'unknown') AS error, count(*) AS tasks,
-                   min(q.first_failed_at) AS oldest, min(q.task_id) AS example,
-                   (array_agg(t.error->>'message' ORDER BY q.task_id))[1] AS message
-            FROM pgtasks.queue q
-            JOIN pgtasks.task t ON t.id = q.task_id
-            WHERE q.topic_id = :topic::integer AND q.failures > 0
-            GROUP BY 1
-            ORDER BY count(*) DESC, 1
-            LIMIT :limit::integer
-            """);
         // A discarded dead letter may have held back later tasks; no trigger sees a delete.
         notifyReady = sql("SELECT pg_notify('" + schema + "_ready', t::text) FROM unnest(:topics::integer[]) AS t");
+        // The channel name is the schema's, so another schema's nodes don't hear it.
+        notifyChannel = sql("SELECT pg_notify(:channel::text, :payload::text)");
         countQueue = sql("""
             SELECT count(*) FILTER (WHERE state = 'scheduled'),
                    count(*) FILTER (WHERE state = 'retrying'),
@@ -589,11 +432,6 @@ public final class PostgresTaskStore implements TaskStore {
                 ORDER BY d.completed_at
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
-            ),
-            -- A task's attempt log goes with it.
-            attempts AS (
-                DELETE FROM pgtasks.attempt a
-                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
             WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
@@ -606,10 +444,6 @@ public final class PostgresTaskStore implements TaskStore {
                 WHERE d.topic_id = :topic::integer AND d.outcome IS NOT NULL
                 LIMIT :limit::integer
                 FOR UPDATE SKIP LOCKED
-            ),
-            attempts AS (
-                DELETE FROM pgtasks.attempt a
-                WHERE a.task_id = ANY (ARRAY(SELECT id FROM doomed))
             )
             DELETE FROM pgtasks.task t
             WHERE t.id = ANY (ARRAY(SELECT id FROM doomed))
@@ -620,8 +454,7 @@ public final class PostgresTaskStore implements TaskStore {
         topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.task WHERE topic_id = :topic::integer)");
         // The delete trigger on pgtasks.topic tells every node (R__notify_topic.sql).
         deleteTopic = sql("""
-            WITH schedules AS (DELETE FROM pgtasks.schedule WHERE topic_id = :topic::integer),
-                 counts AS (DELETE FROM pgtasks.topic_count WHERE topic_id = :topic::integer)
+            WITH counts AS (DELETE FROM pgtasks.topic_count WHERE topic_id = :topic::integer)
             DELETE FROM pgtasks.topic WHERE id = :topic::integer
             """);
         // Written at every start, so it skips the write when nothing changed.
@@ -637,27 +470,6 @@ public final class PostgresTaskStore implements TaskStore {
             CROSS JOIN LATERAL jsonb_each_text(t.retention) AS r
             ORDER BY t.id
             """);
-        limitOverrides = sql("""
-            SELECT name, rate, burst, until, version, updated_at, updated_by
-            FROM pgtasks.rate_limit
-            ORDER BY name
-            """);
-        // Only a limit some node configured (it has a token bucket) can be overridden. A first
-        // override is based on version 0; two at once serialize on the primary key, and the second
-        // then finds version 1 and changes nothing.
-        overrideLimit = sql("""
-            INSERT INTO pgtasks.rate_limit AS l (name, rate, burst, until, updated_by)
-            SELECT a.name, :rate::double precision, :burst::integer, :until::timestamptz, :by::text
-            FROM pgtasks.rate_admission a
-            WHERE a.name = :name
-              AND (coalesce(:expected::bigint, 0) = 0 OR EXISTS (SELECT 1 FROM pgtasks.rate_limit e WHERE e.name = :name))
-            ON CONFLICT (name) DO UPDATE
-            SET rate = excluded.rate, burst = excluded.burst, until = excluded.until,
-                version = l.version + 1, updated_at = now(), updated_by = excluded.updated_by
-            WHERE :expected::bigint IS NULL OR l.version = :expected::bigint
-            RETURNING l.name, l.rate, l.burst, l.until, l.version, l.updated_at, l.updated_by
-            """);
-        limitConfigured = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.rate_admission WHERE name = :name)");
         snapshot = sql("""
             INSERT INTO pgtasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
                                            oldest_ready_at, failing, oldest_failing_at)
@@ -714,12 +526,6 @@ public final class PostgresTaskStore implements TaskStore {
             WHERE node_id = :node::integer AND state = 'active'
               AND claimed_at <= clock_timestamp() - :age::bigint * interval '1 millisecond'
             ORDER BY task_id
-            """);
-        listAttempts = sql("""
-            SELECT task_id, attempt, node_id, result, error::text
-            FROM pgtasks.attempt
-            WHERE task_id = :id::bigint
-            ORDER BY attempt, finished_at
             """);
     }
 
@@ -858,35 +664,6 @@ public final class PostgresTaskStore implements TaskStore {
                         FOR UPDATE OF d SKIP LOCKED))
                 )
                 """;
-            case DELETE -> """
-                ,
-                deleted AS (
-                    DELETE FROM pgtasks.queue q
-                    WHERE q.topic_id = :topic::integer
-                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                      AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM pgtasks.queue o
-                        WHERE o.topic_id = :topic::integer
-                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                          AND o.state <> 'active'
-                        FOR UPDATE OF o SKIP LOCKED))
-                    RETURNING q.task_id
-                ),
-                deleted_tasks AS (
-                    DELETE FROM pgtasks.task t
-                    WHERE t.id = ANY (ARRAY(SELECT task_id FROM deleted) || ARRAY(
-                          SELECT d.id FROM pgtasks.task d
-                          WHERE d.topic_id = (SELECT :topic::integer)
-                            AND d.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                            AND d.outcome IS NOT NULL
-                          FOR UPDATE OF d SKIP LOCKED))
-                    RETURNING t.id
-                ),
-                deleted_attempts AS (
-                    DELETE FROM pgtasks.attempt a
-                    WHERE a.task_id = ANY (ARRAY(SELECT id FROM deleted_tasks))
-                )
-                """;
         };
         // Woken by the caller: the flag tells the queue's insert trigger, which runs at the end of
         // this statement, to skip its notification; the trigger clears it, so it covers this
@@ -935,45 +712,6 @@ public final class PostgresTaskStore implements TaskStore {
             FROM input
             ORDER BY ord
             """;
-    }
-
-    private static String junctionSql(Junction.Counts counts) {
-        // A group is complete when every identifier has a task that counts; then the group's
-        // suspended tasks become ready. ANY skips redundant tasks (a newer push replaced them) and
-        // cancelled ones (they never ran). It reads the task table, so a part whose row
-        // retention has purged no longer counts.
-        String present = switch (counts) {
-            case SUSPENDED -> """
-                SELECT 1 FROM pgtasks.queue s
-                WHERE s.topic_id = :topic::integer AND s.identifier = g.identifier AND s.state = 'suspended'
-                """;
-            case ANY -> """
-                SELECT 1 FROM pgtasks.task t
-                WHERE t.topic_id = (SELECT :topic::integer) AND t.identifier = g.identifier
-                  AND (t.outcome IS NULL OR t.outcome NOT IN ('redundant', 'cancelled'))
-                """;
-        };
-        return """
-            WITH g AS (
-                SELECT * FROM unnest(:groups::integer[], :identifiers::text[]) AS g(group_no, identifier)
-            ),
-            checked AS (
-                SELECT g.group_no, g.identifier, EXISTS (%s) AS present
-                FROM g
-            ),
-            complete AS (
-                SELECT group_no FROM checked GROUP BY group_no HAVING bool_and(present)
-            ),
-            released AS (
-                UPDATE pgtasks.queue q
-                SET state = 'ready'
-                WHERE q.topic_id = :topic::integer
-                  AND q.state = 'suspended'
-                  AND q.identifier = ANY (ARRAY(SELECT c.identifier FROM checked c JOIN complete USING (group_no)))
-                RETURNING q.identifier
-            )
-            SELECT DISTINCT identifier FROM released
-            """.formatted(present);
     }
 
     private static String pollSql(Ordering ordering) {
@@ -1057,18 +795,10 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = listTopics.prepare(transaction.connection(), NamedSql.parameters());
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
-                topics.add(new TopicInfo(resultSet.getInt(1), resultSet.getString(2), resultSet.getBoolean(3)));
+                topics.add(new TopicInfo(resultSet.getInt(1), resultSet.getString(2)));
             }
         }
         return topics;
-    }
-
-    @Override
-    public boolean setPaused(StoreTransaction transaction, String name, boolean paused) throws SQLException {
-        try (PreparedStatement statement = pauseTopic.prepare(transaction.connection(), NamedSql.parameters().set("name", name).set("paused", paused));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
-        }
     }
 
     @Override
@@ -1083,22 +813,16 @@ public final class PostgresTaskStore implements TaskStore {
         if (tasks.isEmpty()) {
             return List.of();
         }
-        // Within one push, SUPERSEDE and REPLACE keep earlier duplicates as redundant history;
-        // DELETE drops them.
+        // Within one push, SUPERSEDE and REPLACE keep earlier duplicates as redundant history.
         Map<String, Integer> last = new HashMap<>();
         for (int index = 0; index < tasks.size(); index++) {
             last.put(tasks.get(index).identifier(), index);
         }
         List<NewTask> stored = new ArrayList<>(tasks.size());
         List<String> states = new ArrayList<>(tasks.size());
-        boolean[] dropped = new boolean[tasks.size()];
         for (int index = 0; index < tasks.size(); index++) {
             NewTask task = tasks.get(index);
             boolean superseded = insertion != Insertion.APPEND && last.getOrDefault(task.identifier(), index) != index;
-            if (superseded && insertion == Insertion.DELETE) {
-                dropped[index] = true;
-                continue;
-            }
             stored.add(task);
             states.add(superseded ? null : task.suspended() ? "suspended" : task.delayed() ? "scheduled" : "ready");
         }
@@ -1145,10 +869,6 @@ public final class PostgresTaskStore implements TaskStore {
              ResultSet resultSet = statement.executeQuery()) {
             for (int index = 0; index < tasks.size(); index++) {
                 String identifier = tasks.get(index).identifier();
-                if (dropped[index]) {
-                    results.add(new Pushed(identifier, Pushed.Status.REDUNDANT, null));
-                    continue;
-                }
                 if (!resultSet.next()) {
                     throw new IllegalStateException("Push returned fewer rows than it was given");
                 }
@@ -1180,22 +900,11 @@ public final class PostgresTaskStore implements TaskStore {
                 statement.execute();
             }
         }
-        Admission admission = request.admission();
-        int limit = request.limit();
-        if (admission != null) {
-            double available = available(connection, admission);
-            int permits = (int) Math.min(limit, Math.floor(available));
-            if (permits < 1) {
-                long waitNanos = (long) Math.ceil((1 - available) / admission.perSecond() * 1_000_000_000L);
-                return new Claim(List.of(), Duration.ofNanos(Math.max(waitNanos, 1_000_000L)));
-            }
-            limit = permits;
-        }
         List<ClaimedTask> tasks = new ArrayList<>();
         NamedSql.Parameters parameters = NamedSql.parameters()
             .set("topic", request.topicId())
             .set("node", request.nodeId())
-            .set("limit", limit);
+            .set("limit", request.limit());
         try (PreparedStatement statement = Objects.requireNonNull(polls.get(request.ordering())).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
@@ -1217,34 +926,7 @@ public final class PostgresTaskStore implements TaskStore {
                 ));
             }
         }
-        if (admission != null && !tasks.isEmpty()) {
-            NamedSql.Parameters charge = NamedSql.parameters()
-                .set("name", admission.name())
-                .set("burst", admission.burst())
-                .set("rate", admission.perSecond())
-                .set("claimed", tasks.size());
-            try (PreparedStatement statement = admissionCharge.prepare(connection, charge)) {
-                statement.executeUpdate();
-            }
-        }
-        return tasks.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(tasks), null);
-    }
-
-    private double available(Connection connection, Admission admission) throws SQLException {
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("name", admission.name())
-            .set("burst", admission.burst())
-            .set("rate", admission.perSecond());
-        for (int round = 0; round < 2; round++) {
-            try (PreparedStatement statement = admissionLock.prepare(connection, parameters);
-                 ResultSet resultSet = statement.executeQuery()) {
-                if (resultSet.next()) {
-                    return resultSet.getDouble(1);
-                }
-            }
-            insertAdmission(connection, admission.name(), admission.burst());
-        }
-        throw new IllegalStateException("No admission state for rate limit " + admission.name());
+        return tasks.isEmpty() ? Claim.EMPTY : new Claim(List.copyOf(tasks));
     }
 
     @Override
@@ -1304,7 +986,7 @@ public final class PostgresTaskStore implements TaskStore {
         if (!waiting.isEmpty()) {
             int size = waiting.size();
             @Nullable Object[] ids = new @Nullable Object[size], attempts = new @Nullable Object[size], states = new @Nullable Object[size], delays = new @Nullable Object[size];
-            @Nullable Object[] uncounted = new @Nullable Object[size], errors = new @Nullable Object[size], started = new @Nullable Object[size];
+            @Nullable Object[] uncounted = new @Nullable Object[size], errors = new @Nullable Object[size];
             for (int index = 0; index < size; index++) {
                 Completion completion = waiting.get(index);
                 Resolution.Waiting resolution = (Resolution.Waiting) completion.resolution();
@@ -1319,7 +1001,6 @@ public final class PostgresTaskStore implements TaskStore {
                 delays[index] = resolution.delay() == null ? null : resolution.delay().toMillis();
                 uncounted[index] = resolution.counted() ? 0 : 1;
                 errors[index] = resolution.error();
-                started[index] = completion.claimedAt() == null ? null : completion.claimedAt().toString();
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1329,8 +1010,7 @@ public final class PostgresTaskStore implements TaskStore {
                 .array("states", "text", states)
                 .array("delays", "bigint", delays)
                 .array("uncounted", "integer", uncounted)
-                .array("errors", "text", errors)
-                .array("started", "text", started);
+                .array("errors", "text", errors);
             collect(wait, connection, parameters, matched);
         }
         return matched;
@@ -1530,101 +1210,6 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void ensureAdmission(StoreTransaction transaction, String name, int burst) throws SQLException {
-        insertAdmission(transaction.connection(), name, burst);
-    }
-
-    private void insertAdmission(Connection connection, String name, int burst) throws SQLException {
-        try (PreparedStatement statement = ensureAdmission.prepare(connection, NamedSql.parameters().set("name", name).set("burst", (double) burst))) {
-            statement.executeUpdate();
-        }
-    }
-
-    @Override
-    public Set<String> junction(StoreTransaction transaction, int topicId, Junction.Counts counts, Collection<Set<String>> groups) throws SQLException {
-        List<Object> numbers = new ArrayList<>(), identifiers = new ArrayList<>();
-        int group = 0;
-        for (Set<String> members : groups) {
-            group++;
-            for (String identifier : members) {
-                numbers.add(group);
-                identifiers.add(identifier);
-            }
-        }
-        if (identifiers.isEmpty()) {
-            return Set.of();
-        }
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("topic", topicId)
-            .array("groups", "integer", numbers.toArray())
-            .array("identifiers", "text", identifiers.toArray());
-        try (PreparedStatement statement = junctionLocks.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            resultSet.next();
-        }
-        Set<String> released = new LinkedHashSet<>();
-        try (PreparedStatement statement = Objects.requireNonNull(junctions.get(counts)).prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                released.add(resultSet.getString(1));
-            }
-        }
-        return released;
-    }
-
-    @Override
-    public List<LimitOverride> limitOverrides(StoreTransaction transaction) throws SQLException {
-        List<LimitOverride> overrides = new ArrayList<>();
-        try (PreparedStatement statement = limitOverrides.prepare(transaction.connection(), NamedSql.parameters());
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                overrides.add(limitOverride(resultSet));
-            }
-        }
-        return overrides;
-    }
-
-    @Override
-    public Optional<LimitOverride> overrideLimit(StoreTransaction transaction, String name, @Nullable Double perSecond, @Nullable Integer burst,
-                                                 @Nullable Instant until, @Nullable String by, @Nullable Long expectedVersion) throws SQLException {
-        // Validates the values the way the row will hold them, before touching the database.
-        new LimitOverride(name, perSecond, burst, until, 0, Instant.EPOCH, by);
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("name", name)
-            .set("rate", perSecond)
-            .set("burst", burst)
-            .set("until", until == null ? null : OffsetDateTime.ofInstant(until, ZoneOffset.UTC))
-            .set("by", by)
-            .set("expected", expectedVersion);
-        try (PreparedStatement statement = overrideLimit.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            if (resultSet.next()) {
-                return Optional.of(limitOverride(resultSet));
-            }
-        }
-        try (PreparedStatement statement = limitConfigured.prepare(transaction.connection(), NamedSql.parameters().set("name", name));
-             ResultSet resultSet = statement.executeQuery()) {
-            resultSet.next();
-            if (!resultSet.getBoolean(1)) {
-                throw new IllegalArgumentException("No node has configured a rate limit named '" + name + "'");
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static LimitOverride limitOverride(ResultSet resultSet) throws SQLException {
-        return new LimitOverride(
-            resultSet.getString("name"),
-            resultSet.getObject("rate", Double.class),
-            resultSet.getObject("burst", Integer.class),
-            instant(resultSet, "until"),
-            resultSet.getLong("version"),
-            requiredInstant(resultSet, "updated_at"),
-            resultSet.getString("updated_by")
-        );
-    }
-
-    @Override
     public Optional<TaskView> find(StoreTransaction transaction, long taskId) throws SQLException {
         try (PreparedStatement statement = findTask.prepare(transaction.connection(), NamedSql.parameters().set("id", taskId));
              ResultSet resultSet = statement.executeQuery()) {
@@ -1670,21 +1255,6 @@ public final class PostgresTaskStore implements TaskStore {
         return result;
     }
 
-    /** Cancelled tasks may have held back later ones under an ordering; no trigger sees a delete. */
-    @Override
-    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
-        List<Long> cancelled = ids(cancel, transaction, query(query, topicId, limit));
-        if (!cancelled.isEmpty()) {
-            notifyReady(transaction, List.of(topicId));
-        }
-        return cancelled;
-    }
-
-    @Override
-    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
-        return ids(runNow, transaction, query(query, topicId, limit));
-    }
-
     @Override
     public void notifyReady(StoreTransaction transaction, Collection<Integer> topicIds) throws SQLException {
         if (topicIds.isEmpty()) {
@@ -1692,6 +1262,17 @@ public final class PostgresTaskStore implements TaskStore {
         }
         try (PreparedStatement statement = notifyReady.prepare(transaction.connection(),
             NamedSql.parameters().array("topics", "integer", topicIds.toArray()))) {
+            statement.execute();
+        }
+    }
+
+    @Override
+    public void notify(StoreTransaction transaction, String channel, String payload) throws SQLException {
+        if (!Notifier.CHANNEL.matcher(channel).matches() || channel.equals("ready")) {
+            throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
+        }
+        try (PreparedStatement statement = notifyChannel.prepare(transaction.connection(),
+            NamedSql.parameters().set("channel", schema + "_" + channel).set("payload", payload))) {
             statement.execute();
         }
     }
@@ -1744,114 +1325,10 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public void syncSchedules(StoreTransaction transaction, int topicId, List<ScheduleSpec> schedules) throws SQLException {
-        int size = schedules.size();
-        @Nullable Object[] names = new @Nullable Object[size], identifiers = new @Nullable Object[size], crons = new @Nullable Object[size], zones = new @Nullable Object[size];
-        @Nullable Object[] insertions = new @Nullable Object[size], payloads = new @Nullable Object[size], types = new @Nullable Object[size], next = new @Nullable Object[size];
-        for (int index = 0; index < size; index++) {
-            ScheduleSpec schedule = schedules.get(index);
-            names[index] = schedule.name();
-            identifiers[index] = schedule.identifier();
-            crons[index] = schedule.cron();
-            zones[index] = schedule.zone();
-            insertions[index] = schedule.insertion().name();
-            payloads[index] = schedule.payload();
-            types[index] = schedule.payloadType();
-            next[index] = schedule.nextRunAt().toString();
-        }
-        NamedSql.Parameters parameters = NamedSql.parameters()
-            .set("topic", topicId)
-            .array("names", "text", names)
-            .array("identifiers", "text", identifiers)
-            .array("crons", "text", crons)
-            .array("zones", "text", zones)
-            .array("insertions", "text", insertions)
-            .array("payloads", "text", payloads)
-            .array("types", "text", types)
-            .array("next", "text", next);
-        try (PreparedStatement statement = syncSchedules.prepare(transaction.connection(), parameters)) {
-            statement.execute();
-        }
-    }
-
-    @Override
-    public List<Schedule> schedules(StoreTransaction transaction) throws SQLException {
-        return schedules(listSchedules, transaction, NamedSql.parameters());
-    }
-
-    @Override
-    public List<Schedule> dueSchedules(StoreTransaction transaction, int limit) throws SQLException {
-        return schedules(dueSchedules, transaction, NamedSql.parameters().set("limit", limit));
-    }
-
-    @Override
-    public void scheduleFired(StoreTransaction transaction, int scheduleId, Instant firedAt, Instant nextRunAt) throws SQLException {
-        try (PreparedStatement statement = scheduleFired.prepare(transaction.connection(), NamedSql.parameters()
-                 .set("id", scheduleId)
-                 .set("fired", OffsetDateTime.ofInstant(firedAt, ZoneOffset.UTC))
-                 .set("next", OffsetDateTime.ofInstant(nextRunAt, ZoneOffset.UTC)))) {
-            statement.executeUpdate();
-        }
-    }
-
-    private static List<Schedule> schedules(NamedSql sql, StoreTransaction transaction, NamedSql.Parameters parameters) throws SQLException {
-        List<Schedule> result = new ArrayList<>();
-        try (PreparedStatement statement = sql.prepare(transaction.connection(), parameters);
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                result.add(new Schedule(
-                    resultSet.getInt("id"),
-                    resultSet.getInt("topic_id"),
-                    resultSet.getString("topic"),
-                    resultSet.getString("name"),
-                    resultSet.getString("identifier"),
-                    resultSet.getString("cron"),
-                    resultSet.getString("zone"),
-                    Insertion.valueOf(resultSet.getString("insertion")),
-                    resultSet.getString("payload"),
-                    resultSet.getString("payload_type"),
-                    requiredInstant(resultSet, "next_run_at"),
-                    instant(resultSet, "last_run_at")));
-            }
-        }
-        return result;
-    }
-
-    @Override
     public int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException {
         try (PreparedStatement statement = deleteDeadNodes.prepare(transaction.connection(), NamedSql.parameters().set("dead", deadFor.toMillis()))) {
             return statement.executeUpdate();
         }
-    }
-
-    @Override
-    public boolean claimRevival(StoreTransaction transaction, int topicId, String version) throws SQLException {
-        try (PreparedStatement statement = claimRevival.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("version", version));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
-        }
-    }
-
-    @Override
-    public boolean claimReviveSweep(StoreTransaction transaction, int topicId, Duration every) throws SQLException {
-        try (PreparedStatement statement = claimReviveSweep.prepare(transaction.connection(),
-                 NamedSql.parameters().set("topic", topicId).set("every", every.toMillis()));
-             ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next();
-        }
-    }
-
-    @Override
-    public List<FailureGroup> failing(StoreTransaction transaction, int topicId, int limit) throws SQLException {
-        List<FailureGroup> groups = new ArrayList<>();
-        try (PreparedStatement statement = failingGroups.prepare(transaction.connection(), NamedSql.parameters().set("topic", topicId).set("limit", limit));
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                groups.add(new FailureGroup(resultSet.getString("error"), resultSet.getLong("tasks"), requiredInstant(resultSet, "oldest"),
-                    resultSet.getLong("example"), resultSet.getString("message")));
-            }
-        }
-        return groups;
     }
 
     private static TaskView taskView(ResultSet resultSet) throws SQLException {
@@ -1904,19 +1381,6 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return nodes;
-    }
-
-    @Override
-    public List<AttemptView> attempts(StoreTransaction transaction, long taskId) throws SQLException {
-        List<AttemptView> attempts = new ArrayList<>();
-        try (PreparedStatement statement = listAttempts.prepare(transaction.connection(), NamedSql.parameters().set("id", taskId));
-             ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                attempts.add(new AttemptView(resultSet.getLong(1), resultSet.getInt(2), resultSet.getObject(3, Integer.class),
-                    resultSet.getString(4), resultSet.getString(5)));
-            }
-        }
-        return attempts;
     }
 
     /** A timestamp of a NOT NULL column. */

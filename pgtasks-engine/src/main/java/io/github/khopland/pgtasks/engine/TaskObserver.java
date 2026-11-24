@@ -1,6 +1,5 @@
 package io.github.khopland.pgtasks.engine;
 
-import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -69,21 +68,10 @@ public interface TaskObserver {
         return BatchObservation.NONE;
     }
 
-    /** This node's breaker for a topic opened or closed. */
-    default void breaker(TopicRef<?> topic, boolean open) {
-    }
-
-    /**
-     * A claim found the topic's rate limit spent: the topic waits this long, or until the limit
-     * changes, before it claims again on this node.
-     */
-    default void limitWait(TopicRef<?> topic, String limit, Duration wait) {
-    }
-
     /** What became of a task when its batch completed. */
     enum Result {
-        SUCCEEDED, FILTERED, SUSPENDED, DELAYED, THROTTLED,
-        /** Failed without using up an attempt: {@code Decision.unavailable}, or a type the retry policy doesn't count. */
+        SUCCEEDED, FILTERED, SUSPENDED, DELAYED,
+        /** Failed without using up an attempt: a failure type the retry policy doesn't count. */
         UNAVAILABLE,
         RETRYING, DEAD_LETTERED
     }

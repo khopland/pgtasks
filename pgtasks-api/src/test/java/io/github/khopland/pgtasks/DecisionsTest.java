@@ -24,7 +24,6 @@ class DecisionsTest {
             Decision.success(),
             Decision.filtered("irrelevant"),
             Decision.later(Duration.ofSeconds(1)),
-            Decision.throttled(Duration.ofSeconds(1)),
             Decision.suspended(),
             Decision.failed("boom")
         );
@@ -40,8 +39,6 @@ class DecisionsTest {
     void merge_keeps_the_longer_delay() {
         assertThat(Decision.merge(Decision.later(Duration.ofSeconds(1)), Decision.later(Duration.ofSeconds(5))))
             .isEqualTo(Decision.later(Duration.ofSeconds(5)));
-        assertThat(Decision.merge(Decision.throttled(Duration.ofSeconds(9)), Decision.throttled(Duration.ofSeconds(5))))
-            .isEqualTo(Decision.throttled(Duration.ofSeconds(9)));
     }
 
     @Test
@@ -49,7 +46,6 @@ class DecisionsTest {
         assertThat(Decision.success().continues()).isTrue();
         assertThat(Decision.filtered("x").continues()).isFalse();
         assertThat(Decision.later(Duration.ZERO).continues()).isFalse();
-        assertThat(Decision.throttled(Duration.ZERO).continues()).isFalse();
         assertThat(Decision.suspended().continues()).isFalse();
         assertThat(Decision.failed("x").continues()).isFalse();
     }

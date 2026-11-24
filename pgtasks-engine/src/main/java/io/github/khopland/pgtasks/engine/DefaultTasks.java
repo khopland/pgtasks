@@ -57,7 +57,6 @@ final class DefaultTasks implements Tasks {
 
     private final TopicDirectory topics;
     private final Map<String, PayloadCodec<?>> topicCodecs;
-    private final List<TopicTemplate<?>> templates;
     private final Map<Class<?>, PayloadCodec<?>> typeCodecs;
     private final TransactionBinding transactions;
     private final IntConsumer wakeLocally;
@@ -71,7 +70,6 @@ final class DefaultTasks implements Tasks {
         TaskStore store,
         TopicDirectory topics,
         Map<String, PayloadCodec<?>> topicCodecs,
-        List<TopicTemplate<?>> templates,
         Map<Class<?>, PayloadCodec<?>> typeCodecs,
         TransactionBinding transactions,
         IntConsumer wakeLocally,
@@ -80,7 +78,6 @@ final class DefaultTasks implements Tasks {
         this.store = store;
         this.topics = topics;
         this.topicCodecs = Map.copyOf(topicCodecs);
-        this.templates = List.copyOf(templates);
         this.typeCodecs = Map.copyOf(typeCodecs);
         this.transactions = transactions;
         this.wakeLocally = wakeLocally;
@@ -350,10 +347,8 @@ final class DefaultTasks implements Tasks {
      * completion: no codec for its payloads, or no such topic. Otherwise one task's mistake would
      * fail the whole batch's completion. The topic is looked up once, then known.
      */
-    void checkTarget(TopicRef<?> topic, boolean needsCodec) {
-        if (needsCodec) {
-            codec(topic);
-        }
+    void checkTarget(TopicRef<?> topic) {
+        codec(topic);
         if (topics.known(topic.name())) {
             return;
         }
@@ -386,9 +381,6 @@ final class DefaultTasks implements Tasks {
     @SuppressWarnings("unchecked")
     <T> PayloadCodec<T> codec(TopicRef<T> topic) {
         PayloadCodec<?> codec = topicCodecs.get(topic.name());
-        if (codec == null) {
-            codec = templates.stream().filter(template -> template.matches(topic.name())).map(TopicTemplate::codec).findFirst().orElse(null);
-        }
         if (codec == null) {
             codec = typeCodecs.get(topic.payloadType());
         }

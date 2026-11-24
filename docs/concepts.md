@@ -11,8 +11,9 @@ public static final TopicRef<AssessmentRequest> ASSESSMENT = TopicRef.of("assess
 
 Names use lower-case letters, digits, `.`, `_` and `-`. A topic is a row in `pgtasks.topic`, so
 creating one needs no DDL. A topic is created when an engine that registers it starts, or that
-declares it with `pushesTo` (see [producers in another service](patterns.md#producers-and-consumers-in-separate-services)),
-or with `admin().createTopic(name)`. A push never creates one, so a misspelt topic fails at once.
+declares it with `pushesTo` (see [producers in another service](patterns.md#producers-and-consumers-in-separate-services)).
+A push never creates one, so a misspelt topic fails at once. A topic that is no longer needed,
+with no unfinished tasks, can be deleted with its history: `engine.admin().deleteTopic(name)`.
 
 Configurers register topics, one per module:
 
@@ -21,12 +22,11 @@ TaskConfigurer notifyTasks = tasks -> tasks
     .defaults(options -> options.concurrency(4))           // this configurer's topics only
     .eachTask(NOTIFY, task -> mailer.send(task.payload()))
     .topic(REMINDERS, new ReminderHandler(), options -> options.ordering(Ordering.SINGULAR_BY_IDENTIFIER))
-    .topicsMatching("assessment-*", AssessmentRequest.class, assessments) // also topics created later, by anyone
     .pushesTo(ARCHIVE);                                    // another module's topic: created at start, codec checked
 ```
 
 All configurers are merged and validated before anything starts, so bean order doesn't matter.
-Two configurers registering one topic, an unknown limit, an override for a topic nobody defines,
+Two configurers registering one topic, an override for a topic nobody defines,
 or a payload type without a codec all fail the build with a message that names the module.
 
 ## Tasks and identifiers
@@ -55,7 +55,7 @@ such as the start of the next business day. The run time is compared with the st
 database's, on Postgres), so nodes with skewed clocks agree on it, and a time that has already
 come, the past included, makes the task ready at once. Delay, run time and suspension exclude each
 other: each of the three builders replaces the others. Downstream work pushed from a handler
-(`work.push`) takes the same creation. Recurring tasks don't take one: their cron is the time.
+(`work.push`) takes the same creation.
 
 `push` returns one `Pushed` per creation: `QUEUED`, `REDUNDANT` (a later creation in the same
 push has the same identifier), `DUPLICATE` (an unfinished task has the dedup key), or `PENDING`
@@ -71,7 +71,6 @@ already claimed is never touched.
 | `APPEND` (default) | kept | kept | kept |
 | `SUPERSEDE` | become redundant | kept | kept |
 | `REPLACE` | become redundant | become redundant | marked redundant, outcome kept in `previous_outcome` |
-| `DELETE` | deleted | deleted | deleted |
 
 Insertion is a queue-management tool, not a uniqueness guarantee. Use a dedup key for that.
 
@@ -98,7 +97,7 @@ a later task wait for an earlier one:
 
 | The earlier task is… | `SINGULAR_BY_IDENTIFIER` | `…_ON_FAILURE` | `…_UNTIL_SUCCESS` |
 |---|---|---|---|
-| ready, active, retrying, throttled | waits | waits | waits |
+| ready, active, retrying | waits | waits | waits |
 | suspended or delayed | runs | runs | waits |
 | dead-lettered | runs | waits | waits |
 | finished | runs | runs | runs |
@@ -140,10 +139,8 @@ deciders that wait on a remote call per task.
 | `success()`, `success(output)` | Done. Staged downstream work is committed. | — |
 | `filtered(reason)` | Done, not needed. Nothing downstream. | — |
 | `later(delay)` | Runs again after the delay. | no |
-| `suspended()` | Waits until a junction or an operator releases it. | no |
-| `throttled(retryAfter)` | Downstream pushback: retried after the delay. | no |
-| `unavailable(cause)` | Not the task's fault: retried with backoff, error kept. | no |
-| `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. | yes |
+| `suspended()` | Waits, out of the way of later tasks under most orderings. Nothing releases it in this version. | no |
+| `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
 An exception from a decider fails only that task. One from the handler fails the batch. A task
 the handler leaves without a decision fails too.
@@ -172,71 +169,17 @@ codec can't decode is always dead-lettered at once, since retrying won't change 
 
 A dead letter stays in the queue, holding back later tasks under `…_ON_FAILURE` and
 `…_UNTIL_SUCCESS`, until an operator revives it (another round of attempts) or discards it
-(finished as failed). A topic can also revive them by itself:
-`options.deadLetters(DeadLetterPolicy.KEEP.withReviveOnNewVersion())` revives them when the first
-node of a new application version starts, so a bug fix gets a second go at what it broke.
+(finished as failed).
 
 A task whose node dies under it is requeued with backoff once the node counts as dead (10
 minutes without a heartbeat by default). The third time, it is dead-lettered whatever the
 policy says, so a task that crashes the JVM can't take down node after node.
 
-## Operator actions on unfinished tasks
+## Searching unfinished tasks
 
-Operators can also act on tasks that are still waiting, not only on dead letters
-(`engine.admin()`, the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)):
-
-- **Search** a topic's unfinished tasks by identifier, reference, state, one header's value and
-  when they were pushed, a page at a time, lowest id first.
-- **Run now** makes delayed and retrying tasks ready at once. Their attempts and failures stay, so
-  a further failure backs off as it would have.
-- **Cancel** takes ready, delayed, retrying, suspended and dead-lettered tasks out of the queue.
-  They finish with the outcome `cancelled` and never run; like a discarded dead letter, a
-  cancelled task stops holding back later tasks under a `SINGULAR_…` ordering. An **active** task
-  is never cancelled: its node is running it and can't be stopped, so the cancel skips it and it
-  runs to its end with its own outcome. Cancel it again if it comes back to wait.
-
-`cancelled` is an outcome of its own rather than `failed` (which says the task gave up) or
-`redundant` (which says a newer push replaced it): it says an operator decided, and it has its own
-retention, 30 days by default. A cancelled task doesn't count as present for an `ANY` junction,
-since it never ran; pushing the identifier again does. `REPLACE` leaves it in the history as it is.
-
-## The breaker
-
-When most of a topic's recent tasks fail (80 % of the last 50, from at least 5 different tasks),
-a node stops claiming from it and sends one probe task every 30 s. The probe's failures don't
-count, and the first probe that succeeds closes the breaker. Failures the policy dead-letters at
-once (`deadLetterAt`) don't count, since bad input isn't an outage. Change it with
-`options.breaker(Breaker.standard().opensAt(0.5, 20))`, or turn it off with `Breaker.off()`.
-
-## Rate limits
-
-A limit caps how many tasks are claimed per second across every node, with one token bucket in
-the database. Define it once and use it from any topic:
-
-```java
-TaskGlobals globals = g -> g
-    .limit("folkeregister", limit -> limit.rate(Rate.perSecond(200)).burst(20)
-        .window(Cron.parse("0 7 * * MON-FRI", oslo), Rate.perSecond(50))     // office hours: gentler
-        .window(Cron.parse("0 17 * * MON-FRI", oslo), Rate.perSecond(200)));
-...
-options.limit("folkeregister");
-```
-
-Operators override a limit at runtime through the endpoint or `engine.limits().override(...)`,
-optionally for a while. Every node picks it up within about a second.
-
-## Recurring tasks
-
-```java
-tasks.recurring(REPORTS, "nightly", Cron.parse("0 2 * * *", oslo), "nightly-report", new ReportRequest());
-```
-
-The housekeeping leader pushes it when due, once across the cluster. A run missed while no node
-was up is made up once. By default each push supersedes the last one if that is still waiting.
-
-Every node that starts replaces the topic's schedules with its own, so the schedules are those of
-the node that started last. See [rolling deploys](operations.md#deploys-and-shutdown) for what
-that means when versions add or remove schedules.
+Operators can search a topic's unfinished tasks by identifier, reference, state, one header's
+value and when they were pushed, a page at a time, lowest id first (`engine.admin().tasks(...)`,
+the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)).
 
 ## Where settings come from
 
@@ -244,14 +187,14 @@ Each layer overrides the one before it:
 
 1. Built-in defaults: 100 tasks per batch, 2 batches per topic per node, FIFO, the standard
    retry, a 30 minute batch deadline, a 30 s poll as a fallback for notifications. Succeeded
-   tasks are kept for 30 days, cancelled ones too; filtered, redundant and recreated for 7; failed forever.
+   tasks are kept for 30 days; filtered, redundant and recreated for 7; failed forever.
 2. `TaskGlobals.defaults(...)`, for every topic.
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.
 5. Overrides: `pgtasks.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
-   are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`, `breaker`
-   (on or off), `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
-   `retry.max-backoff` and `retain.<outcome>`. Limits take `limits.<limit>.rate` and `.burst`.
+   are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`,
+   `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
+   `retry.max-backoff` and `retain.<outcome>`.
 
 `engine.effectiveSettings()`, and the endpoint, show each topic's values and the layer each one
 came from.

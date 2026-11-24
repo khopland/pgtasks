@@ -4,7 +4,6 @@
 #   7  restart Postgres
 #  10  partners fail every call (500) for 3 minutes
 #  15  partners down (connection refused) for 2 minutes
-#  19  pause orders.ship for 2 minutes
 #  23  rolling restart, one instance at a time, with more payment concurrency
 #  29  stop rejecting addresses (the "fix" for the shipments that were dead-lettered)
 set -uo pipefail
@@ -22,8 +21,6 @@ at 10; stub "fail=1.0"
 at 13; stub "fail=0.02"
 at 15; stub "down=true"
 at 17; stub "down=false"
-at 19; log "pause orders.ship";     scripts/ops.sh 8081 POST topics/orders.ship/pause | tee -a run/chaos.log
-at 21; log "resume orders.ship";    scripts/ops.sh 8082 POST topics/orders.ship/resume | tee -a run/chaos.log
 at 23; for n in 1 2 3; do
          log "rolling restart: instance $n"
          scripts/cluster.sh stop "$n" | tee -a run/chaos.log

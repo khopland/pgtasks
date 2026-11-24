@@ -2,8 +2,8 @@
 
 Handlers are plain code, so most tests need no engine at all. When the queue's behaviour
 matters (retries, ordering, what gets pushed downstream), run a real engine on the in-memory
-store. It passes the same TCK as Postgres, so ordering, insertion policies, fencing, junctions,
-retries and rate limits behave the same. Keep a few tests on Postgres for what only Postgres can
+store. It passes the same TCK as Postgres, so ordering, insertion policies, fencing
+and retries behave the same. Keep a few tests on Postgres for what only Postgres can
 prove: that a push commits and rolls back with your own tables.
 
 ## JUnit 5, without Spring
@@ -36,7 +36,7 @@ globals or codecs.
 
 - `awaitIdle()`: waits until nothing is left to do now, without moving the clock.
 - `drain(topic)`: runs a topic until nothing in it can run, jumping the clock past delays,
-  backoffs and breaker probes. Suspended tasks and dead letters stay.
+  and backoffs. Suspended tasks and dead letters stay.
 - `advance(duration)`: moves the clock and runs housekeeping once, as if that much time passed.
 - `pushed(topic)`, `pushedPayloads(topic)`, `pushedIdentifiers(topic)`, `assertPushed(topic, n)`,
   `assertNothingPushed(topic)`: what was pushed and committed.
@@ -45,21 +45,19 @@ globals or codecs.
 ## Spring
 
 `pgtasks.store=memory` runs the application without a database. `pgtasks.testing=true` adds a
-`TaskTester` bean. In a Spring Modulith module test (`@ApplicationModuleTest`) the tester is
-there anyway, only the module's own topics run, and a push to another module's topic is stored
-for assertions instead of failing:
+`TaskTester` bean:
 
 ```java
-@ApplicationModuleTest
-class ShippingModuleTest {
+@SpringBootTest(properties = {"pgtasks.store=memory", "pgtasks.testing=true"})
+class ShippingTest {
+    @Autowired Tasks tasks;
     @Autowired TaskTester tester;
-    @Autowired ApplicationEventPublisher events;
 
     @Test
     void ships_and_invoices() {
-        events.publishEvent(new OrderPlaced("o-1"));
+        tasks.independently().push(SHIPMENTS, "o-1", new Shipment("o-1"));
         tester.awaitIdle();
-        tester.assertPushed(BillingTopics.INVOICES, 1);   // billing's topic: captured, not run
+        tester.assertPushed(BillingTopics.INVOICES, 1);
     }
 }
 ```
