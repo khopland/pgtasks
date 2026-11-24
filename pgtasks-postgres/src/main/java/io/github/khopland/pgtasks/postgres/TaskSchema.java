@@ -95,6 +95,13 @@ public final class TaskSchema {
     /** The schema version this library is built for. */
     public static final int VERSION = 1;
 
+    /**
+     * The oldest Postgres major version the store runs on. Its statements are written against the
+     * planners of 17 and later, and CI checks their plans on each of them: on 16 and earlier a
+     * SUPERSEDE or REPLACE push can read its topic's whole queue.
+     */
+    public static final int MIN_POSTGRES_VERSION = 17;
+
     /** What the schema's {@code meta} table records. */
     public record Meta(int version, int compatibleFrom) {
     }
@@ -171,6 +178,7 @@ public final class TaskSchema {
     public static Status migrate(DataSource dataSource, String schema, Duration lockTimeout) throws SQLException {
         validName(schema);
         try (Connection connection = dataSource.getConnection()) {
+            refuseOldServer(connection);
             refuseKeyword(connection, schema);
             return new SchemaMigrator(scripts(), schema, lockTimeout, SchemaMigrator.ATTEMPTS, SchemaMigrator.BACKOFF).migrate(connection);
         }
@@ -185,6 +193,7 @@ public final class TaskSchema {
     public static Status validate(DataSource dataSource, String schema) throws SQLException {
         validName(schema);
         try (Connection connection = dataSource.getConnection()) {
+            refuseOldServer(connection);
             refuseKeyword(connection, schema);
             return check(schema, readMeta(connection, schema), VERSION, List.of());
         }
@@ -210,6 +219,26 @@ public final class TaskSchema {
     /** The store's SQL, written for the {@value #DEFAULT_SCHEMA} schema, for the given one. */
     static String qualify(String sql, String schema) {
         return schema.equals(DEFAULT_SCHEMA) ? sql : QUALIFIED.matcher(sql).replaceAll(schema + ".");
+    }
+
+    /** Before anything is applied, so an older server is left as it was. */
+    private static void refuseOldServer(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT current_setting('server_version_num')::integer, current_setting('server_version')")) {
+            resultSet.next();
+            checkServerVersion(resultSet.getInt(1), resultSet.getString(2));
+        }
+    }
+
+    /**
+     * @param versionNumber the server's {@code server_version_num}, such as 170012 for 17.12
+     * @param version       its {@code server_version}, for the message
+     */
+    static void checkServerVersion(int versionNumber, String version) {
+        if (versionNumber / 10_000 < MIN_POSTGRES_VERSION) {
+            throw new TaskSchemaException("This database runs Postgres " + version + ", but pgtasks needs Postgres " + MIN_POSTGRES_VERSION
+                + " or later: its statements are planned for those versions. Upgrade the server.");
+        }
     }
 
     /** Reserved words would need quoting wherever the name appears; types and functions can't be qualified with some others. */

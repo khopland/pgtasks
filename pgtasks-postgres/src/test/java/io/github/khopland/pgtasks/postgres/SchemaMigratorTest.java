@@ -71,6 +71,16 @@ class SchemaMigratorTest {
     }
 
     @Test
+    void refuses_a_server_older_than_postgres_17() {
+        assertThatThrownBy(() -> TaskSchema.checkServerVersion(160_013, "16.13"))
+            .isInstanceOf(TaskSchemaException.class)
+            .hasMessage("This database runs Postgres 16.13, but pgtasks needs Postgres 17 or later: its statements are planned for those versions. "
+                + "Upgrade the server.");
+        TaskSchema.checkServerVersion(170_000, "17.0");
+        TaskSchema.checkServerVersion(190_000, "19.0");
+    }
+
+    @Test
     void applies_everything_once_and_then_nothing(PostgresDatabase database) throws SQLException {
         TaskSchema.Status first = TaskSchema.migrate(database.dataSource());
         TaskSchema.Status second = TaskSchema.migrate(database.dataSource());

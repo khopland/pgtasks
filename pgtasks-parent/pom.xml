@@ -301,47 +301,11 @@
   </build>
 
   <!--
-    The Postgres major version the tests run on: -Dpgtasks.test.postgres.version=15 picks the
+    The Postgres major version the tests run on: -Dpgtasks.test.postgres.version=18 picks the
     embedded binaries, and TestPostgres checks that the server it reaches has that version, also
     when it is an external one. Without the property, tests run on the default above.
   -->
   <profiles>
-    <profile>
-      <id>postgres-14</id>
-      <activation>
-        <property>
-          <name>pgtasks.test.postgres.version</name>
-          <value>14</value>
-        </property>
-      </activation>
-      <properties>
-        <embedded-postgres-binaries.version>14.25.0</embedded-postgres-binaries.version>
-      </properties>
-    </profile>
-    <profile>
-      <id>postgres-15</id>
-      <activation>
-        <property>
-          <name>pgtasks.test.postgres.version</name>
-          <value>15</value>
-        </property>
-      </activation>
-      <properties>
-        <embedded-postgres-binaries.version>15.20.0</embedded-postgres-binaries.version>
-      </properties>
-    </profile>
-    <profile>
-      <id>postgres-16</id>
-      <activation>
-        <property>
-          <name>pgtasks.test.postgres.version</name>
-          <value>16</value>
-        </property>
-      </activation>
-      <properties>
-        <embedded-postgres-binaries.version>16.16.0</embedded-postgres-binaries.version>
-      </properties>
-    </profile>
     <profile>
       <id>postgres-17</id>
       <activation>

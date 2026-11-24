@@ -55,8 +55,7 @@ class CompletionPlanTest {
         PlanAudit audit = new PlanAudit(database.newPool("audited", 1), DrainedQueue.ALLOWED, List.of());
         PostgresStoreFixture fixture = new PostgresStoreFixture(database, audit.dataSource(), TaskSchema.DEFAULT_SCHEMA);
         // The rounds while the tables are small run in a topic of their own: a cached plan doesn't
-        // depend on the topic, and their dead queue rows stay out of the last round's queue lookups
-        // (Postgres 15 and 16 walk queue_identifier_idx by topic in the pushes' cleanup).
+        // depend on the topic, and their dead queue rows stay out of the last round's queue lookups.
         int warmUp = fixture.topic("warm-up");
         int topic = fixture.topic("topic");
         int node = fixture.node("node-a");
