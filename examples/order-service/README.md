@@ -51,6 +51,8 @@ Requirements: Java 25, Maven, Docker (colima works).
 mvn package -Dmaven.repo.local=$HOME/.m2-pgtasks-app-trial -Dmaven.repo.local.tail=$HOME/.m2/repository
 
 # 3. Postgres, the partner stub, three instances (8081-8083)
+#    A database left from a run before pgtasks' schema was squashed fails validation at startup:
+#    start from a fresh one with `docker compose down -v` first.
 docker compose up -d --wait
 java stub/Stub.java > run/stub.log 2>&1 &
 for n in 1 2 3; do scripts/cluster.sh start $n; done
