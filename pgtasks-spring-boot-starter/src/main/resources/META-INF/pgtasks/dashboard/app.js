@@ -912,10 +912,13 @@ function settingsPanel(settings) {
 
 // --- Task
 
-/** A stored error is JSON with a type, a message and a stack; or a plain text. */
+/** The endpoint gives an error as an object with a type, a message and a stack; older ones as JSON text. */
 function parseError(text) {
   if (!text || text === HIDDEN) {
     return null;
+  }
+  if (typeof text === "object") {
+    return text;
   }
   try {
     const parsed = JSON.parse(text);

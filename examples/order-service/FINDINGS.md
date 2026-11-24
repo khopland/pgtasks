@@ -14,10 +14,12 @@ is ranked by severity within each section. Library commits referred to are on br
 > | 1, 3, 4, 5, 11, 15, 16 | Gone with the feature they were about |
 > | 2 | Fixed (`89fd677`) |
 > | 6 | Suspended tasks are released with `admin().release(...)`, the endpoint or the dashboard |
-> | 8, 20 | What a `kill -9` costs and how to shorten it is in operations.md; there is still no property for it |
+> | 7 | Nodes are named `<application>@<host>`, and a graceful stop removes the node's row |
+> | 8, 20 | `pgtasks.heartbeat` and `pgtasks.node-expiry`; operations.md says what a `kill -9` costs |
 > | 9, 14, 18, 19 | Documented in testing.md and operations.md |
+> | 13 | The endpoint returns an error as an object |
 > | 17 | patterns.md's fan-in example was rewritten around `later()` |
-> | 7, 10, 12, 13 | Open |
+> | 10, 12 | Open |
 
 ## The runs
 

@@ -21,11 +21,12 @@ orders:
   partners:
     url: http://localhost:9090
     timeout: 2s
-  heartbeat: 5s
-  heartbeat-expiry: 2m
 
 pgtasks:
   schema-mode: validate
+  # A node killed with -9 holds its claims until it counts as dead: 2 minutes, not the default 10.
+  heartbeat: 5s
+  node-expiry: 2m
   mdc-headers: requestId
   dashboard:
     enabled: true

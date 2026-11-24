@@ -75,6 +75,8 @@ public final class TaskEngineBuilder {
     private final List<Named<TaskConfigurer>> configurers = new ArrayList<>();
     private final List<Named<TaskGlobals>> globals = new ArrayList<>();
     private Map<String, String> overrides = Map.of();
+    private @Nullable Duration heartbeat;
+    private @Nullable Duration expiry;
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
     private final List<Extension> extensions = new ArrayList<>();
@@ -156,6 +158,19 @@ public final class TaskEngineBuilder {
      */
     public TaskEngineBuilder overrides(Map<String, String> overrides) {
         this.overrides = Map.copyOf(overrides);
+        return this;
+    }
+
+    /**
+     * Per-environment heartbeat settings, over what a {@link TaskGlobals} sets: how often this node
+     * records that it is alive, and how long a node may stay silent before another requeues its
+     * tasks. A null keeps the code's value (15 s and 10 minutes by default). The expiry must be
+     * longer than the interval; keep it several intervals long, so a short pause isn't taken for
+     * a dead node.
+     */
+    public TaskEngineBuilder heartbeat(@Nullable Duration interval, @Nullable Duration expiry) {
+        this.heartbeat = interval;
+        this.expiry = expiry;
         return this;
     }
 
@@ -430,6 +445,15 @@ public final class TaskEngineBuilder {
         }
         Globals global = new Globals();
         globals.forEach(each -> each.value().configure(global));
+        if (heartbeat != null || expiry != null) {
+            Duration interval = heartbeat != null ? heartbeat : global.settings.heartbeat();
+            Duration silence = expiry != null ? expiry : global.settings.expiry();
+            try {
+                global.heartbeat(interval, silence);
+            } catch (IllegalArgumentException e) {
+                problems.add("Heartbeat " + interval + " with node expiry " + silence + ": " + e.getMessage());
+            }
+        }
 
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);

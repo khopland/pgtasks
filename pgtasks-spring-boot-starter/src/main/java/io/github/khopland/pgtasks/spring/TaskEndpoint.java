@@ -11,8 +11,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
@@ -351,7 +349,7 @@ public class TaskEndpoint {
         task.put("payloadType", view.payloadType());
         task.put("payload", shown || view.payload() == null ? view.payload() : HIDDEN);
         task.put("output", shown || view.output() == null ? view.output() : HIDDEN);
-        task.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
+        task.put("error", view.error() == null ? null : shown ? StoredError.parse(view.error()) : StoredError.typeOnly(view.error(), HIDDEN));
         task.put("failures", view.failures());
         task.put("firstFailedAt", text(view.firstFailedAt()));
         task.put("createdAt", text(view.createdAt()));
@@ -360,12 +358,6 @@ public class TaskEndpoint {
         view.headers().forEach((name, value) -> headers.put(name, shown ? value : HIDDEN));
         task.put("headers", headers);
         return task;
-    }
-
-    /** A stored error without its message and stack: {"type": "..."}, or hidden if it has no type. */
-    private static String errorType(String error) {
-        Matcher type = Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(error);
-        return type.find() ? "{\"type\":\"" + type.group(1) + "\",\"message\":\"" + HIDDEN + "\"}" : HIDDEN;
     }
 
     private static @Nullable String text(@Nullable Instant instant) {

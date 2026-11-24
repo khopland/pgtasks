@@ -34,7 +34,15 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param schema          the Postgres schema the tasks live in, {@code pgtasks} by default: a plain
  *                        lowercase identifier. Applications sharing a database each need their own.
  *                        With Flyway or Liquibase, pass the same name to them (docs/operations.md)
- * @param node            this node's name in pgtasks.node; by default {@code spring.application.name}
+ * @param node            this node's name in pgtasks.node, shown by the endpoint and the dashboard;
+ *                        by default {@code <spring.application.name>@<host>}, where the host is
+ *                        {@code HOSTNAME} (the pod's name in Kubernetes) or the machine's name
+ * @param heartbeat       how often this node records that it is alive, 15 s by default; over what
+ *                        a {@code TaskGlobals} bean sets
+ * @param nodeExpiry      how long a node may stay silent before another node requeues its tasks,
+ *                        10 minutes by default: what a node that dies without stopping
+ *                        ({@code kill -9}) costs. Several heartbeats long, so a short pause or a
+ *                        slow database isn't taken for a dead node
  * @param notifications   wake workers through LISTEN/NOTIFY; off relies on polling alone
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
  *                        left is handed back without counting the attempt
@@ -59,6 +67,8 @@ public record TaskProperties(
     @DefaultValue("migrate") String schemaMode,
     @DefaultValue("pgtasks") String schema,
     String node,
+    Duration heartbeat,
+    Duration nodeExpiry,
     @DefaultValue("true") boolean notifications,
     @DefaultValue("30s") Duration shutdownTimeout,
     Map<String, Map<String, String>> topics,

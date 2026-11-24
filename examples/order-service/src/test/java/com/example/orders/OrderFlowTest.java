@@ -47,7 +47,7 @@ class OrderFlowTest {
     @RegisterExtension
     static final TaskEngineExtension ENGINE = TaskEngineExtension.with(builder -> builder
         .codecs(new JacksonPayloadCodecs(JsonMapper.builder().build()))
-        .globals(new PgtasksConfig().globals(Duration.ofSeconds(5), Duration.ofMinutes(2)))
+        .heartbeat(Duration.ofSeconds(5), Duration.ofMinutes(2))   // as application.yml
         .configure("payment", new PaymentTasks().payments(PARTNERS, WRITES))
         .configure("stock", new StockTasks().stock(WRITES))
         .configure("shipping", new ShippingTasks().shipping(PARTNERS, WRITES, WRITES))

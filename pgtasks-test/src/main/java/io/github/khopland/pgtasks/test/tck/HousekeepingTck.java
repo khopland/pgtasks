@@ -173,6 +173,26 @@ public abstract class HousekeepingTck extends StoreTck {
     }
 
     @Test
+    void a_stopped_node_is_forgotten_at_once_unless_it_still_holds_claims() throws Exception {
+        StoreFixture fixture = fixture();
+        int topic = fixture.topic("topic");
+        int stopped = fixture.node("stopped"), claiming = fixture.node("claiming");
+        fixture.push(topic, "a");
+        fixture.claim(topic, claiming);
+
+        boolean first = fixture.inTransaction(transaction -> fixture.store().deregisterNode(transaction, stopped));
+        boolean holding = fixture.inTransaction(transaction -> fixture.store().deregisterNode(transaction, claiming));
+        boolean again = fixture.inTransaction(transaction -> fixture.store().deregisterNode(transaction, stopped));
+
+        assertThat(first).isTrue();
+        assertThat(holding).as("its claims keep it until it counts as dead").isFalse();
+        assertThat(again).as("already gone").isFalse();
+        List<NodeView> left = fixture.inTransaction(transaction -> fixture.store().nodes(transaction));
+        assertThat(left).extracting(NodeView::name).containsExactly("claiming");
+        assertThat(fixture.heartbeat(stopped)).as("a node that heartbeats after it was forgotten must register again").isFalse();
+    }
+
+    @Test
     void nodes_are_listed_with_the_leases_they_hold() throws Exception {
         StoreFixture fixture = fixture();
         int nodeA = fixture.node("node-a"), nodeB = fixture.node("node-b");
