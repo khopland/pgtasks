@@ -54,6 +54,9 @@ final class HeaderJson {
                 case '\n' -> json.append("\\n");
                 case '\r' -> json.append("\\r");
                 case '\t' -> json.append("\\t");
+                // jsonb can't hold one. A creation's own headers are checked for it when made;
+                // this covers what observers add, such as MDC values.
+                case '\0' -> json.append('\uFFFD');
                 default -> {
                     if (c < 0x20) {
                         json.append(String.format("\\u%04x", (int) c));

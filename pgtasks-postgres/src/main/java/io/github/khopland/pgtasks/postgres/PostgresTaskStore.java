@@ -972,7 +972,7 @@ public final class PostgresTaskStore implements TaskStore {
                     case SUCCEEDED -> "succeeded";
                     case FILTERED -> "filtered";
                 };
-                outputs[index] = resolution.output();
+                outputs[index] = storable(resolution.output());
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1000,7 +1000,7 @@ public final class PostgresTaskStore implements TaskStore {
                 };
                 delays[index] = resolution.delay() == null ? null : resolution.delay().toMillis();
                 uncounted[index] = resolution.counted() ? 0 : 1;
-                errors[index] = resolution.error();
+                errors[index] = storable(resolution.error());
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1014,6 +1014,15 @@ public final class PostgresTaskStore implements TaskStore {
             collect(wait, connection, parameters, matched);
         }
         return matched;
+    }
+
+    /**
+     * A task's output, filter reason or error as Postgres can store it: text and jsonb can't hold
+     * a NUL character, and one in a single task's message would fail the completion of its whole
+     * batch. It becomes U+FFFD; the text is for people, so nothing reads it back as data.
+     */
+    private static @Nullable String storable(@Nullable String text) {
+        return text == null || text.indexOf('\0') < 0 ? text : text.replace('\0', '\uFFFD');
     }
 
     private static void collect(NamedSql sql, Connection connection, NamedSql.Parameters parameters, Set<Long> matched) throws SQLException {

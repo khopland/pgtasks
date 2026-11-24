@@ -43,6 +43,9 @@ public record Creation<T>(
         if (identifier.isEmpty()) {
             throw new IllegalArgumentException("identifier must not be empty");
         }
+        Headers.checkText("identifier", identifier);
+        Headers.checkText("reference", reference);
+        Headers.checkText("dedupKey", dedupKey);
         if (delay != null && delay.isNegative()) {
             throw new IllegalArgumentException("delay must not be negative");
         }

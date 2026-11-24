@@ -28,7 +28,11 @@ public final class LocalTransactions implements TransactionBinding {
         }
         Scope scope = new Scope();
         T result = ScopedValue.where(CURRENT, scope).call(callback::run);
-        scope.afterCommit.forEach(Runnable::run);
+        try {
+            AfterCommit.runAll(scope.afterCommit);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("The transaction committed, but an action after the commit failed", e);
+        }
         return result;
     }
 

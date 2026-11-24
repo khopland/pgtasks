@@ -109,6 +109,8 @@ final class BatchRun<T> {
         this.batchObservation = observation;
         try {
             runBatch(topic, claims, runnable, early.build(), opened, observation);
+        } catch (RuntimeException e) {
+            failUnexpectedly(topic, claims, e);
         } finally {
             opened.values().forEach(BatchRun::closeQuietly);
             if (scope == null || !scope.abandoned()) {
@@ -138,6 +140,35 @@ final class BatchRun<T> {
         }
         try (TaskObserver.Scope ignored = observation.open()) {
             complete(topic, claims, decisions, early, opened, observation);
+        }
+    }
+
+    /** How long a task waits after a failure the engine couldn't put through the retry policy. */
+    static final Duration UNEXPECTED_BACKOFF = Duration.ofMinutes(1);
+
+    /**
+     * Records a failure that escaped the batch's own handling, a bug in the engine or in what
+     * plugs into it, as a counted failure of every task the batch still holds. Left alone, the
+     * claims would go to the orphan sweep, which hands them back without counting the attempt or
+     * keeping the error: the task would run again and again, and nothing would show why. Counted,
+     * a task that keeps failing this way is dead-lettered once its attempts are used up, as a
+     * claim past the policy's attempts is when it is next claimed. Fenced like any completion, so
+     * tasks whose completion already committed are left as they are.
+     */
+    private void failUnexpectedly(Topic<T> topic, Map<Long, ClaimedTask> claims, RuntimeException e) {
+        LOGGER.error("A batch in {} failed unexpectedly; its tasks are recorded as failed", topic.ref(), e);
+        if (scope != null && scope.abandoned()) {
+            return;
+        }
+        String error = ErrorJson.of("The batch failed unexpectedly", e);
+        List<Completion> failures = claims.values().stream()
+            .map(claim -> new Completion(claim.id(), claim.attempt(), claim.claimedAt(),
+                new Resolution.Waiting(WaitState.RETRYING, UNEXPECTED_BACKOFF, true, error)))
+            .toList();
+        try {
+            core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
+        } catch (Exception recording) {
+            LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
         }
     }
 

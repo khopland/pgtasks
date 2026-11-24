@@ -47,7 +47,19 @@ public sealed interface Decision {
 
     /** Uses up an attempt; the topic's retry policy chooses between backoff and dead letter. */
     static Decision failed(Throwable cause) {
-        return new Failed(cause.getMessage(), cause);
+        return new Failed(messageOf(cause), cause);
+    }
+
+    /**
+     * The cause's message, or null if asking for it throws: the engine records failures with this
+     * from its own catch blocks, where a second exception would lose the batch's completion.
+     */
+    private static @Nullable String messageOf(Throwable cause) {
+        try {
+            return cause.getMessage();
+        } catch (RuntimeException | LinkageError | StackOverflowError e) {
+            return null;
+        }
     }
 
     static Decision failed(String message) {

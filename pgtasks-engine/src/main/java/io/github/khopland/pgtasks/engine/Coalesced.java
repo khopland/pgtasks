@@ -1,7 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -10,7 +9,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Runs a job soon on a virtual thread of its own, for notifications, which mustn't wait on the
  * store. Requests that arrive before the job starts are served by that one run; one that arrives
- * while it runs gets another run. After {@link #stop}, requests are ignored.
+ * while it runs gets one more run after it. Runs never overlap. After {@link #stop}, requests are
+ * ignored.
  */
 final class Coalesced {
 
@@ -19,9 +19,11 @@ final class Coalesced {
     private final String thread;
     private final String what;
     private final Housekeeper.Job job;
-    private final AtomicBoolean pending = new AtomicBoolean();
+    /** Guarded by this: a run was asked for that hasn't started yet. */
+    private boolean requested;
+    /** Guarded by this: the thread that runs the job while there are requests, if any. */
+    private @Nullable Thread running;
     private volatile boolean stopped;
-    private volatile @Nullable Thread running;
 
     /**
      * @param thread names the thread, after "pgtasks-"
@@ -34,24 +36,44 @@ final class Coalesced {
     }
 
     synchronized void request() {
-        if (!stopped && pending.compareAndSet(false, true)) {
-            running = Thread.ofVirtual().name(thread).start(() -> {
-                pending.set(false);
-                try {
-                    job.run();
-                } catch (Exception | Error e) {
-                    if (!stopped) {
-                        LOGGER.warn("Could not reload the {}; the next heartbeat tries again", what, e);
+        if (stopped) {
+            return;
+        }
+        requested = true;
+        if (running == null) {
+            running = Thread.ofVirtual().name(thread).start(this::serve);
+        }
+    }
+
+    /** Runs the job for as long as requests keep arriving, one run at a time. */
+    private void serve() {
+        while (true) {
+            synchronized (this) {
+                if (!requested || stopped) {
+                    if (running == Thread.currentThread()) {
+                        running = null;
                     }
+                    return;
                 }
-            });
+                requested = false;
+            }
+            try {
+                job.run();
+            } catch (Exception | Error e) {
+                if (!stopped) {
+                    LOGGER.warn("Could not reload the {}; the next heartbeat tries again", what, e);
+                }
+            }
         }
     }
 
     /** Takes requests again after {@link #stop}, for an engine started again. */
     synchronized void restart() {
         stopped = false;
-        pending.set(false);
+        requested = false;
+        if (running != null && !running.isAlive()) {
+            running = null;
+        }
     }
 
     /** Ignores requests from now on, and interrupts and waits for a run in progress. */
@@ -59,6 +81,7 @@ final class Coalesced {
         Thread current;
         synchronized (this) {
             stopped = true;
+            requested = false;
             current = running;
         }
         if (current != null && current.isAlive()) {

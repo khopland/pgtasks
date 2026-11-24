@@ -45,7 +45,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Tasks in memory, for running an app locally without a database and for fast tests. It passes
- * the same TCK as the Postgres store, so ordering, insertion policies, fencing, junctures,
+ * the same TCK as the Postgres store, so ordering, insertion policies, fencing
  * and retries behave the same way. Several engines in one JVM can share one
  * instance; {@link #notifier()} gives each of them in-process wake-ups.
  *
