@@ -234,9 +234,11 @@ public final class TaskEngine implements AutoCloseable {
             reconcileSoon.restart();
             channels.values().forEach(reloads -> reloads.forEach(Coalesced::restart));
         }
+        // Started before registering, which records the first heartbeat, so the fence errs early.
+        HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners));
+            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced);
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;
@@ -273,7 +275,17 @@ public final class TaskEngine implements AutoCloseable {
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
                 reloadChannels();
-            }, purgeBudget, extensionJobs);
+            }, purgeBudget, extensionJobs, fence, new Housekeeper.Fencing() {
+                @Override
+                public void fenced() {
+                    allWorkers().forEach(TopicWorker::fence);
+                }
+
+                @Override
+                public void lifted() {
+                    allWorkers().forEach(TopicWorker::wake);
+                }
+            });
             housekeeper = keeper;
             keeper.start();
             started = true;
@@ -575,6 +587,15 @@ public final class TaskEngine implements AutoCloseable {
             if (keeper != null) {
                 keeper.stop();
             }
+        }
+    }
+
+    /** The workers polling now, and those of retired topics whose batches still run. */
+    private List<TopicWorker<?>> allWorkers() {
+        synchronized (topicsLock) {
+            List<TopicWorker<?>> all = new ArrayList<>(workersByName.values());
+            all.addAll(draining.keySet());
+            return all;
         }
     }
 
