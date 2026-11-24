@@ -95,6 +95,34 @@ class AdminTest {
     }
 
     @Test
+    @DisplayName("A task its handler suspended runs again once an operator releases it")
+    void suspended_tasks_run_again_once_released() throws Exception {
+        Set<String> ready = ConcurrentHashMap.newKeySet();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure("work-module", tasks -> tasks.topic(WORK, batch -> batch.decide(
+                task -> ready.contains(task.payload()) ? Decision.success() : Decision.suspended())))
+            .build()
+            .start();
+        TaskTester tester = TaskTester.of(engine);
+        long first = engine.tasks().independently().push(WORK, "a", "first").id();
+        long second = engine.tasks().independently().push(WORK, "b", "second").id();
+        tester.awaitIdle();
+        assertThat(engine.admin().tasks("work", TaskQuery.ALL.inStates(QueueState.SUSPENDED), 10)).extracting(TaskView::id)
+            .containsExactly(first, second);
+
+        ready.add("first");
+        assertThat(engine.admin().release("work", List.of(first, 999_999L))).isEqualTo(1);
+        assertThat(engine.admin().release("work", TaskQuery.ALL.inStates(QueueState.READY))).as("asks for no suspended task").isZero();
+        tester.awaitIdle();
+
+        assertThat(engine.admin().find(first).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(engine.admin().find(first).orElseThrow().attempt()).as("a suspension uses up no attempt").isEqualTo(1);
+        assertThat(engine.admin().find(second).orElseThrow().state()).isEqualTo("suspended");
+        assertThatThrownBy(() -> engine.admin().release("missing", TaskQuery.ALL)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("A page limit below one is refused before the store sees it")
     void a_page_limit_below_one_is_refused() throws Exception {
         start(new InMemoryTaskStore());

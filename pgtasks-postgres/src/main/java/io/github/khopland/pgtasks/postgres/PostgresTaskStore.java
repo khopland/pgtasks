@@ -61,7 +61,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
-    private final NamedSql searchTasks;
+    private final NamedSql searchTasks, releaseSuspended;
     private final NamedSql deleteDeadNodes, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks;
@@ -389,6 +389,22 @@ public final class PostgresTaskStore implements TaskStore {
             FROM found o
             JOIN pgtasks.task t ON t.id = o.task_id
             ORDER BY o.task_id
+            """);
+        // The query's states are set to suspended alone (see releaseSuspended), so the candidates
+        // and their recheck as locked take nothing else. The update trigger on pgtasks.queue wakes the workers.
+        releaseSuspended = sql("""
+            WITH picked AS MATERIALIZED (
+                SELECT o.ctid AS row FROM pgtasks.queue o
+                WHERE
+            """ + candidates + """
+                ORDER BY o.task_id + 0
+                LIMIT :limit::integer
+                FOR UPDATE OF o SKIP LOCKED
+            )
+            UPDATE pgtasks.queue q
+            SET state = 'ready'
+            WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+            RETURNING q.task_id
             """);
         // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
         deleteDeadNodes = sql("""
@@ -1262,6 +1278,11 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return result;
+    }
+
+    @Override
+    public List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        return ids(releaseSuspended, transaction, query(query.inStates(QueueState.SUSPENDED), topicId, limit));
     }
 
     @Override

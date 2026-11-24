@@ -206,3 +206,13 @@ dialog .error { color: var(--bad); background: var(--bad-bg); padding: 8px 10px;
   .kv dd { margin-bottom: 8px; }
   dialog .row { grid-template-columns: 1fr; }
 }
+
+/* Read by screen readers, not shown: a column header with no visible label. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

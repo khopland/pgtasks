@@ -123,6 +123,7 @@ GET    /actuator/tasks/topics/{topic}                    status, counts, setting
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
+POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
@@ -164,7 +165,8 @@ Then open `http://<host>/pgtasks/`. It shows:
   and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
-  one without an identifier or reference reads the topic's backlog.
+  one without an identifier or reference reads the topic's backlog. A suspended task in the
+  results has a Release button, and a topic with suspended tasks has "Release all suspended…".
 - **Task**: look one up by id in the header, with its error.
 
 Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
@@ -316,6 +318,19 @@ their values only where `show-values` allows.
 2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
+
+## Suspended tasks
+
+A task waits as suspended when its handler decided `Decision.suspended()`, or when it was pushed
+with `Creation.asSuspended()`. Nothing releases it on its own. Once what it waited for is there:
+
+- Release it: `admin().release(topic, ids)`, or `admin().release(topic, query)` for the
+  suspended tasks a `TaskQuery` matches, the endpoint's `release` action, or the dashboard. It
+  becomes ready and keeps its attempts, so a later failure backs off from where it was.
+- Or, from code, push it again with `Insertion.REPLACE`: the suspended task becomes redundant
+  and the new one runs.
+
+The `pgtasks.queue{state="suspended"}` gauge shows how many wait in each topic.
 
 ## Unfinished tasks
 
