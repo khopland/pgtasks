@@ -111,6 +111,11 @@ final class Rows {
                 failed.failures, failed.firstFailedAt, expiries + 1);
         }
 
+        /** A run ended without failing: no failures in a row any more. Expiries stay, since they guard against tasks that take nodes down. */
+        Queued withoutFailureStreak() {
+            return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null, expiries);
+        }
+
         Queued withoutFailures() {
             return new Queued(taskId, topicId, identifier, state, priority, runAt, attempt, nodeId, claimedAt, dedupKey, 0, null, 0);
         }

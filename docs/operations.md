@@ -142,6 +142,7 @@ GET    /actuator/tasks/topics/{topic}                    status, counts, setting
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
+POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
@@ -161,6 +162,12 @@ The `tasks` health indicator is UP while the engine runs and its heartbeat is on
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
 and after stop. Its details show leadership, notifications, and claims stuck past their deadline,
 without changing the status.
+
+A claim is stuck when its handler ignored cancellation after the batch deadline: Java can't stop
+the thread, so its tasks stay active, and their concurrency taken, until it ends, rather than
+run again beside it. The engine leaves an error of type `hung` on each of those tasks, which the
+dashboard and task search show. Stopping the node frees them: other nodes requeue them once it
+counts as dead.
 
 ## Dashboard
 
@@ -187,7 +194,8 @@ Then open `http://<host>/pgtasks/`. It shows:
   and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
-  one without an identifier or reference reads the topic's backlog.
+  one without an identifier or reference reads the topic's backlog. A suspended task in the
+  results has a Release button, and a topic with suspended tasks has "Release all suspended…".
 - **Task**: look one up by id in the header, with its error.
 
 Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
@@ -356,6 +364,19 @@ their values only where `show-values` allows.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
 
+## Suspended tasks
+
+A task waits as suspended when its handler decided `Decision.suspended()`, or when it was pushed
+with `Creation.asSuspended()`. Nothing releases it on its own. Once what it waited for is there:
+
+- Release it: `admin().release(topic, ids)`, or `admin().release(topic, query)` for the
+  suspended tasks a `TaskQuery` matches, the endpoint's `release` action, or the dashboard. It
+  becomes ready and keeps its attempts, so a later failure backs off from where it was.
+- Or, from code, push it again with `Insertion.REPLACE`: the suspended task becomes redundant
+  and the new one runs.
+
+The `pgtasks.queue{state="suspended"}` gauge shows how many wait in each topic.
+
 ## Unfinished tasks
 
 What [concepts](concepts.md#searching-unfinished-tasks) describes, from the endpoint or
@@ -404,8 +425,10 @@ Each node uses the application's `DataSource`:
   every 10 ms per node, whatever the push rate (see below).
 
 A heartbeat that can't get a connection for long enough (10 minutes by default) lets other nodes
-requeue this node's tasks while it still runs them. The engine warns at startup if
-`maxInFlightBatches` leaves too little room in the pool.
+requeue this node's tasks. Shortly before that, four heartbeats ahead by default, the node fences
+itself: it logs an error, stops claiming and cancels its running handlers, whose tasks go back
+without counting an attempt, and it claims again once a heartbeat gets through. The engine warns
+at startup if `maxInFlightBatches` leaves too little room in the pool.
 
 LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications a direct
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with

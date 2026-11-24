@@ -8,6 +8,7 @@ import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.random.RandomGenerator;
 
 import io.github.khopland.pgtasks.spi.StaleClaimException;
@@ -21,7 +22,10 @@ import org.slf4j.LoggerFactory;
 /**
  * What every worker on this node shares. {@code held} maps the tasks this node is processing to
  * their attempt, so claims it lost track of can be found and released. {@code node} gives this
- * node's id, which changes if the cluster forgot the node and it registered again.
+ * node's id, which changes if the cluster forgot the node and it registered again. {@code fenced}
+ * says whether its heartbeat is so late that it must not start work (see {@link HeartbeatFence}).
+ * {@code threads} makes the pollers' and batches' threads: virtual ones, except in the Fray tests,
+ * whose scheduler can't drive virtual threads.
  */
 record EngineCore(
     TaskStore store,
@@ -34,7 +38,9 @@ record EngineCore(
     BooleanSupplier stopping,
     TaskObserver observer,
     List<ClaimGate> gates,
-    List<BatchListener> listeners
+    List<BatchListener> listeners,
+    BooleanSupplier fenced,
+    Supplier<Thread.Builder> threads
 ) {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EngineCore.class);

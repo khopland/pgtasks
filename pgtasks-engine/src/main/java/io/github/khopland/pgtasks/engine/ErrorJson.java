@@ -35,6 +35,15 @@ final class ErrorJson {
         return json.append('}').toString();
     }
 
+    /** An error the engine describes itself, with a type of its own for grouping, such as {@code expired}. */
+    static String typed(String message, String type) {
+        StringBuilder json = new StringBuilder("{");
+        field(json, "message", message);
+        json.append(',');
+        field(json, "type", type);
+        return json.append('}').toString();
+    }
+
     /** The cause's {@code toString}, or its class name if that throws. */
     private static String describe(Throwable cause) {
         try {

@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,13 +26,20 @@ final class BatchScope implements AutoCloseable {
     private final String name;
     private final ExecutorService executor;
     private final BooleanSupplier stopping;
+    private final Runnable ignoringCancellation;
     private volatile boolean abandoned;
+    private volatile @Nullable Future<?> work;
 
-    /** @param stopping whether the engine is stopping, when the scope stops waiting for work that ignores cancellation */
-    BatchScope(String name, BooleanSupplier stopping) {
+    /**
+     * @param stopping             whether the engine is stopping, when the scope stops waiting for work that ignores cancellation
+     * @param ignoringCancellation told once if work goes on a second after it was cancelled, while the scope waits for it
+     * @param threads              makes the scope's threads
+     */
+    BatchScope(String name, BooleanSupplier stopping, Runnable ignoringCancellation, Thread.Builder threads) {
         this.name = name;
         this.stopping = stopping;
-        this.executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(name + "-", 0).factory());
+        this.ignoringCancellation = ignoringCancellation;
+        this.executor = Executors.newThreadPerTaskExecutor(threads.name(name + "-", 0).factory());
     }
 
     /** Whether work in the scope ignored cancellation and still runs: its claims must not be handed back. */
@@ -42,6 +50,7 @@ final class BatchScope implements AutoCloseable {
     /** Runs the work in the scope and waits at most until the deadline, cancelling it after that. */
     <V> V call(Callable<V> work, Duration deadline) throws Exception {
         Future<V> future = executor.submit(work);
+        this.work = future;
         try {
             return future.get(deadline.toNanos(), TimeUnit.NANOSECONDS);
         } catch (ExecutionException e) {
@@ -60,6 +69,19 @@ final class BatchScope implements AutoCloseable {
     }
 
     /**
+     * Cancels the work from another thread: {@link #call} then throws a
+     * {@link java.util.concurrent.CancellationException} at once, and {@link #close} waits for
+     * the work to end, as after a deadline.
+     */
+    void cancel() {
+        Future<?> current = work;
+        if (current != null) {
+            current.cancel(true);
+        }
+        executor.shutdownNow();
+    }
+
+    /**
      * Cancels what is left and waits until it has ended, however long that takes: work that
      * ignores cancellation keeps its tasks claimed, so a retry can't run next to it. Only an
      * engine that is stopping gives up waiting; the claims then stay until the node expires.
@@ -72,6 +94,11 @@ final class BatchScope implements AutoCloseable {
                 return;
             }
             LOGGER.warn("Work in {} ignored cancellation and is still running; its tasks stay claimed until it ends", name);
+            try {
+                ignoringCancellation.run();
+            } catch (RuntimeException e) {
+                LOGGER.warn("Could not record that work in {} ignored cancellation", name, e);
+            }
             long waited = 1;
             while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
                 waited++;

@@ -39,9 +39,10 @@ import org.jspecify.annotations.Nullable;
  * @param budget      how long a task keeps trying after its first failure, if the policy is a time
  *                    budget; null if it is a number of attempts. A counted failure dead-letters
  *                    the task once its next retry would start past the budget. The clock runs
- *                    from the first failure of any kind, so a task that failed through a long
- *                    outage without using attempts gives up at its first counted failure after
- *                    the budget
+ *                    from the first of the task's failures in a row, of any kind, so a task that
+ *                    failed through a long outage without using attempts gives up at its first
+ *                    counted failure after the budget. A run that decides to wait
+ *                    ({@code later}, {@code suspended}) didn't fail, and ends the row
  * @param notCounting failures caused by these types, anywhere in the cause chain, are the
  *                    system's, not the task's: retried with the backoff, the attempt not counted
  * @param deadLetterAt failures caused by these types go straight to the dead letters, such as

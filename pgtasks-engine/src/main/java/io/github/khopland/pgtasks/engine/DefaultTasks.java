@@ -274,8 +274,9 @@ final class DefaultTasks implements Tasks {
     }
 
     /**
-     * How far this node's clock may be behind the store's: a run time this close to now may be
-     * ready by the store's clock, so the push wakes workers. A wake-up too many costs one poll.
+     * How far the store's clock, as this node reads it, may be behind the store itself: half a
+     * sample's round trip, and the time the push took to commit. A run time this close to now may
+     * be ready by the store, so the push wakes workers. A wake-up too many costs one poll.
      */
     private static final Duration CLOCK_SKEW = Duration.ofSeconds(1);
 

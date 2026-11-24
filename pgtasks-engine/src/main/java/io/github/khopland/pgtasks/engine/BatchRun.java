@@ -31,6 +31,7 @@ import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import io.github.khopland.pgtasks.spi.TaskStore.Completion;
 import io.github.khopland.pgtasks.spi.TaskStore.Outcome;
@@ -66,7 +67,9 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
-    private @Nullable BatchScope scope;
+    private volatile @Nullable BatchScope scope;
+    /** Set when the node fenced itself (see {@link HeartbeatFence}): the batch is handed back unless its handler already decided. */
+    private volatile boolean fenced;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private @Nullable VirtualMachineError fatal;
     private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
@@ -279,8 +282,24 @@ final class BatchRun<T> {
         }
     }
 
-    /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop. */
+    /**
+     * Cancels the handler because the node's heartbeat is too late: its tasks go back without
+     * counting the attempt, as on a stop. A handler that already returned keeps its decisions,
+     * since its completion is fenced in the store anyway.
+     */
+    void fence() {
+        fenced = true;
+        BatchScope current = scope;
+        if (current != null) {
+            current.cancel();
+        }
+    }
+
+    /** Returns the final decisions for the runnable tasks, or null if the batch was cancelled by a stop or a fence. */
     private @Nullable Decisions process(Topic<T> topic, List<Task<T>> runnable, Map<BatchResource<?>, Object> opened, TaskObserver.BatchObservation observation) {
+        if (fenced || core.fenced().getAsBoolean()) {
+            return null;
+        }
         List<Task<?>> tasks = List.copyOf(runnable);
         try (BatchScope scope = scope(topic)) {
             for (BatchResource<?> resource : topic.resources()) {
@@ -298,16 +317,25 @@ final class BatchRun<T> {
             }
             return merged;
         } catch (TimeoutException e) {
+            if (fenced) {
+                return null;
+            }
             observation.error(e);
             return Decisions.all(runnable, Decision.failed("Batch deadline of " + topic.settings().batchDeadline() + " exceeded"));
         } catch (InterruptedException | CancellationException e) {
-            if (worker.stopping()) {
+            if (worker.stopping() || fenced) {
                 Thread.interrupted();
                 return null;
             }
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         } catch (Exception e) {
+            if (fenced) {
+                // Whatever the cancellation made the handler throw, or the scope refusing work
+                // cancelled before it started.
+                Thread.interrupted();
+                return null;
+            }
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         } catch (Error e) {
@@ -316,14 +344,42 @@ final class BatchRun<T> {
             if (e instanceof VirtualMachineError vm) {
                 fatal = vm;
             }
+            if (fenced) {
+                Thread.interrupted();
+                return null;
+            }
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         }
     }
 
     private BatchScope scope(Topic<T> topic) {
-        scope = new BatchScope("pgtasks-" + topic.ref().name() + "-batch", worker::stopping);
-        return scope;
+        BatchScope created = new BatchScope("pgtasks-" + topic.ref().name() + "-batch", worker::stopping, this::noteIgnoredCancellation,
+            core.threads().get());
+        scope = created;
+        if (fenced) {
+            // Fenced while the scope was made: fence() may not have seen it.
+            created.cancel();
+        }
+        return created;
+    }
+
+    /**
+     * Leaves an error on the batch's tasks while their handler ignores cancellation, so search and
+     * the dashboard show why they stay active. Their claims stay, so no other run can start beside
+     * the one still going; the error is replaced by the batch's own once the handler ends.
+     */
+    private void noteIgnoredCancellation() {
+        String error = ErrorJson.typed("The handler ignored cancellation and still runs, since " + core.clock().instant()
+            + ". The task stays active until it ends. Stopping this node frees it: other nodes requeue it once the node counts as dead.", "hung");
+        List<TaskStore.ActiveClaim> claims = claimed.stream()
+            .map(claim -> new TaskStore.ActiveClaim(worker.topicId(), claim.id(), claim.attempt(), claim.claimedAt()))
+            .toList();
+        try {
+            core.transact(transaction -> core.store().noteError(transaction, worker.topicId(), core.nodeId(), claims, error));
+        } catch (Exception e) {
+            LOGGER.warn("Could not record on the tasks in {} that their handler ignored cancellation", worker.topic().ref(), e);
+        }
     }
 
     /** Fails the tasks the handler left out, and rejects decisions for tasks it wasn't given. */

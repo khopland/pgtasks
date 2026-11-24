@@ -17,6 +17,7 @@ import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
 import io.github.khopland.pgtasks.admin.NodeView;
+import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
@@ -29,13 +30,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks, dead
- * letters and retention. Everything here reads or changes the store directly, so it works on a node that
+ * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
+ * released when suspended), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
  * only pushes, and acts on the whole cluster.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  *
- * <p>A bulk action (revive, discard) works in batches and takes each row it can
+ * <p>A bulk action (revive, discard, release) works in batches and takes each row it can
  * lock. A row that stays locked by another transaction, such as a claim or a push, through the
  * action's few re-reads is left as it is; the count it returns says how many it took.
  */
@@ -212,6 +213,43 @@ public final class TaskAdmin {
         });
     }
 
+    /**
+     * Releases these suspended tasks: see {@link #release(String, TaskQuery)}. Ids that aren't
+     * suspended tasks of the topic are skipped.
+     *
+     * @return how many were released
+     */
+    public int release(String topic, Collection<Long> taskIds) {
+        return release(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
+    }
+
+    /**
+     * Makes the matching suspended tasks ready, so they run again: a task its handler suspended
+     * ({@link io.github.khopland.pgtasks.Decision#suspended()}) once what it waited for is there,
+     * or one pushed suspended. They keep their attempts and failures, and take their place in
+     * line by id, as any ready task does under the topic's ordering. Tasks in other states are
+     * skipped; {@link TaskQuery#ALL} releases every suspended task of the topic.
+     *
+     * @return how many were released
+     */
+    public int release(String topic, TaskQuery query) {
+        Objects.requireNonNull(query, "query");
+        if (!query.states().isEmpty() && !query.states().contains(QueueState.SUSPENDED)) {
+            return 0; // it asks only for states a release doesn't take
+        }
+        TaskQuery suspended = query.inStates(QueueState.SUSPENDED);
+        return Unchecked.call("Releasing suspended tasks of " + topic, () -> {
+            int id = topicId(topic);
+            int released = inBatches(suspended, (transaction, batch, limit) -> store.releaseSuspended(transaction, id, batch, limit),
+                taskPaging(id));
+            if (released > 0) {
+                LOGGER.info("Released {} suspended task(s) of {}", released, topic);
+                engine.wake(topic);
+            }
+            return released;
+        });
+    }
+
     /** Deletes a topic's finished tasks with an outcome that finished before a time, as retention does. Returns how many. */
     public long purge(String topic, Outcome outcome, Instant finishedBefore) {
         return Unchecked.call("Purging " + topic, () -> {
@@ -249,6 +287,31 @@ public final class TaskAdmin {
 
         /** The ids of rows that match and that the action would take, read without locking them. */
         List<Long> matching(StoreTransaction transaction, Q query, int limit) throws Exception;
+    }
+
+    /** Pages through a topic's unfinished tasks that match a query, as the store's search finds them. */
+    private Paging<TaskQuery> taskPaging(int topicId) {
+        return new Paging<>() {
+            @Override
+            public @Nullable Collection<Long> ids(TaskQuery query) {
+                return query.taskIds();
+            }
+
+            @Override
+            public TaskQuery after(TaskQuery query, long id) {
+                return query.after(id);
+            }
+
+            @Override
+            public TaskQuery withIds(TaskQuery query, Collection<Long> ids) {
+                return query.withIds(ids);
+            }
+
+            @Override
+            public List<Long> matching(StoreTransaction transaction, TaskQuery query, int limit) throws Exception {
+                return store.tasks(transaction, topicId, query, limit).stream().map(TaskView::id).toList();
+            }
+        };
     }
 
     private int inBatches(DeadLetterQuery query, int topicId, Work<DeadLetterQuery> work) throws Exception {
