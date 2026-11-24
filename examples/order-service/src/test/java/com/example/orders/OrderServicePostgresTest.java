@@ -61,7 +61,8 @@ class OrderServicePostgresTest {
 
         assertThat(placed.created()).isTrue();
         assertThat(jdbc.queryForList("SELECT topic || ':' || state FROM pgtasks.task_view WHERE identifier = ? ORDER BY topic", String.class,
-            placed.orderId())).containsExactly("orders.payment:ready", "orders.ship:suspended", "orders.stock:ready");
+            placed.orderId())).as("ship is ready too: its handler waits with later() until paid and reserved")
+            .containsExactly("orders.payment:ready", "orders.ship:ready", "orders.stock:ready");
     }
 
     @Test
