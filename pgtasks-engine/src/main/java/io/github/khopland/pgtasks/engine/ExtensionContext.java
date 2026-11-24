@@ -49,6 +49,13 @@ public interface ExtensionContext {
     /** Wraps every topic's handler on this node; see {@link HandlerDecorator}. */
     void handlerDecorator(HandlerDecorator decorator);
 
+    /**
+     * Sees this node's pushes and batches, next to the observers given to the builder, for
+     * tracing, metrics or headers that follow the work; see {@link TaskObserver}. It comes after
+     * them: for a header name two observers give, the builder's value is stored.
+     */
+    void observer(TaskObserver observer);
+
     /** Runs a job on a fixed delay while the engine runs. */
     void job(HousekeepingJob job);
 

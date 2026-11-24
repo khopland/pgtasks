@@ -61,7 +61,8 @@ final class DefaultTasks implements Tasks {
     private final TransactionBinding transactions;
     private final IntConsumer wakeLocally;
     private final ReadyNotices notices;
-    private final TaskObserver taskObserver;
+    /** Set again only while extensions are installed, before anything is pushed. */
+    private volatile TaskObserver taskObserver;
     private volatile @Nullable PayloadCodecs fallbackCodecs;
     private final Map<Class<?>, PayloadCodec<?>> fallbackByType = new ConcurrentHashMap<>();
     private volatile Observer observer = (topic, insertion, creations, results) -> { };
@@ -83,6 +84,11 @@ final class DefaultTasks implements Tasks {
         this.wakeLocally = wakeLocally;
         this.notices = new ReadyNotices(store);
         this.taskObserver = taskObserver;
+    }
+
+    /** The observer of every push from now on: the builder's and the extensions'. */
+    void taskObserver(TaskObserver taskObserver) {
+        this.taskObserver = Objects.requireNonNull(taskObserver);
     }
 
     void fallbackCodecs(@Nullable PayloadCodecs codecs) {
@@ -124,7 +130,8 @@ final class DefaultTasks implements Tasks {
         }
         // The store can't join the transaction: check now, store once it has committed.
         List<Creation<T>> held = List.copyOf(creations);
-        codec(topic);
+        PayloadCodec<T> codec = codec(topic);
+        held.forEach(creation -> encode(topic, codec, creation));
         try {
             EngineCore.transact(store, storeTransaction -> topics.id(storeTransaction, topic.name()));
         } catch (RuntimeException e) {
@@ -224,8 +231,15 @@ final class DefaultTasks implements Tasks {
      */
     <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
                            @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context, @Nullable Set<Integer> ready) {
+        return write(transaction, topic, insertion, creations, parents, context, ready, Map.of());
+    }
+
+    /** Like the other, with payloads {@link #encode encoded} before, by creation (an identity map). */
+    <T> List<Pushed> write(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
+                           @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context, @Nullable Set<Integer> ready,
+                           Map<Creation<?>, @Nullable String> encoded) {
         try {
-            return store(transaction, topic, insertion, creations, parents, context, ready);
+            return store(transaction, topic, insertion, creations, parents, context, ready, encoded);
         } catch (SQLException e) {
             throw new TaskStorageException("Could not push to " + topic, e);
         }
@@ -233,7 +247,7 @@ final class DefaultTasks implements Tasks {
 
     private <T> List<Pushed> store(StoreTransaction transaction, TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations,
                                    @Nullable List<? extends Task<?>> parents, Function<Task<?>, TaskObserver.Scope> context,
-                                   @Nullable Set<Integer> ready) throws SQLException {
+                                   @Nullable Set<Integer> ready, Map<Creation<?>, @Nullable String> encoded) throws SQLException {
         if (creations.isEmpty()) {
             return List.of();
         }
@@ -242,7 +256,7 @@ final class DefaultTasks implements Tasks {
         List<TaskObserver.PushObservation> observations = new ArrayList<>();
         try {
             List<Map<String, String>> headers = observe(topic, creations.size(), parents, context, observations);
-            List<TaskStore.NewTask> tasks = newTasks(codec, creations, parents, headers);
+            List<TaskStore.NewTask> tasks = newTasks(topic, codec, creations, parents, headers, encoded);
             if (ready == null) {
                 return store.push(transaction, topicId, insertion, tasks, TaskStore.WakeUp.AT_COMMIT);
             }
@@ -313,8 +327,9 @@ final class DefaultTasks implements Tasks {
         return headers;
     }
 
-    private static <T> List<TaskStore.NewTask> newTasks(PayloadCodec<T> codec, List<Creation<T>> creations,
-                                                       @Nullable List<? extends Task<?>> parents, List<Map<String, String>> observed) {
+    private static <T> List<TaskStore.NewTask> newTasks(TopicRef<T> topic, PayloadCodec<T> codec, List<Creation<T>> creations,
+                                                       @Nullable List<? extends Task<?>> parents, List<Map<String, String>> observed,
+                                                       Map<Creation<?>, @Nullable String> encoded) {
         List<TaskStore.NewTask> tasks = new ArrayList<>(creations.size());
         for (int index = 0; index < creations.size(); index++) {
             Creation<T> creation = creations.get(index);
@@ -326,7 +341,7 @@ final class DefaultTasks implements Tasks {
             }
             tasks.add(new TaskStore.NewTask(
                 creation.identifier(),
-                creation.payload() == null ? null : codec.encode(creation.payload()),
+                encoded.containsKey(creation) ? encoded.get(creation) : encode(topic, codec, creation),
                 codec.type(),
                 creation.reference(),
                 creation.delay(),
@@ -340,6 +355,29 @@ final class DefaultTasks implements Tasks {
             ));
         }
         return tasks;
+    }
+
+    /**
+     * A creation's payload as the store keeps it, encoded by the codec. Fails, as the codec does,
+     * if the payload can't be stored: a NUL character can't be held in text by Postgres, and
+     * fails the whole write there, so it fails here for every store alike.
+     */
+    static <T> @Nullable String encode(TopicRef<T> topic, PayloadCodec<T> codec, Creation<T> creation) {
+        T payload = creation.payload();
+        if (payload == null) {
+            return null;
+        }
+        String encoded = codec.encode(payload);
+        if (encoded != null && encoded.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("A payload for " + topic + " encodes to text with the NUL character (\\u0000), which the store "
+                + "can't hold; encode it another way, such as with PayloadCodec.binary");
+        }
+        return encoded;
+    }
+
+    /** {@link #encode} with the topic's codec. */
+    <T> @Nullable String encode(TopicRef<T> topic, Creation<T> creation) {
+        return encode(topic, codec(topic), creation);
     }
 
     /**

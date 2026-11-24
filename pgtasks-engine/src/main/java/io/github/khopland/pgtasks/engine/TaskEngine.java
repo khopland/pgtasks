@@ -84,6 +84,8 @@ public final class TaskEngine implements AutoCloseable {
     private final List<Runnable> onStart = new ArrayList<>();
     private final List<Runnable> onStop = new ArrayList<>();
     private final List<String> extensions = new ArrayList<>();
+    /** The builder's observers, and those installed extensions add. */
+    private TaskObserver observer;
     /** Each extension channel's reloads, run soon on a message, a reconnect or a heartbeat. */
     private final Map<String, List<Coalesced>> channels = new LinkedHashMap<>();
     /** How long one retention run may take; shorter in tests. */
@@ -102,8 +104,8 @@ public final class TaskEngine implements AutoCloseable {
         }
         this.directory = new TopicDirectory(store);
         this.admin = new TaskAdmin(this, store);
-        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wakeById,
-            settings.observer());
+        this.observer = settings.observer();
+        this.tasks = new DefaultTasks(store, directory, codecs, settings.codecs(), settings.transactions(), this::wakeById, observer);
     }
 
     /** Builds an engine from configurers, with defaults for everything they don't set. */
@@ -234,7 +236,7 @@ public final class TaskEngine implements AutoCloseable {
         }
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, settings.observer(), List.copyOf(gates), List.copyOf(batchListeners));
+            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners));
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;
@@ -559,8 +561,6 @@ public final class TaskEngine implements AutoCloseable {
             for (Thread drain : drains) {
                 drain.join(TopicWorker.PATIENCE);
             }
-            workersByName.clear();
-            workersById.clear();
             try {
                 releaseOrphans(Duration.ZERO);
             } catch (Exception e) {
@@ -569,10 +569,20 @@ public final class TaskEngine implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
+            // Also when interrupted: a worker left here would keep its topic from being launched on the next start.
+            forgetWorkers();
             Housekeeper keeper = housekeeper;
             if (keeper != null) {
                 keeper.stop();
             }
+        }
+    }
+
+    /** Drops the stopped workers, so the next start launches its own. */
+    private void forgetWorkers() {
+        synchronized (topicsLock) {
+            workersByName.clear();
+            workersById.clear();
         }
     }
 
@@ -689,6 +699,12 @@ public final class TaskEngine implements AutoCloseable {
                 throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready and topic");
             }
             channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new Coalesced("channel-" + name, "channel " + name, reload::run));
+        }
+
+        @Override
+        public void observer(TaskObserver added) {
+            observer = TaskObserver.composite(List.of(observer, Objects.requireNonNull(added, "observer")));
+            tasks.taskObserver(observer);
         }
 
         @Override

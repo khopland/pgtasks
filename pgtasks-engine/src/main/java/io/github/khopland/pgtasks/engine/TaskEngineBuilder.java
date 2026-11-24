@@ -148,7 +148,11 @@ public final class TaskEngineBuilder {
      * {@code topics.<topic>.batch-size}, {@code ordering}, {@code poll-interval},
      * {@code batch-deadline}, {@code retry.max-attempts} (a number or {@code forever}),
      * {@code retry.give-up-after} (such as 7d, or {@code never}), {@code retry.first-backoff},
-     * {@code retry.max-backoff}, {@code retain.<outcome>}. An unknown topic or key fails the build.
+     * {@code retry.max-backoff}, {@code retain.<outcome>}. An unknown topic or key fails the build,
+     * and so do overrides that contradict each other: {@code retry.max-attempts} with
+     * {@code retry.give-up-after}, or a first backoff above the max backoff. A first backoff alone
+     * above the code's max backoff raises the max with it; a max backoff alone below the code's
+     * first backoff lowers the first.
      */
     public TaskEngineBuilder overrides(Map<String, String> overrides) {
         this.overrides = Map.copyOf(overrides);
@@ -506,7 +510,12 @@ public final class TaskEngineBuilder {
                 values.put(key, value);
                 sources.put(key, topic.spec.sources.get(key));
             });
-            topicOverrides.getOrDefault(topic.name, Map.of()).forEach((key, value) -> {
+            Map<String, String> own = topicOverrides.getOrDefault(topic.name, Map.of());
+            String conflict = retryConflict(own);
+            if (conflict != null) {
+                problems.add("topics." + topic.name + ": " + conflict);
+            }
+            own.forEach((key, value) -> {
                 try {
                     SettingKey<?> extensionKey = keys.get(key);
                     Object parsed = extensionKey != null ? extensionKey.parse(value) : parseOverride(key, value, setting(values, "retry", Retry.class));
@@ -724,6 +733,28 @@ public final class TaskEngineBuilder {
 
     private static @Nullable String longestPrefix(Set<String> names, String key) {
         return names.stream().filter(name -> key.startsWith(name + ".")).max(Comparator.comparingInt(String::length)).orElse(null);
+    }
+
+    /**
+     * Retry overrides that contradict each other. Each one changes a part of the policy the code
+     * set, so applied one after another, the last would silently undo the one before.
+     */
+    private static @Nullable String retryConflict(Map<String, String> overrides) {
+        if (overrides.containsKey("retry.max-attempts") && overrides.containsKey("retry.give-up-after")) {
+            return "retry.max-attempts and retry.give-up-after both say when to give up; set one";
+        }
+        String first = overrides.get("retry.first-backoff");
+        String max = overrides.get("retry.max-backoff");
+        if (first != null && max != null) {
+            try {
+                if (duration(first).compareTo(duration(max)) > 0) {
+                    return "retry.first-backoff (" + first.trim() + ") is above retry.max-backoff (" + max.trim() + ")";
+                }
+            } catch (DateTimeParseException e) {
+                return null; // Reported with the key it is in.
+            }
+        }
+        return null;
     }
 
     private static Object parseOverride(String key, String value, Retry retry) {

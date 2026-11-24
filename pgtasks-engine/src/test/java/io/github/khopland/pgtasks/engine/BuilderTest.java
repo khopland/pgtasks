@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
 import java.time.Period;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -149,6 +150,44 @@ class BuilderTest {
             .hasMessageContaining("topics.missing.concurrency names an unknown topic")
             .hasMessageContaining("topics.dup.concurency: unknown setting")
             .hasMessageContaining("Unknown override limits.nope.rate");
+    }
+
+    @Test
+    void retry_overrides_that_contradict_each_other_fail_the_build() {
+        assertThatThrownBy(() -> TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure("first", tasks -> tasks
+                .topic("one", String.class, batch -> batch.decide(task -> Decision.success()))
+                .topic("two", String.class, batch -> batch.decide(task -> Decision.success())))
+            .overrides(Map.of(
+                "topics.one.retry.first-backoff", "10m",
+                "topics.one.retry.max-backoff", "1m",
+                "topics.two.retry.max-attempts", "3",
+                "topics.two.retry.give-up-after", "1d"))
+            .build())
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("topics.one: retry.first-backoff (10m) is above retry.max-backoff (1m)")
+            .hasMessageContaining("topics.two: retry.max-attempts and retry.give-up-after both say when to give up");
+    }
+
+    @Test
+    void a_backoff_override_alone_moves_the_other_end_of_the_ramp_with_it() {
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure("first", tasks -> tasks
+                .topic("one", String.class, batch -> batch.decide(task -> Decision.success()))
+                .topic("two", String.class, batch -> batch.decide(task -> Decision.success())))
+            .overrides(Map.of(
+                "topics.one.retry.first-backoff", "1h",
+                "topics.two.retry.max-backoff", "1s"))
+            .build();
+
+        Map<String, Retry> retries = new HashMap<>();
+        engine.topics().forEach(topic -> retries.put(topic.ref().name(), topic.settings().retry()));
+        assertThat(retries.get("one").initial()).isEqualTo(Duration.ofHours(1));
+        assertThat(retries.get("one").max()).isEqualTo(Duration.ofHours(1));
+        assertThat(retries.get("two").initial()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(retries.get("two").max()).isEqualTo(Duration.ofSeconds(1));
     }
 
     @Test

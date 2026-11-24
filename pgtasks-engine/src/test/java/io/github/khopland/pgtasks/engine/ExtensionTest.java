@@ -9,6 +9,8 @@ import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Decision;
+import io.github.khopland.pgtasks.Pushed;
+import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
@@ -203,6 +205,60 @@ class ExtensionTest {
             TaskTester.of(engine).awaitIdle();
         }
         assertThat(calls).containsExactly("outer before work", "inner before work", "handler", "inner after", "outer after");
+    }
+
+    /** An observer that stores headers with each push and records what it sees. */
+    private static TaskObserver recording(String name, Map<String, String> headers, List<String> seen) {
+        return new TaskObserver() {
+            @Override
+            public PushObservation pushing(TopicRef<?> topic, int tasks) {
+                return new PushObservation() {
+                    @Override
+                    public Map<String, String> headers() {
+                        return headers;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                };
+            }
+
+            @Override
+            public void pushed(TopicRef<?> topic, List<Pushed> results) {
+                seen.add(name + " pushed " + topic.name());
+            }
+
+            @Override
+            public BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
+                seen.add(name + " batch " + topic.name());
+                return BatchObservation.NONE;
+            }
+        };
+    }
+
+    @Test
+    void an_extensions_observer_sees_pushes_and_batches_next_to_the_builders() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        List<Map<String, String>> handled = new CopyOnWriteArrayList<>();
+        Extension tracing = context -> context.observer(recording("extension", Map.of("trace", "extension", "extension-only", "e"), seen));
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .observer(recording("builder", Map.of("trace", "builder"), seen))
+            .extension(tracing)
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                handled.add(task.task().headers());
+                return Decision.success();
+            })))
+            .build().start()) {
+            engine.tasks().independently().push(WORK, "a", "x");
+            TaskTester.of(engine).awaitIdle();
+        }
+        // The push is reported after its commit, which the batch may already have followed.
+        assertThat(seen).filteredOn(each -> each.contains("pushed")).containsExactly("builder pushed work", "extension pushed work");
+        assertThat(seen).filteredOn(each -> each.contains("batch")).containsExactly("builder batch work", "extension batch work");
+        assertThat(handled).singleElement().satisfies(headers -> assertThat(headers)
+            .containsEntry("trace", "builder")
+            .containsEntry("extension-only", "e"));
     }
 
     @Test

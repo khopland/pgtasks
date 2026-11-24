@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,6 +27,7 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
+import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -138,9 +140,46 @@ final class BatchRun<T> {
             observation.released();
             return;
         }
+        IdentityHashMap<Creation<?>, @Nullable String> encoded = new IdentityHashMap<>();
+        Decisions writable = writable(decisions, encoded);
         try (TaskObserver.Scope ignored = observation.open()) {
-            complete(topic, claims, decisions, early, opened, observation);
+            complete(topic, claims, writable, early, opened, observation, encoded);
         }
+    }
+
+    /**
+     * The decisions with every continuing task's downstream work checked before the completion:
+     * its topic exists and has a codec, and its payloads encode to something the store can hold.
+     * The completion writes it all in one transaction, so one task's push that can't be written
+     * failed the whole batch: every task in it ran again, and the same task failed it again on
+     * every retry. Such a task fails on its own now. A handler that stages with
+     * {@code task.push(...)} is checked for its topic there already; one that builds its
+     * {@link Decisions} itself is not, and payloads are only encoded here. The encoded payloads
+     * are kept in {@code encoded}, so the completion doesn't encode them again.
+     */
+    private Decisions writable(Decisions decisions, Map<Creation<?>, @Nullable String> encoded) {
+        Decisions checked = decisions;
+        for (Decisions.Verdict verdict : decisions.verdicts()) {
+            if (!verdict.decision().continues()) {
+                continue;
+            }
+            try {
+                for (Push<?> push : verdict.downstream()) {
+                    encode(push, encoded);
+                }
+            } catch (TaskStorageException e) {
+                // Looking the topic up failed, not the push: the completion tries again.
+            } catch (RuntimeException | LinkageError | StackOverflowError e) {
+                observe(verdict.task()).error(e);
+                checked = checked.revise(verdict.task(), Decision.failed(e));
+            }
+        }
+        return checked;
+    }
+
+    private <C> void encode(Push<C> push, Map<Creation<?>, @Nullable String> encoded) {
+        core.tasks().checkTarget(push.topic());
+        encoded.put(push.creation(), core.tasks().encode(push.topic(), push.creation()));
     }
 
     /** How long a task waits after a failure the engine couldn't put through the retry policy. */
@@ -304,18 +343,18 @@ final class BatchRun<T> {
     }
 
     private void complete(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
-                          TaskObserver.BatchObservation observation) {
+                          TaskObserver.BatchObservation observation, Map<Creation<?>, @Nullable String> encoded) {
         // The node-wide cap on talking to the store, taken again for the completion.
         core.inFlight().acquireUninterruptibly();
         try {
-            completeWithin(topic, claims, decisions, early, opened, observation);
+            completeWithin(topic, claims, decisions, early, opened, observation, encoded);
         } finally {
             core.inFlight().release();
         }
     }
 
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
-                                TaskObserver.BatchObservation observation) {
+                                TaskObserver.BatchObservation observation, Map<Creation<?>, @Nullable String> encoded) {
         List<Completion> completions = new ArrayList<>(claims.size());
         decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
@@ -328,7 +367,7 @@ final class BatchRun<T> {
                 targets.clear();
                 ready.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
-                targets.addAll(pushDownstream(transaction, decisions, observations, ready));
+                targets.addAll(pushDownstream(transaction, decisions, observations, ready, encoded));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
                 }
@@ -387,7 +426,8 @@ final class BatchRun<T> {
      * a later insertion may act on an earlier one's tasks; two completions that push one topic
      * with different insertions in opposite orders can still deadlock, and the completion retries.
      */
-    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready) {
+    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready,
+                                       Map<Creation<?>, @Nullable String> encoded) {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
         Map<Target, List<Push<?>>> pushes = new LinkedHashMap<>();
@@ -404,7 +444,8 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : byTopicName(pushes, target -> target.topic().name())) {
-            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready));
+            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready,
+                encoded));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
@@ -412,9 +453,9 @@ final class BatchRun<T> {
 
     @SuppressWarnings("unchecked")
     private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents,
-                               Set<Integer> ready) {
+                               Set<Integer> ready, Map<Creation<?>, @Nullable String> encoded) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready);
+        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready, encoded);
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 
