@@ -612,9 +612,8 @@ public final class PostgresTaskStore implements TaskStore {
         // Older queue rows are deleted by task_id, and also by topic and identifier, which never
         // change: by task_id alone, a planner that believes the queue is empty may look them up in
         // queue_identifier_idx, where task_id is the last column, and walk the whole index on every
-        // push (found by the drained-queue pass of the TCK). History is deleted by one array of
-        // ids: with an OR of two IN lists, the only index condition left was the topic, so every
-        // DELETE push read the topic's whole history.
+        // push (found by the drained-queue pass of the TCK). REPLACE marks earlier finished tasks
+        // by one array of ids, so it reaches the task table by primary key, as every statement does.
         String cleanup = switch (insertion) {
             case APPEND -> "";
             case SUPERSEDE -> """
