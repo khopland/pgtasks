@@ -286,7 +286,7 @@ public interface TaskStore {
     /**
      * Gives the matching dead letters, the lowest ids first, another round of attempts: they become
      * ready, their attempts and failures back at zero, so the topic's whole retry policy applies
-     * again. Their attempt log stays.
+     * again.
      *
      * @return the revived ids
      */
