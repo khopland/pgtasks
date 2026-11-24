@@ -116,7 +116,7 @@ class OrderFlowTest {
         tester.drain(NOTIFY);
 
         assertThat(PARTNERS.calls("/shipments")).isZero();
-        assertThat(tester.counts(SHIP).suspended()).as("the replaced ship task").isZero();
+        assertThat(tester.counts(SHIP).total()).as("the replaced ship task and the cancel both finished").isZero();
         assertThat(WRITES.statements("o-2")).anyMatch(sql -> sql.contains("'release'")).anyMatch(sql -> sql.contains("'CANCELLED'"));
         assertThat(tester.pushedPayloads(NOTIFY)).extracting(Notice::kind).containsExactly("declined");
     }

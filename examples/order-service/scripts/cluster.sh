@@ -31,7 +31,7 @@ case "$command" in
     if [[ $command == kill ]]; then kill -9 "$pid"; else kill "$pid"; fi
     while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
     rm -f "$(pidfile "$n")"
-    echo "instance $n ${command}ed" ;;
+    if [[ $command == kill ]]; then echo "instance $n killed"; else echo "instance $n stopped"; fi ;;
   status)
     for f in run/app-*.pid; do
       [[ -e $f ]] || continue
