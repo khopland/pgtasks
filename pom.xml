@@ -18,6 +18,7 @@
     <module>pgtasks-memory</module>
     <module>pgtasks-engine</module>
     <module>pgtasks-rate-limit</module>
+    <module>pgtasks-rate-limit-postgres</module>
     <module>pgtasks-micrometer</module>
     <module>pgtasks-jackson</module>
     <module>pgtasks-junit</module>

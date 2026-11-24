@@ -21,7 +21,7 @@ housekeeping jobs, retries, reviving, metrics and wiring. It runs on Postgres on
 | EXPIRED tasks from dead owners are never requeued | Requeued with backoff once the owner counts as dead; dead-lettered the third time |
 | Contexts and `TaskSupplement` lookups | `BatchResource` (open, review, beforeCommit, afterCommit) and `batch.resource(...)` |
 | `TASK_PRETTY` | `pgtasks.task_view` |
-| `TaskLimiter` | Concurrency per topic and the node-wide in-flight cap. `pgtasks-rate-limit` adds a per-node, per-topic rate limit; cluster-wide limits are not in this version |
+| `TaskLimiter` | Concurrency per topic and the node-wide in-flight cap. `pgtasks-rate-limit` adds a per-node limit; `ClusterRateLimit` with `pgtasks-rate-limit-postgres` adds a cluster-wide sliding window with burst |
 
 Behaviour that changes:
 

@@ -101,3 +101,31 @@ in YAML, like any other setting: `pgtasks.topics.work.rate.burst: 5`.
 The limit is per node, not per cluster: each node keeps its own bucket, so three nodes can claim up
 to three times the configured rate. It limits claims, not completions, and a topic still claims no
 more often than its poll interval.
+
+`ClusterRateLimit` shares a sliding-window counter across every node. Add
+`pgtasks-rate-limit-postgres` alongside `pgtasks-rate-limit` when the store is Postgres; it provides
+the `SlidingWindowStore` capability from a `rate_limit_window` table in the pgtasks schema, locked
+a row at a time so nodes spend the same allowance in turn.
+
+```java
+TaskEngine engine = TaskEngine.builder()
+    .dataSource(dataSource)
+    .extension(new ClusterRateLimit())
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task),
+        options -> options.set(ClusterRateLimit.PER_WINDOW, 60.0)
+            .set(ClusterRateLimit.BURST, 10.0)))
+    .build();
+```
+
+`cluster.window` defaults to one minute, `cluster.per-window` to zero (unlimited) and
+`cluster.burst` to zero. Here three nodes together claim at most 60 tasks a minute, with room for
+10 more that can be spent quickly. A fast first minute uses the burst; once the counter is busy,
+the previous window's count fades as the next one advances, so roughly one claim is freed every
+second instead of a fresh 60 appearing at the minute boundary. Both limits can also be set in
+YAML: `pgtasks.topics.work.cluster.burst: 10`.
+
+A reservation is optimistic: a gate reserves what the window allows, then returns what its claim
+didn't use, so another node can spend it. A node that dies between the two leaves its reservation
+in the counter until its windows pass. The counter is shared through the store, not through the
+notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
+message from the other nodes.

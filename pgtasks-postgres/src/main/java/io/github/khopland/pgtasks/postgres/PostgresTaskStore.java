@@ -653,6 +653,11 @@ public final class PostgresTaskStore implements TaskStore {
         return clock;
     }
 
+    /** The schema this store uses, for extensions that keep their own tables beside its own. */
+    public String schema() {
+        return schema;
+    }
+
     @Override
     public StoreTransaction begin() throws SQLException {
         return PostgresTransaction.open(dataSource.getConnection());

@@ -54,7 +54,8 @@ Import the BOM, then add modules without versions:
 | `pgtasks-engine` | The engine, without Spring: builder, configurers, retries, housekeeping, `TaskTester`. |
 | `pgtasks-postgres` | The Postgres store, its schema and the 1.x importer. |
 | `pgtasks-memory` | An in-memory store for local runs and fast tests. It passes the same TCK as Postgres. |
-| `pgtasks-rate-limit` | A per-topic, per-node rate limit on claims, built on the extension hooks. |
+| `pgtasks-rate-limit` | Per-topic claim limits built on the extension hooks: per node, or across nodes with a sliding window and burst. |
+| `pgtasks-rate-limit-postgres` | The shared counter behind the cluster-wide rate limit on Postgres. |
 | `pgtasks-micrometer` | Metrics and tracing through Micrometer Observation. |
 | `pgtasks-jackson` | JSON payloads with Jackson 3, for payload types without a codec of their own. |
 | `pgtasks-junit` | A JUnit 5 extension: an engine per test on the in-memory store, with a manual clock. |
