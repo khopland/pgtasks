@@ -238,7 +238,8 @@ public final class TaskEngine implements AutoCloseable {
         HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced);
+            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced,
+            Thread::ofVirtual);
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;

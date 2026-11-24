@@ -59,7 +59,7 @@ final class TopicWorker<T> {
         this.topicId = topicId;
         this.core = core;
         this.permits = new Semaphore(topic.settings().concurrency());
-        this.batches = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("pgtasks-" + topic.ref().name() + "-", 0).factory());
+        this.batches = Executors.newThreadPerTaskExecutor(core.threads().get().name("pgtasks-" + topic.ref().name() + "-", 0).factory());
     }
 
     Topic<T> topic() {
@@ -76,7 +76,7 @@ final class TopicWorker<T> {
 
     void start() {
         running = true;
-        poller = Thread.ofVirtual().name("pgtasks-poll-" + topic.ref().name()).start(this::loop);
+        poller = core.threads().get().name("pgtasks-poll-" + topic.ref().name()).start(this::loop);
     }
 
     void wake() {
@@ -258,6 +258,11 @@ final class TopicWorker<T> {
 
     long claimedTasks() {
         return claimedTasks.get();
+    }
+
+    /** The topic permits not taken by a claim or a running batch. */
+    int freePermits() {
+        return permits.availablePermits();
     }
 
     /**

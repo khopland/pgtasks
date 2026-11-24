@@ -354,7 +354,8 @@ final class BatchRun<T> {
     }
 
     private BatchScope scope(Topic<T> topic) {
-        BatchScope created = new BatchScope("pgtasks-" + topic.ref().name() + "-batch", worker::stopping, this::noteIgnoredCancellation);
+        BatchScope created = new BatchScope("pgtasks-" + topic.ref().name() + "-batch", worker::stopping, this::noteIgnoredCancellation,
+            core.threads().get());
         scope = created;
         if (fenced) {
             // Fenced while the scope was made: fence() may not have seen it.
