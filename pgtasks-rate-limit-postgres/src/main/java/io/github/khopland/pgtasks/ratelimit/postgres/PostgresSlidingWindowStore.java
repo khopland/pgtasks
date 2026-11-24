@@ -4,7 +4,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
-import java.util.function.Function;
 
 import io.github.khopland.pgtasks.postgres.ExtensionSchema;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
@@ -12,11 +11,15 @@ import io.github.khopland.pgtasks.ratelimit.SlidingCounter;
 import io.github.khopland.pgtasks.ratelimit.SlidingWindowStore;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 
+import org.jspecify.annotations.Nullable;
+
 /**
- * Sliding-window counters in the pgtasks schema, one row per topic. Each update takes the row's
- * lock in its own short transaction, so nodes take turns spending the same allowance; nothing is
- * held between claims. Created by {@link PostgresSlidingWindowCapability}, not directly by
- * applications. Its own table comes from {@link #SCHEMA}, not from the engine's schema files.
+ * Sliding-window counters in the pgtasks schema, one row per topic. Each update locks the row in its
+ * own short transaction and counts by the database's clock, so nodes take turns spending the same
+ * allowance and agree on where the window is; nothing is held between claims. Created by {@link PostgresSlidingWindowCapability}, not directly by
+ * applications. Its own table comes from {@link #SCHEMA}, not from the engine's schema files. Rows are keyed by
+ * topic name and outlive a deleted topic; a counter that isn't touched for two of its windows no
+ * longer holds anything back.
  */
 public final class PostgresSlidingWindowStore implements SlidingWindowStore {
 
@@ -36,7 +39,7 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
     }
 
     @Override
-    public <R> R update(String topic, Function<SlidingCounter, R> action) {
+    public <R> R update(String topic, Update<R> action) {
         try {
             ensureSchema();
         } catch (SQLException | RuntimeException e) {
@@ -44,10 +47,18 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
                 + ": the cluster rate limit needs its own table", e);
         }
         try (StoreTransaction transaction = store.begin()) {
-            ensureRow(transaction, topic);
-            SlidingCounter counter = load(transaction, topic);
-            R result = action.apply(counter);
-            save(transaction, topic, counter);
+            Loaded loaded = lock(transaction, topic);
+            if (loaded == null) {
+                insert(transaction, topic);
+                loaded = lock(transaction, topic);
+                if (loaded == null) {
+                    throw new SQLException("No counter row for " + topic + " after inserting it");
+                }
+            }
+            R result = action.apply(loaded.counter(), loaded.now());
+            if (loaded.counter().changed()) {
+                save(transaction, topic, loaded.counter());
+            }
             transaction.commit();
             return result;
         } catch (SQLException e) {
@@ -63,25 +74,34 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
         }
     }
 
-    private void ensureRow(StoreTransaction transaction, String topic) throws SQLException {
-        String sql = "INSERT INTO " + table + " (topic, window_start) VALUES (?, ?) ON CONFLICT (topic) DO NOTHING";
-        try (PreparedStatement statement = transaction.connection().prepareStatement(sql)) {
-            statement.setString(1, topic);
-            statement.setLong(2, store.clock().instant().toEpochMilli());
-            statement.executeUpdate();
-        }
+    private record Loaded(SlidingCounter counter, long now) {
     }
 
-    private SlidingCounter load(StoreTransaction transaction, String topic) throws SQLException {
-        String sql = "SELECT window_start, previous, current FROM " + table + " WHERE topic = ? FOR UPDATE";
+    /**
+     * Locks the topic's row and reads it with the database's time, so every node counts by one
+     * clock. Null when the topic has no row yet.
+     */
+    private @Nullable Loaded lock(StoreTransaction transaction, String topic) throws SQLException {
+        String sql = "SELECT window_start, previous, current, "
+            + "(extract(epoch FROM clock_timestamp()) * 1000)::bigint FROM " + table + " WHERE topic = ? FOR UPDATE";
         try (PreparedStatement statement = transaction.connection().prepareStatement(sql)) {
             statement.setString(1, topic);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
-                    throw new SQLException("No counter row for " + topic + " after inserting it");
+                    return null;
                 }
-                return new SlidingCounter(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3));
+                return new Loaded(new SlidingCounter(resultSet.getLong(1), resultSet.getLong(2), resultSet.getLong(3)),
+                    resultSet.getLong(4));
             }
+        }
+    }
+
+    /** A new topic's row starts empty; its first admission moves it onto the current window. */
+    private void insert(StoreTransaction transaction, String topic) throws SQLException {
+        String sql = "INSERT INTO " + table + " (topic, window_start) VALUES (?, 0) ON CONFLICT (topic) DO NOTHING";
+        try (PreparedStatement statement = transaction.connection().prepareStatement(sql)) {
+            statement.setString(1, topic);
+            statement.executeUpdate();
         }
     }
 

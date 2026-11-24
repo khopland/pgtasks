@@ -130,20 +130,25 @@ TaskEngine engine = TaskEngine.builder()
     .dataSource(dataSource)
     .extension(new ClusterRateLimit())
     .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task),
-        options -> options.set(ClusterRateLimit.PER_WINDOW, 60.0)
-            .set(ClusterRateLimit.BURST, 10.0)))
+        options -> options.set(ClusterRateLimit.PER_WINDOW, 60L)))
     .build();
 ```
 
-`cluster.window` defaults to one minute, `cluster.per-window` to zero (unlimited) and
-`cluster.burst` to zero. Here three nodes together claim at most 60 tasks a minute, with room for
-10 more that can be spent quickly. A fast first minute uses the burst; once the counter is busy,
+`cluster.window` defaults to one minute (and must be at least a millisecond), and
+`cluster.per-window`, a whole number, to zero (unlimited). Here three nodes together claim at most
+60 tasks a minute. An idle topic can spend the whole minute's 60 at once; once the counter is busy,
 the previous window's count fades as the next one advances, so roughly one claim is freed every
-second instead of a fresh 60 appearing at the minute boundary. Both limits can also be set in
-YAML: `pgtasks.topics.work.cluster.burst: 10`.
+second instead of a fresh 60 appearing at the minute boundary. Both can also be set in YAML:
+`pgtasks.topics.work.cluster.per-window: 60`. For a rate below one per window, use a longer window.
 
-A reservation is optimistic: a gate reserves what the window allows, then returns what its claim
-didn't use, so another node can spend it. A node that dies between the two leaves its reservation
-in the counter until its windows pass. The counter is shared through the store, not through the
-notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
+The engine tells each claim gate how many tasks the claim wants, so a reservation takes no more
+than the batch size (or what an earlier gate allowed). It is optimistic: the gate reserves, then
+returns what its claim didn't use, so another node can spend it. The engine settles every permit,
+with zero when another gate held the claim back or the claim failed, and the return comes off the
+window it was counted in even if the window has moved on since. A node that dies in between leaves
+its reservation in the counter until its windows pass. Every node counts by the database's clock,
+so nodes whose own clocks drift still agree on where the window is. A claim that uses exactly what
+it reserved costs one short transaction on the topic's counter row; one that uses less costs two.
+
+The counter is shared through the store, not through the notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
 message from the other nodes.

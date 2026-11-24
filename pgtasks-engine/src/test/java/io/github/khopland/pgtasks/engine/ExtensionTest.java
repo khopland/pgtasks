@@ -189,6 +189,42 @@ class ExtensionTest {
     }
 
     @Test
+    void every_granted_permit_is_settled_once_even_when_another_gate_holds_the_claim_back() throws Exception {
+        List<String> settled = new CopyOnWriteArrayList<>();
+        List<Integer> wanted = new CopyOnWriteArrayList<>();
+        AtomicInteger asked = new AtomicInteger();
+        ClaimGate reserving = new ClaimGate() {
+            @Override
+            public Permit permit(TopicRef<?> topic) {
+                throw new AssertionError("the engine says how many it wants");
+            }
+
+            @Override
+            public Permit permit(TopicRef<?> topic, int want) {
+                wanted.add(want);
+                return Permit.atMost(2);
+            }
+
+            @Override
+            public void claimed(TopicRef<?> topic, int tasks) {
+                settled.add("reserving " + tasks);
+            }
+        };
+        // Holds the first two claims back, then lets everything through.
+        ClaimGate holding = topic -> asked.incrementAndGet() <= 2
+            ? ClaimGate.Permit.waitFor(Duration.ofMillis(5)) : ClaimGate.Permit.ANY;
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .extension(context -> context.claimGate(reserving), context -> context.claimGate(holding))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { }, options -> options.batchSize(7)))
+            .build().start()) {
+            engine.tasks().independently().push(WORK, "a", "x");
+            TaskTester.of(engine).awaitIdle();
+        }
+        assertThat(wanted).first().isEqualTo(7);
+        assertThat(settled).hasSameSizeAs(wanted).startsWith("reserving 0", "reserving 0", "reserving 1");
+    }
+
+    @Test
     void decorators_wrap_every_handler_the_first_outermost() throws Exception {
         List<String> calls = new CopyOnWriteArrayList<>();
         Function<String, Extension> named = name -> context -> context.handlerDecorator(new HandlerDecorator() {
