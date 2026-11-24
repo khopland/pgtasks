@@ -2,8 +2,8 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a circuit breaker or
-recurring tasks, are extensions. An extension uses the same hooks the engine's own housekeeping
-uses, so it needs no change to the engine.
+recurring tasks, belong in extensions; none ships with pgtasks yet. An extension uses the same
+hooks the engine's own housekeeping uses, so it needs no change to the engine.
 
 ```java
 public final class NightlyReport implements Extension {

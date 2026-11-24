@@ -47,7 +47,7 @@ public abstract class PollOrderingTck extends StoreTck {
             case "ready" -> { }
             case "active" -> fixture.claim(topic, node);
             case "backing off" -> fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.retrying(Duration.ofHours(1)));
-            case "throttled" -> fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.throttled(Duration.ofHours(1)));
+            case "retrying uncounted" -> fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.uncountedRetry(Duration.ofHours(1)));
             case "expired" -> {
                 int crashed = fixture.node("crashed");
                 fixture.claim(topic, crashed);
@@ -70,7 +70,7 @@ public abstract class PollOrderingTck extends StoreTck {
             Arguments.of("ready", false, false, false),
             Arguments.of("active", false, false, false),
             Arguments.of("backing off", false, false, false),
-            Arguments.of("throttled", false, false, false),
+            Arguments.of("retrying uncounted", false, false, false),
             Arguments.of("expired", false, false, false),
             Arguments.of("suspended", true, true, false),
             Arguments.of("delayed", true, true, false),

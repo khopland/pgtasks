@@ -33,7 +33,7 @@ public abstract class StoreFixture implements AutoCloseable {
     public abstract TaskStore store();
 
     /**
-     * Moves the store's time forward: due times, heartbeats and rate-limit refills all see the
+     * Moves the store's time forward: due times, heartbeats and leases all see the
      * jump. Postgres backdates its timestamps; the in-memory store advances its clock.
      */
     public abstract void advance(Duration duration) throws Exception;
@@ -167,7 +167,8 @@ public abstract class StoreFixture implements AutoCloseable {
         return new Resolution.Waiting(WaitState.SCHEDULED, delay, false, null);
     }
 
-    public static Resolution throttled(Duration delay) {
+    /** A failure that doesn't count an attempt, such as one the retry policy lists in {@code notCounting}. */
+    public static Resolution uncountedRetry(Duration delay) {
         return new Resolution.Waiting(WaitState.RETRYING, delay, false, null);
     }
 

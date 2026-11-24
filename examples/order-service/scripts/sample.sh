@@ -10,7 +10,7 @@ while (( $(date +%s) < end )); do
        SELECT 'orders', status, count(*) FROM orders.orders GROUP BY 2 ORDER BY 2;" 2>&1 | tr '\n' ';'
     echo
     for p in 8081 8082 8083; do
-      printf '%s %s; ' "$p" "$(curl -s -m 2 localhost:$p/actuator/health | grep -o '"tasks":{"details":{[^}]*}' | grep -o '"leader":[a-z]*\|"notifications":"[a-z]*"\|"stuckClaims":[0-9]*\|"openBreakers":\[[^]]*\]' | tr '\n' ' ')"
+      printf '%s %s; ' "$p" "$(curl -s -m 2 localhost:$p/actuator/health | grep -o '"tasks":{"details":{[^}]*}' | grep -o '"leader":[a-z]*\|"notifications":"[a-z]*"\|"stuckClaims":[0-9]*' | tr '\n' ' ')"
     done
     echo
   } >> run/samples.log

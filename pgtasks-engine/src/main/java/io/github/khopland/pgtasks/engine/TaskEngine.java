@@ -38,11 +38,11 @@ import org.slf4j.LoggerFactory;
  * it runs, plus housekeeping.
  *
  * <p>Which topics it runs follows the store: every topic registered by name that the store has. A
- * topic deleted on any node is broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
- * so a lost notification delays a change by at most one heartbeat. A deleted topic's running
- * batches finish; nothing is claimed from it until it is resumed.
+ * topic deleted on any node is broadcast, and every node also compares the store's topics with
+ * what it runs on each heartbeat, so a lost notification delays a change by at most one
+ * heartbeat. A deleted topic's running batches finish, and nothing more is claimed from it.
  *
- * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}
+ * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}.
  * Every method throws only unchecked exceptions.
  */
 public final class TaskEngine implements AutoCloseable {

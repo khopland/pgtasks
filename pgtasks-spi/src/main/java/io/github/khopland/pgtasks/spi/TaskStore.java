@@ -435,7 +435,7 @@ public interface TaskStore {
     enum WaitState {
         /** Delayed; runs at a time, doesn't hold back later tasks under SINGULAR ordering. */
         SCHEDULED,
-        /** Backing off after a failure or throttling; holds its place in line. */
+        /** Backing off after a failure, counted or not; holds its place in line. */
         RETRYING,
         /** Waits until released. */
         SUSPENDED,

@@ -120,8 +120,9 @@ public final class TaskTester {
     }
 
     /**
-     * Runs a topic until nothing in it can run any more, jumping the clock past delays and
+     * Runs until nothing in the topic can run any more, jumping the clock past delays and
      * backoffs when the store has a {@link ManualClock}. Suspended and dead-lettered tasks stay.
+     * Every engine's topics run meanwhile, not only this one, and see the clock jumps too.
      */
     public QueueCounts drain(TopicRef<?> topic) {
         return drain(topic, DEFAULT_TIMEOUT);
