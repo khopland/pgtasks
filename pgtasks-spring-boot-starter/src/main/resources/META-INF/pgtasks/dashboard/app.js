@@ -15,6 +15,7 @@ const ROUTES = {
   revive: ["POST", "/topics/{topic}/revive"],
   discard: ["POST", "/topics/{topic}/discard"],
   tasks: ["GET", "/topics/{topic}/tasks"],
+  release: ["POST", "/topics/{topic}/release"],
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
@@ -550,7 +551,7 @@ async function topicView(name) {
     stats,
     queue && queue.countedAt ? h("p", { class: "muted" }, "Counts as of ", time(queue.countedAt), ".") : null,
     deadLettersPanel(name, dead, paging),
-    tasksPanel(name, search),
+    tasksPanel(name, search, queue ? queue.suspended : null),
     settingsPanel(topic.settings),
   ];
 }
@@ -702,11 +703,13 @@ function filterChips(filter) {
   return h("span", { class: "chips" }, chips.length ? chips : chip("every unfinished task", "info"));
 }
 
-function tasksPanel(topic, search) {
+function tasksPanel(topic, search, suspended) {
   const open = h("button", { type: "button", class: "small", onclick: () => searchTasks(topic) }, search.filter ? "Change search…" : "Search…");
+  // From the last counts, which may be a minute old; the endpoint says how many it released.
+  const releaseAll = suspended ? h("button", { type: "button", class: "small", onclick: () => releaseEvery(topic) }, "Release all suspended…") : null;
   if (!search.filter) {
     return panel("Unfinished tasks", {
-      actions: [open, h("button", { type: "button", class: "small", onclick: () => setSearch(topic, {}) }, "List all")],
+      actions: [open, h("button", { type: "button", class: "small", onclick: () => setSearch(topic, {}) }, "List all"), releaseAll],
       note: "Find tasks by identifier, reference, state, a header or when they were pushed. "
         + "Without an identifier or a reference a search reads the topic's whole backlog, so it runs when you ask, not on every refresh.",
     }, h("div", { class: "empty" }, "No search yet."));
@@ -720,6 +723,9 @@ function tasksPanel(topic, search) {
     { label: "Runs at", value: task => time(task.runAt) },
     { label: "Created", value: task => time(task.createdAt) },
     { label: "Reference", value: task => h("td", { class: "wrap mono" }, task.reference || "—") },
+    { label: h("span", { class: "sr-only" }, "Actions"), value: task => task.state === "suspended"
+      ? h("button", { type: "button", class: "small", onclick: () => releaseOne(topic, task.id) }, "Release")
+      : h("td", null) },
   ], tasks, search.cursors.length > 1 ? "No more tasks." : "No unfinished task matches.");
   const page = search.page || {};
   const go = cursors => {
@@ -736,8 +742,36 @@ function tasksPanel(topic, search) {
     h("span", { class: "muted" }, "Page " + search.cursors.length + ", lowest id first"));
   return panel("Unfinished tasks", {
     meta: filterChips(search.filter),
-    actions: [open, h("button", { type: "button", class: "small ghost", onclick: () => setSearch(topic, null) }, "Clear")],
+    actions: [open, h("button", { type: "button", class: "small ghost", onclick: () => setSearch(topic, null) }, "Clear"), releaseAll],
   }, rows, pager);
+}
+
+/** Releases one suspended task: it becomes ready and runs again. */
+async function releaseOne(topic, id) {
+  let result;
+  try {
+    result = await api("release", { topic }, { body: { ids: String(id) } });
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  toast(result.released ? "Released task #" + id + "." : "Task #" + id + " is no longer suspended.");
+  searchState(topic).stale = true;
+  refresh();
+}
+
+async function releaseEvery(topic) {
+  const result = await ask({
+    title: "Release every suspended task",
+    message: ["Make every suspended task of ", h("strong", null, topic), " ready, so it runs again with the attempts it has."],
+    action: "Release all",
+    run: () => api("release", { topic }, { body: { all: "true" } }),
+  });
+  if (result) {
+    toast("Released " + result.released + " suspended task(s).");
+    searchState(topic).stale = true;
+    refresh();
+  }
 }
 
 function setSearch(topic, filter) {

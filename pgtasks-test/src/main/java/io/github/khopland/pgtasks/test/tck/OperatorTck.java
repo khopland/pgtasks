@@ -19,7 +19,7 @@ import static io.github.khopland.pgtasks.test.tck.StoreFixture.delayed;
 import static io.github.khopland.pgtasks.test.tck.StoreFixture.suspended;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** TCK: an operator's search of unfinished tasks, cancelling them and running them now. */
+/** TCK: an operator's search of unfinished tasks, and releasing suspended ones. */
 public abstract class OperatorTck extends StoreTck {
 
     private int topic;
@@ -105,4 +105,40 @@ public abstract class OperatorTck extends StoreTck {
         assertThat(search(fixture, TaskQuery.ids(List.of(tasks.ready(), 999_999L)), 10)).containsExactly(tasks.ready());
     }
 
+    private List<Long> release(StoreFixture fixture, TaskQuery query, int limit) throws SQLException {
+        return fixture.inTransaction(transaction -> fixture.store().releaseSuspended(transaction, topic, query, limit));
+    }
+
+    @Test
+    void releasing_makes_suspended_tasks_ready_and_leaves_every_other_state_alone() throws SQLException {
+        StoreFixture fixture = setUp();
+        long held = fixture.push(topic, "held");
+        fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.suspension());
+        Tasks tasks = everyState(fixture);
+
+        assertThat(release(fixture, TaskQuery.ALL, 100)).containsExactly(held, tasks.suspended());
+
+        assertThat(List.of(held, tasks.suspended())).extracting(fixture::state).containsOnly("ready");
+        assertThat(fixture.attempt(held)).as("a suspension gave its attempt back, and a release keeps that").isZero();
+        assertThat(List.of(tasks.ready(), tasks.scheduled(), tasks.retrying(), tasks.active(), tasks.failed()))
+            .extracting(fixture::state).containsExactly("ready", "scheduled", "retrying", "active", "failed");
+        assertThat(release(fixture, TaskQuery.ALL, 100)).as("nothing is suspended any more").isEmpty();
+        assertThat(StoreFixture.ids(fixture.claim(topic, node))).contains(held, tasks.suspended());
+    }
+
+    @Test
+    void releasing_takes_only_suspended_tasks_that_match_the_query_one_page_at_a_time() throws SQLException {
+        StoreFixture fixture = setUp();
+        long first = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("order-1")).getFirst());
+        long second = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("order-2")).getFirst());
+        long third = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("order-3")).getFirst());
+        long ready = fixture.push(topic, "order-2");
+
+        assertThat(release(fixture, TaskQuery.ids(List.of(ready, 999_999L)), 10)).as("not suspended, or not there").isEmpty();
+        assertThat(release(fixture, TaskQuery.ALL.withIdentifier("order-2"), 10)).containsExactly(second);
+        assertThat(release(fixture, TaskQuery.ALL, 1)).containsExactly(first);
+        assertThat(release(fixture, TaskQuery.ALL.after(third), 10)).isEmpty();
+        assertThat(release(fixture, TaskQuery.ids(List.of(third)), 10)).containsExactly(third);
+        assertThat(fixture.state(ready)).isEqualTo("ready");
+    }
 }

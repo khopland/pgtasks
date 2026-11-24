@@ -331,6 +331,16 @@ public interface TaskStore {
     List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
+     * Makes the matching suspended tasks ready, the lowest ids first, keeping their attempts and
+     * failures. Only suspended tasks are taken, whatever states the query names. Like
+     * {@link #revive}, it skips rows another transaction holds locked, and wakes the topic's
+     * workers once it commits.
+     *
+     * @return the released ids
+     */
+    List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
      * are and come back with every claim; an empty map stores none. {@code runAt} is an absolute
      * time, compared with the store's clock: a time not after it makes the task ready at once.

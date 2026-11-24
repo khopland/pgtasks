@@ -605,6 +605,14 @@ public final class InMemoryTaskStore implements TaskStore {
             .toList();
     }
 
+    @Override
+    public List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> released = unfinished(topicId, query.inStates(QueueState.SUSPENDED), EnumSet.of(State.SUSPENDED), limit);
+        released.forEach(row -> putQueued(memory, row.with(State.READY, null, row.attempt(), null, null)));
+        return released.stream().map(Rows.Queued::taskId).toList();
+    }
+
     /** The topic's unfinished tasks in these states that match, lowest id first. */
     private List<Rows.Queued> unfinished(int topicId, TaskQuery query, Set<State> states, int limit) {
         return queue.values().stream()

@@ -147,7 +147,7 @@ deciders that wait on a remote call per task.
 | `success()`, `success(output)` | Done. Staged downstream work is committed. | — |
 | `filtered(reason)` | Done, not needed. Nothing downstream. | — |
 | `later(delay)` | Runs again after the delay. | no |
-| `suspended()` | Waits, out of the way of later tasks under most orderings. Nothing releases it in this version. | no |
+| `suspended()` | Waits, out of the way of later tasks under most orderings, until it is released: by an operator (`admin().release(...)`, the endpoint or the dashboard), or by pushing it again with `REPLACE`. | no |
 | `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
 An exception from a decider fails only that task. One from the handler fails the batch. A task
