@@ -78,6 +78,23 @@
   </dependencies>
   <build>
     <plugins>
+      <!-- ThreadDump, used by the tests, reads the JDK's management MXBeans. -->
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs combine.children="append">
+                <arg>--add-modules</arg>
+                <arg>jdk.management</arg>
+                <arg>--add-reads</arg>
+                <arg>${module.name}=java.management,jdk.management</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- The vertical slice (io.github.khopland.pgtasks.slice) is reused by the Spring Boot starter's tests. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

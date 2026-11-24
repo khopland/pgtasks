@@ -17,7 +17,11 @@ import io.github.khopland.pgtasks.test.PostgresExtension;
 
 import com.zaxxer.hikari.HikariDataSource;
 
-/** Engines on a real Postgres. Each engine gets its own pool, so several engines stand in for several pods. */
+/**
+ * Engines on a real Postgres. Each engine gets its own pool, so several engines stand in for several pods.
+ * Shared through the test-jar, so the types it hands out are internal to the tests, not module API.
+ */
+@SuppressWarnings("exports")
 public final class EngineFixture implements AutoCloseable {
 
     public static PostgresExtension extension() {
