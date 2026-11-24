@@ -1,8 +1,10 @@
-package io.github.khopland.pgtasks.engine;
+package io.github.khopland.pgtasks.engine.extension;
 
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.regex.Pattern;
+
+import io.github.khopland.pgtasks.engine.TopicOptions;
 
 /**
  * A per-topic setting an {@link Extension} adds, such as {@code window.size}. It layers like the
@@ -45,7 +47,7 @@ public record SettingKey<T>(String name, Class<T> type, T defaultValue, Function
     }
 
     /** The value, if it is one of this setting's type. */
-    T checked(Object value) {
+    public T checked(Object value) {
         if (!type.isInstance(value)) {
             throw new IllegalArgumentException(name + " takes a " + type.getSimpleName() + ", not " + value);
         }

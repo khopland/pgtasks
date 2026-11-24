@@ -27,9 +27,12 @@ import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Setting;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StoreProvider;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -111,9 +114,9 @@ public final class TaskEngineBuilder {
         return this;
     }
 
-    /** migrate (the default), validate or none: how a Postgres store treats its schema at startup. */
-    public TaskEngineBuilder schemaMode(String mode) {
-        storeOptions.put("schema-mode", mode);
+    /** How the store from {@link #dataSource} treats its schema at startup: {@link SchemaMode#MIGRATE} by default. */
+    public TaskEngineBuilder schemaMode(SchemaMode mode) {
+        storeOptions.put("schema-mode", Objects.requireNonNull(mode, "mode").label());
         return this;
     }
 

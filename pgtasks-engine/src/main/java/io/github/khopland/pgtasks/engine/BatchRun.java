@@ -29,14 +29,15 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.extension.BatchListener;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
-import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import io.github.khopland.pgtasks.spi.TaskStore.Completion;
 import io.github.khopland.pgtasks.spi.TaskStore.Outcome;
 import io.github.khopland.pgtasks.spi.TaskStore.Resolution;
 import io.github.khopland.pgtasks.spi.TaskStore.WaitState;
+import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;

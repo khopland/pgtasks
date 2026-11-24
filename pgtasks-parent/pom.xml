@@ -209,8 +209,9 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.16.0</version>
           <configuration>
+            <!-- requires-automatic: the Postgres driver and Micrometer have no module descriptors, so the modules that need them can only require their automatic names. -->
             <compilerArgs>
-              <arg>-Xlint:all,-serial,-processing,-try</arg>
+              <arg>-Xlint:all,-serial,-processing,-try,-requires-automatic</arg>
               <arg>-parameters</arg>
             </compilerArgs>
             <!-- A module adding its own processors appends with combine.children="append". -->

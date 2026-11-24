@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import javax.sql.DataSource;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;

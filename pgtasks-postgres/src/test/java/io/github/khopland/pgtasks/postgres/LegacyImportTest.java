@@ -4,6 +4,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;

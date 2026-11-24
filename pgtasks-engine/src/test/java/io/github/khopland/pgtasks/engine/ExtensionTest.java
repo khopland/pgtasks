@@ -12,6 +12,13 @@ import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.extension.BatchListener;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.HandlerDecorator;
+import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.ManualClock;
 

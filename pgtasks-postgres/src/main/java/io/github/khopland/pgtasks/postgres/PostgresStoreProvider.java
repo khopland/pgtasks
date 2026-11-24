@@ -7,11 +7,16 @@ import java.util.Map;
 import java.util.OptionalInt;
 import javax.sql.DataSource;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.StoreProvider;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 /** Lets {@code TaskEngine.builder().dataSource(ds)} find the Postgres store. */
 public final class PostgresStoreProvider implements StoreProvider {
+
+    /** Created by {@link java.util.ServiceLoader}, not by applications. */
+    public PostgresStoreProvider() {
+    }
 
     @Override
     public boolean supports(DataSource dataSource) {
@@ -26,7 +31,7 @@ public final class PostgresStoreProvider implements StoreProvider {
     public TaskStore create(DataSource dataSource, Map<String, String> options) {
         String mode = options.getOrDefault("schema-mode", "migrate");
         String schema = options.getOrDefault("schema", TaskSchema.DEFAULT_SCHEMA);
-        return new PostgresTaskStore(dataSource, SchemaMode.valueOf(mode.toUpperCase(Locale.ROOT).replace('-', '_')), schema);
+        return new PostgresTaskStore(dataSource, SchemaMode.of(mode), schema);
     }
 
     @Override

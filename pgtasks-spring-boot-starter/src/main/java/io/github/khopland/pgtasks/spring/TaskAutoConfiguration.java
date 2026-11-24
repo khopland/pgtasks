@@ -10,13 +10,13 @@ import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.engine.PayloadCodecs;
-import io.github.khopland.pgtasks.engine.Extension;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskEngineBuilder;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.engine.TaskTester;
+import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore;

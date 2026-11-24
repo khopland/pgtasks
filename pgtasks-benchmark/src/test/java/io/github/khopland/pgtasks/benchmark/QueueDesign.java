@@ -9,8 +9,8 @@ import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
-import io.github.khopland.pgtasks.postgres.SchemaMode;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;

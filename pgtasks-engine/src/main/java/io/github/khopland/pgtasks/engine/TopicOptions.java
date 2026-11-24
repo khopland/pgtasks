@@ -6,6 +6,7 @@ import java.time.Period;
 import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 
 /** What differs from the defaults for a topic, or for a group of topics. */
 public interface TopicOptions {

@@ -1,4 +1,4 @@
-package io.github.khopland.pgtasks.engine;
+package io.github.khopland.pgtasks.engine.extension;
 
 import java.time.Duration;
 import java.util.Objects;

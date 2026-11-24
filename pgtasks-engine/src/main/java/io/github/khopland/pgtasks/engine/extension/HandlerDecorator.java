@@ -1,4 +1,4 @@
-package io.github.khopland.pgtasks.engine;
+package io.github.khopland.pgtasks.engine.extension;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.TopicRef;
