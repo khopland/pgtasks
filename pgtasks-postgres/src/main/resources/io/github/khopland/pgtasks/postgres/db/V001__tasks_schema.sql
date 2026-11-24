@@ -159,15 +159,5 @@ CREATE TABLE ${pgtasks_schema}.lease (
     expires_at   timestamptz NOT NULL
 );
 
--- Shared sliding windows for the optional cluster rate-limit extension. One row per topic,
--- updated under a row lock so nodes take turns spending the same allowance. A topic's row lasts
--- until its topic does; an idle counter decays to nothing as its windows pass.
-CREATE TABLE ${pgtasks_schema}.rate_limit_window (
-    topic           text PRIMARY KEY,
-    window_start    bigint NOT NULL,
-    previous        bigint NOT NULL DEFAULT 0,
-    current         bigint NOT NULL DEFAULT 0
-);
-
 INSERT INTO ${pgtasks_schema}.meta (singleton, version, compatible_from) VALUES (true, 1, 1)
 ON CONFLICT (singleton) DO UPDATE SET version = excluded.version, compatible_from = excluded.compatible_from, updated_at = now();

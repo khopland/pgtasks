@@ -107,6 +107,23 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    that applies the released files with tasks in every state, then the current files, and checks
    the tasks are still usable.
 
+### Tables an extension owns
+
+An extension can keep tables beside the engine's without changing these files. `ExtensionSchema`
+points at versioned and repeatable SQL files in the extension's own jar and gives the extension a
+name; the built-in runner applies them under a lock on `<schema>.<name>_schema_history`, a different
+lock and a different history table from the engine's and from every other extension's. That is
+where the cluster rate limit's `rate_limit_window` lives: in
+`io/github/khopland/pgtasks/ratelimit/postgres/db/V001__rate_limit_window.sql` in
+`pgtasks-rate-limit-postgres`, applied with the schema mode of its store.
+
+The extension's files use the same `${pgtasks_schema}` placeholder and the same freeze rules as the
+engine's. With `migrate`, the module's runner applies them for you. With `validate`, point Flyway
+at the extension's classpath directory in its own instance (a separate history table keeps its
+version numbers apart), add its changelog to Liquibase, or run its files from your DBA pipeline,
+then let the extension check the tables are there before it first uses them. In `none`, nothing is
+applied or checked. [Writing an extension](extensions.md#store-capabilities) shows the API.
+
 ## Postgres versions
 
 pgtasks supports PostgreSQL 17 to 19. CI runs the full build on 17 and the store TCK (plan audit

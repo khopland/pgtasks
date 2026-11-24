@@ -3,8 +3,10 @@ package io.github.khopland.pgtasks.ratelimit.postgres;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.function.Function;
 
+import io.github.khopland.pgtasks.postgres.ExtensionSchema;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.ratelimit.SlidingCounter;
 import io.github.khopland.pgtasks.ratelimit.SlidingWindowStore;
@@ -14,22 +16,33 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
  * Sliding-window counters in the pgtasks schema, one row per topic. Each update takes the row's
  * lock in its own short transaction, so nodes take turns spending the same allowance; nothing is
  * held between claims. Created by {@link PostgresSlidingWindowCapability}, not directly by
- * applications.
+ * applications. Its own table comes from {@link #SCHEMA}, not from the engine's schema files.
  */
 public final class PostgresSlidingWindowStore implements SlidingWindowStore {
 
+    /** This extension's SQL, shipped in its jar rather than added to the engine's V001. */
+    public static final ExtensionSchema SCHEMA = ExtensionSchema.of("rate_limit", PostgresSlidingWindowStore.class,
+        "io/github/khopland/pgtasks/ratelimit/postgres/db",
+        List.of("V001__rate_limit_window.sql"), List.of("rate_limit_window"));
+
     private final PostgresTaskStore store;
     private final String table;
+    private volatile boolean schemaReady;
 
     /** Created by the capability for a particular store. */
     PostgresSlidingWindowStore(PostgresTaskStore store) {
         this.store = store;
-        String schema = store.schema();
-        table = schema + ".rate_limit_window";
+        table = store.schema() + ".rate_limit_window";
     }
 
     @Override
     public <R> R update(String topic, Function<SlidingCounter, R> action) {
+        try {
+            ensureSchema();
+        } catch (SQLException | RuntimeException e) {
+            throw new IllegalStateException("Could not apply " + SCHEMA.describe() + " to " + table
+                + ": the cluster rate limit needs its own table", e);
+        }
         try (StoreTransaction transaction = store.begin()) {
             ensureRow(transaction, topic);
             SlidingCounter counter = load(transaction, topic);
@@ -38,8 +51,15 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
             transaction.commit();
             return result;
         } catch (SQLException e) {
-            throw new IllegalStateException("Could not update the shared rate limit for topic '" + topic
-                + "': is the pgtasks schema migrated so it has " + table + "?", e);
+            throw new IllegalStateException("Could not update the shared rate limit for topic '" + topic + "' in " + table, e);
+        }
+    }
+
+    /** Applies the extension's files once per store instance, according to the store's schema mode. */
+    private synchronized void ensureSchema() throws SQLException {
+        if (!schemaReady) {
+            SCHEMA.apply(store);
+            schemaReady = true;
         }
     }
 

@@ -78,8 +78,24 @@ public final class PostgresWindows implements StoreCapability {
 ```
 
 The extension asks for it with `context.capability(WindowStore.class)`. Without a provider for the
-engine's store, that fails with a message naming the missing module. An extension's own tables are
-its own to create, for now: the schema runner applies only the engine's files.
+engine's store, that fails with a message naming the missing module.
+
+An extension that needs a table ships its SQL in its own jar; it does not add files to the engine's
+schema. `ExtensionSchema` names that classpath directory and the tables it expects:
+
+```java
+private static final ExtensionSchema WINDOWS = ExtensionSchema.of("windows", PostgresWindowStore.class,
+    "io/example/windows/db", List.of("V001__windows.sql"), List.of("window"));
+```
+
+`WINDOWS.apply(postgres)` applies the files with the built-in runner when the store's schema mode
+is `migrate`, checks the tables in `validate`, and does nothing in `none`. The runner keeps history
+in `<schema>.windows_schema_history` under its own advisory lock, so version numbers and checksums
+can't clash with the engine's or with another extension's. The files use the same
+`${pgtasks_schema}` placeholder and `V<version>__...` / `R__...` rules as the engine's, and
+applications using Flyway, Liquibase or a DBA pipeline can apply them from the jar the same way. An
+extension calls `apply` before it first uses its tables, so a bad `validate` setup fails on the
+first claim with a message naming the file and table it needs.
 
 ## Shipped extensions
 
@@ -105,7 +121,9 @@ more often than its poll interval.
 `ClusterRateLimit` shares a sliding-window counter across every node. Add
 `pgtasks-rate-limit-postgres` alongside `pgtasks-rate-limit` when the store is Postgres; it provides
 the `SlidingWindowStore` capability from a `rate_limit_window` table in the pgtasks schema, locked
-a row at a time so nodes spend the same allowance in turn.
+a row at a time so nodes spend the same allowance in turn. That table comes from the module's own
+`V001__rate_limit_window.sql`, recorded in `rate_limit_schema_history`; the engine's V001 knows
+nothing about it. In `validate` mode, apply that file with your own migration tool first.
 
 ```java
 TaskEngine engine = TaskEngine.builder()

@@ -7,11 +7,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskTester;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
+import io.github.khopland.pgtasks.postgres.TaskSchemaException;
 import io.github.khopland.pgtasks.ratelimit.ClusterRateLimit;
 import io.github.khopland.pgtasks.ratelimit.SlidingCounter;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 final class PostgresSlidingWindowStoreTest {
 
@@ -50,6 +53,18 @@ final class PostgresSlidingWindowStoreTest {
             pool.shutdownNow();
         }
         assertThat(first.update("work", SlidingCounter::current)).isEqualTo(40);
+        assertThat(database.rows("SELECT script FROM pgtasks.rate_limit_schema_history"))
+            .extracting(row -> row.get(0)).containsExactly("V001__rate_limit_window.sql");
+    }
+
+    @Test
+    void validate_mode_requires_the_extensions_own_table(PostgresDatabase database) {
+        PostgresSlidingWindowStore store = new PostgresSlidingWindowStore(
+            new PostgresTaskStore(database.dataSource(), SchemaMode.VALIDATE));
+        assertThatThrownBy(() -> store.update("work", SlidingCounter::current))
+            .isInstanceOf(IllegalStateException.class)
+            .hasCauseInstanceOf(TaskSchemaException.class)
+            .satisfies(e -> assertThat(e.getCause()).hasMessageContaining("pgtasks.rate_limit_window table is missing"));
     }
 
     @Test

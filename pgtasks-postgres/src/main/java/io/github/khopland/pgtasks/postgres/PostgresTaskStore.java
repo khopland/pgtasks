@@ -658,6 +658,16 @@ public final class PostgresTaskStore implements TaskStore {
         return schema;
     }
 
+    /** How this store treats its schema, so an extension knows whether it may create its own tables. */
+    public SchemaMode mode() {
+        return mode;
+    }
+
+    /** The store's DataSource, for extensions that apply their own SQL files to the same database. */
+    public DataSource dataSource() {
+        return dataSource;
+    }
+
     @Override
     public StoreTransaction begin() throws SQLException {
         return PostgresTransaction.open(dataSource.getConnection());

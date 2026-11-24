@@ -224,7 +224,7 @@ public final class TaskSchema {
     }
 
     /** Before anything is applied, so an older server is left as it was. */
-    private static void refuseOldServer(Connection connection) throws SQLException {
+    static void refuseOldServer(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT current_setting('server_version_num')::integer, current_setting('server_version')")) {
             resultSet.next();
@@ -244,7 +244,7 @@ public final class TaskSchema {
     }
 
     /** Reserved words would need quoting wherever the name appears; types and functions can't be qualified with some others. */
-    private static void refuseKeyword(Connection connection, String schema) throws SQLException {
+    static void refuseKeyword(Connection connection, String schema) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("SELECT catdesc FROM pg_get_keywords() WHERE word = ? AND catcode IN ('R', 'T', 'C')")) {
             statement.setString(1, schema);
             try (ResultSet resultSet = statement.executeQuery()) {
