@@ -609,26 +609,25 @@ public final class PostgresTaskStore implements TaskStore {
         // that were actually queued. Every CTE sees the snapshot from before the statement, so
         // none of them can touch the rows this statement inserts.
         //
-        // Older queue rows are deleted by task_id, and also by topic and identifier, which never
-        // change: by task_id alone, a planner that believes the queue is empty may look them up in
-        // queue_identifier_idx, where task_id is the last column, and walk the whole index on every
-        // push (found by the drained-queue pass of the TCK). History is deleted by one array of
-        // ids: with an OR of two IN lists, the only index condition left was the topic, so every
-        // DELETE push read the topic's whole history.
+        // Earlier tasks are looked up one identifier at a time, on (topic_id, identifier) of
+        // queue_identifier_idx, locked, and deleted by ctid. Given the topic and an array of
+        // identifiers, Postgres 15 and 16 used the topic alone as the index condition and filtered
+        // the identifiers, so each push read the topic's whole backlog; and deleting by task_id
+        // alone let a planner that believes the queue is empty walk the whole index.
         String cleanup = switch (insertion) {
             case APPEND -> "";
             case SUPERSEDE -> """
                 ,
                 superseded AS (
                     DELETE FROM pgtasks.queue q
-                    WHERE q.topic_id = :topic::integer
-                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                      AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM pgtasks.queue o
-                        WHERE o.topic_id = :topic::integer
-                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                          AND o.state IN ('ready', 'scheduled', 'retrying')
-                        FOR UPDATE OF o SKIP LOCKED))
+                    WHERE q.ctid = ANY (ARRAY(
+                        SELECT o.row
+                        FROM (SELECT DISTINCT identifier FROM queued) AS i
+                        CROSS JOIN LATERAL (
+                            SELECT o.ctid AS row FROM pgtasks.queue o
+                            WHERE o.topic_id = :topic::integer AND o.identifier = i.identifier
+                              AND o.state IN ('ready', 'scheduled', 'retrying')
+                            FOR UPDATE OF o SKIP LOCKED) AS o))
                     RETURNING q.task_id
                 ),
                 superseded_tasks AS (
@@ -640,14 +639,14 @@ public final class PostgresTaskStore implements TaskStore {
                 ,
                 replaced AS (
                     DELETE FROM pgtasks.queue q
-                    WHERE q.topic_id = :topic::integer
-                      AND q.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                      AND q.task_id = ANY (ARRAY(
-                        SELECT o.task_id FROM pgtasks.queue o
-                        WHERE o.topic_id = :topic::integer
-                          AND o.identifier = ANY (ARRAY(SELECT identifier FROM queued))
-                          AND o.state <> 'active'
-                        FOR UPDATE OF o SKIP LOCKED))
+                    WHERE q.ctid = ANY (ARRAY(
+                        SELECT o.row
+                        FROM (SELECT DISTINCT identifier FROM queued) AS i
+                        CROSS JOIN LATERAL (
+                            SELECT o.ctid AS row FROM pgtasks.queue o
+                            WHERE o.topic_id = :topic::integer AND o.identifier = i.identifier
+                              AND o.state <> 'active'
+                            FOR UPDATE OF o SKIP LOCKED) AS o))
                     RETURNING q.task_id
                 ),
                 replaced_open AS (
