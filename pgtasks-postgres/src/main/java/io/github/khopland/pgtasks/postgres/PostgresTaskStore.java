@@ -124,7 +124,7 @@ public final class PostgresTaskStore implements TaskStore {
         }
         // Order per identifier is task-id order, and ids are drawn before commit. Two pushes for one
         // identifier could commit out of id order, and the one that commits first can't see the
-        // other's task to supersede, replace or delete it: an older task would then outlive, or run
+        // other's task to supersede or replace it: an older task would then outlive, or run
         // after, a newer one. So a push that does more than append locks each of its identifiers,
         // in one order so two pushes can't deadlock on them, before its statement draws ids, and
         // holds the locks until it commits; the next push's statement takes its snapshot after

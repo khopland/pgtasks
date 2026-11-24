@@ -168,7 +168,7 @@ public final class TaskEngineBuilder {
      * For module tests: a push to a topic that doesn't exist creates it, instead of failing, so a
      * test that runs one module's topics can push to another module's and assert what was pushed.
      * Nothing processes such a topic. Never in production, where a misspelt topic would quietly
-     * collect tasks; the Spring starter turns it on only inside Spring Modulith module tests.
+     * collect tasks.
      * The topic is created in a short transaction of its own, on a second connection, so it stays
      * even if the push's transaction rolls back.
      */
