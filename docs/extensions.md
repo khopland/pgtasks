@@ -2,9 +2,10 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a circuit breaker or
-recurring tasks, belong in extensions; none ships with pgtasks yet. An extension uses the same
-hooks the engine's own housekeeping uses, so it needs no change to the engine. Everything an
-extension implements or receives is in the package `io.github.khopland.pgtasks.engine.extension`.
+recurring tasks, belong in extensions. One ships: [`pgtasks-rate-limit`](#shipped-extensions). An
+extension uses the same hooks the engine's own housekeeping uses, so it needs no change to the
+engine. Everything an extension implements or receives is in the package
+`io.github.khopland.pgtasks.engine.extension`.
 
 ```java
 public final class NightlyReport implements Extension {
@@ -80,7 +81,23 @@ The extension asks for it with `context.capability(WindowStore.class)`. Without 
 engine's store, that fails with a message naming the missing module. An extension's own tables are
 its own to create, for now: the schema runner applies only the engine's files.
 
-## An example
+## Shipped extensions
 
-`NodeRateLimit`, in the engine's tests, is a per-node rate limit in one file: a `SettingKey` for
-the rate, a `ClaimGate` that keeps a token bucket per topic, and nothing else.
+`pgtasks-rate-limit` is that pattern as a module. `RateLimit` declares `rate.per-second` and
+`rate.burst`, keeps a token bucket per topic using the store's clock, and installs a claim gate:
+
+```java
+TaskEngine engine = TaskEngine.builder()
+    .extension(new RateLimit())
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task),
+        options -> options.set(RateLimit.PER_SECOND, 20.0)))
+    .build();
+```
+
+With Spring, declare a `RateLimit` bean instead. A topic without a positive `rate.per-second` is
+unlimited; `rate.burst` defaults to one second's worth. Both can be set in defaults and overridden
+in YAML, like any other setting: `pgtasks.topics.work.rate.burst: 5`.
+
+The limit is per node, not per cluster: each node keeps its own bucket, so three nodes can claim up
+to three times the configured rate. It limits claims, not completions, and a topic still claims no
+more often than its poll interval.
