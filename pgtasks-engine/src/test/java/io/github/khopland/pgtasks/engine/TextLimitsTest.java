@@ -151,6 +151,36 @@ class TextLimitsTest {
         List.of(1, 2, 3).forEach(index -> assertThat(engine.admin().find(ids.get(index)).orElseThrow().state()).isEqualTo("failed"));
     }
 
+    /**
+     * Review 2026-11-24: headers stored that a task can't be made with stopped work. Ones that
+     * weren't a JSON object of strings (an edit by hand) failed the claim, which rolled back and
+     * claimed the same task first again: the whole topic stopped, on every node. One with an empty
+     * name (an observer's, before observers' headers were checked) failed the batch before it
+     * ran, and its claims stayed held until the node restarted.
+     */
+    @Test
+    void a_task_whose_stored_headers_cant_be_read_runs_without_them(PostgresDatabase database) throws Exception {
+        fixture = new EngineFixture(database);
+        fixture.createTopics(WORK.name());
+        Map<String, Map<String, String>> seen = new ConcurrentHashMap<>();
+        Topic<String> topic = Topic.of(WORK, batch -> batch.decide(task -> {
+            seen.put(task.identifier(), task.task().headers());
+            return Decision.success();
+        }));
+        TaskEngine engine = fixture.create("node-a", List.of(topic.with(topic.settings().withBatchSize(1))), settings -> settings);
+        List<Long> ids = engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(
+            Creation.of("nested", "x"), Creation.of("unnamed", "x"), Creation.of("after", "x")))
+            .stream().map(pushed -> pushed.id()).toList();
+        database.execute("UPDATE pgtasks.task SET headers = '{\"a\": {\"b\": 1}}' WHERE id = " + ids.get(0));
+        database.execute("UPDATE pgtasks.task SET headers = '{\"\": \"no name\", \"kept\": \"yes\"}' WHERE id = " + ids.get(1));
+        engine.start();
+
+        EngineFixture.await("every task to run", Duration.ofSeconds(10), () -> seen.size() == 3);
+        assertThat(seen.get("nested")).isEmpty();
+        assertThat(seen.get("unnamed")).containsExactly(Map.entry("kept", "yes"));
+        ids.forEach(id -> assertThat(engine.admin().find(id).orElseThrow().state()).isEqualTo("succeeded"));
+    }
+
     @Test
     void a_payload_that_encodes_to_a_nul_is_refused_when_it_is_pushed(PostgresDatabase database) throws Exception {
         fixture = new EngineFixture(database);

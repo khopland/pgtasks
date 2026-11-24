@@ -82,11 +82,28 @@ final class BatchRun<T> {
     void run() {
         Topic<T> topic = worker.topic();
         Map<Long, ClaimedTask> claims = new LinkedHashMap<>();
+        claimed.forEach(claim -> claims.put(claim.id(), claim));
         List<Task<T>> runnable = new ArrayList<>();
         List<Task<?>> all = new ArrayList<>(claimed.size());
         Decisions.Builder early = Decisions.builder();
+        try {
+            prepare(topic, runnable, all, early);
+        } catch (RuntimeException e) {
+            // Before anything ran: without this the claims stayed held here, out of the orphan
+            // sweep's reach, until the node restarted.
+            failUnexpectedly(topic, claims, e);
+            claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
+            return;
+        }
+        runPrepared(topic, claims, runnable, all, early, new LinkedHashMap<>());
+    }
+
+    /**
+     * Makes each claim a task: decoded, or failed at once if its payload can't be, or if it has
+     * no attempts left. Its headers are only what a task can hold, as an observer's are.
+     */
+    private void prepare(Topic<T> topic, List<Task<T>> runnable, List<Task<?>> all, Decisions.Builder early) {
         for (ClaimedTask claim : claimed) {
-            claims.put(claim.id(), claim);
             @Nullable T payload;
             try {
                 payload = claim.payload() == null ? null : topic.codec().decode(claim.payload());
@@ -106,7 +123,10 @@ final class BatchRun<T> {
                 runnable.add(task);
             }
         }
-        Map<BatchResource<?>, Object> opened = new LinkedHashMap<>();
+    }
+
+    private void runPrepared(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, List<Task<?>> all, Decisions.Builder early,
+                             Map<BatchResource<?>, Object> opened) {
         TaskObserver.BatchObservation observation = core.observer().batch(topic.ref(), all);
         this.batchObservation = observation;
         try {
@@ -223,7 +243,7 @@ final class BatchRun<T> {
 
     private Task<T> task(ClaimedTask claim, @Nullable T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
-            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.headers());
+            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), SafeObserver.storable(claim.headers()));
     }
 
     /** The task's own observation, asked for once; see {@link TaskObserver.BatchObservation#task}. */

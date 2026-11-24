@@ -908,8 +908,9 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = Objects.requireNonNull(polls.get(request.ordering())).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
+                long taskId = resultSet.getLong("task_id");
                 tasks.add(new ClaimedTask(
-                    resultSet.getLong("task_id"),
+                    taskId,
                     resultSet.getString("identifier"),
                     resultSet.getInt("attempt"),
                     resultSet.getInt("priority"),
@@ -920,7 +921,7 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getObject("root_id", Long.class),
                     requiredInstant(resultSet, "created_at"),
                     requiredInstant(resultSet, "claimed_at"),
-                    HeaderJson.read(resultSet.getString("headers")),
+                    HeaderJson.readOrNone(taskId, resultSet.getString("headers")),
                     resultSet.getInt("failures"),
                     instant(resultSet, "first_failed_at")
                 ));
@@ -1363,7 +1364,7 @@ public final class PostgresTaskStore implements TaskStore {
             instant(resultSet, "completed_at"),
             resultSet.getInt("failures"),
             instant(resultSet, "first_failed_at"),
-            HeaderJson.read(resultSet.getString("headers"))
+            HeaderJson.readOrNone(resultSet.getLong("id"), resultSet.getString("headers"))
         );
     }
 

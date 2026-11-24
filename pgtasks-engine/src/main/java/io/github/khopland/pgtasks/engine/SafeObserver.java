@@ -108,7 +108,8 @@ final class SafeObserver implements TaskObserver {
      * The headers a task can be stored and loaded with, as {@link io.github.khopland.pgtasks.Creation}
      * checks its own: a null or empty name and a null value are dropped, and a NUL character, which
      * Postgres can't store, becomes U+FFFD. A header a task can't hold would fail its push, or, for
-     * downstream work, the completion of the whole batch that staged it, on every retry.
+     * downstream work, the completion of the whole batch that staged it, on every retry. Claimed
+     * tasks go through it too, for headers stored before this check.
      */
     static Map<String, String> storable(@Nullable Map<String, String> headers) {
         if (headers == null || headers.isEmpty()) {
@@ -129,7 +130,7 @@ final class SafeObserver implements TaskObserver {
             if (name != null && !name.isEmpty() && value != null) {
                 kept.putIfAbsent(name.replace('\0', REPLACEMENT), value.replace('\0', REPLACEMENT));
             } else {
-                LOGGER.warn("A task observer gave a header with no name or no value, which is left out: {}={}", name, value);
+                LOGGER.warn("A header with no name or no value is left out: {}={}", name, value);
             }
         });
         return kept;
