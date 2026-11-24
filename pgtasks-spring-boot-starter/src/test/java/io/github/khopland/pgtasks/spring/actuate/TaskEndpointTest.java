@@ -144,7 +144,8 @@ class TaskEndpointTest {
         Response dead = get("/tasks/topics/work/dead-letters?limit=10");
         assertThat(dead.status()).isEqualTo(200);
         assertThat(dead.body().path("deadLetters").get(0).path("id").asLong()).isEqualTo(id);
-        assertThat(dead.body().path("deadLetters").get(0).path("error").asString()).contains("not yet");
+        assertThat(dead.body().path("deadLetters").get(0).path("error").path("message").asString())
+            .as("the error is an object, not JSON in a string").isEqualTo("not yet");
         assertThat(get("/tasks/topics/work/failing").status()).as("no longer a route").isEqualTo(404);
 
         assertThat(send("POST", "/tasks/topics/work/discard", "{}").status()).as("all of them only when asked for").isEqualTo(400);

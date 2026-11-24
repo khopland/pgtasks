@@ -1,0 +1,63 @@
+# Prometheus alerting rules for pgtasks, over the metrics pgtasks-micrometer registers (see
+# docs/operations.md, "Metrics and alerts"). Load it with rule_files, or as a PrometheusRule's
+# spec.groups with the Prometheus Operator. Thresholds are starting points: tune them per topic.
+#
+# Queue gauges come from snapshots in the database, so every instance reports the same values;
+# the rules take max by (topic) so a cluster of N instances raises one alert, not N.
+groups:
+  - name: pgtasks
+    rules:
+      - alert: PgtasksWorkWaiting
+        expr: max by (topic) (pgtasks_queue_oldest_ready_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgtasks topic {{ $labels.topic }}: ready work has waited over 5 minutes"
+          description: >-
+            The oldest ready task of {{ $labels.topic }} was pushed {{ $value | humanizeDuration }} ago.
+            Workers can't keep up, or no running node processes this topic any more.
+
+      - alert: PgtasksFailing
+        expr: max by (topic) (pgtasks_queue_oldest_failing_seconds) > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgtasks topic {{ $labels.topic }}: tasks have failed for over 30 minutes"
+          description: >-
+            The longest-failing task of {{ $labels.topic }} first failed {{ $value | humanizeDuration }} ago.
+            Retries continue, and dead letters can take days to appear: look at the failing tasks now.
+
+      - alert: PgtasksDeadLetters
+        expr: max by (topic) (pgtasks_queue_tasks{state="failed"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgtasks topic {{ $labels.topic }} has {{ $value }} dead letter(s)"
+          description: >-
+            Tasks ran out of attempts. Fix the cause, then revive or discard them
+            (the dashboard, or POST /actuator/tasks/topics/{{ $labels.topic }}/revive).
+
+      - alert: PgtasksNoHousekeeping
+        expr: min(pgtasks_queue_snapshot_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pgtasks: no node has run housekeeping for over 5 minutes"
+          description: >-
+            Queue counts are {{ $value | humanizeDuration }} old. No node holds the housekeeping lease,
+            so dead nodes' tasks aren't requeued and retention doesn't run.
+
+      - alert: PgtasksMetricsMissing
+        expr: absent(pgtasks_queue_topics)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgtasks: no instance reports pgtasks metrics"
+          description: >-
+            No scraped instance exports pgtasks_queue_topics: the application is down, isn't scraped,
+            or runs without pgtasks-micrometer.

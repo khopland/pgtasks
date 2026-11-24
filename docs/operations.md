@@ -278,6 +278,15 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 Prometheus names add the base unit and, for counters, `_total`, as Micrometer's Prometheus
 registry writes them. Write alerts against those.
 
+Ready to use, in [`docs/monitoring`](monitoring):
+
+- [`pgtasks-alerts.yml`](monitoring/pgtasks-alerts.yml): Prometheus alerting rules for the alerts
+  below, plus dead letters and missing metrics. Load it with `rule_files`, or as a
+  `PrometheusRule`'s groups.
+- [`pgtasks-dashboard.json`](monitoring/pgtasks-dashboard.json): a Grafana dashboard (import it,
+  pick the Prometheus data source) with dead letters, failing tasks, queue states, throughput by
+  result, the oldest ready task and batch times, per topic.
+
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
 
@@ -340,7 +349,9 @@ their values only where `show-values` allows.
 
 ## Dead letters
 
-1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors.
+1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors. An
+   error is an object, `{"type": ..., "message": ..., "stack": ...}`, the type alone when values
+   are hidden.
 2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
@@ -436,9 +447,20 @@ push with `tasks.push(...)` in a bound transaction instead.
 - A node that dies without stopping (`kill -9`, an OOM kill, a lost VM) keeps its claims until it
   counts as dead: no heartbeat for the expiry, 10 minutes by default. Then another node requeues
   its tasks. Under a `SINGULAR_*` ordering those tasks also hold back every later task for their
-  identifiers until then. A `TaskGlobals` bean shortens it, `globals -> globals.heartbeat(interval,
-  expiry)`, at the cost of a more frequent heartbeat write; keep the expiry several heartbeats long
-  so a short pause or a slow database doesn't count as death.
+  identifiers until then. `pgtasks.node-expiry` shortens it, and `pgtasks.heartbeat` sets how
+  often a node writes that it is alive (15 s); both override a `TaskGlobals` bean. Keep the expiry
+  several heartbeats long, so a short pause or a slow database doesn't count as death:
+
+  ```yaml
+  pgtasks:
+    heartbeat: 5s
+    node-expiry: 2m
+  ```
+- A node that stops gracefully removes its row from `pgtasks.node`, so the endpoint and the
+  dashboard list only live nodes and ones that died. Each start registers a new row.
+- A node is named `<spring.application.name>@<host>`, where the host is `HOSTNAME` (the pod's name
+  in Kubernetes) or the machine's name, so the instances of one deployment tell apart.
+  `pgtasks.node` names it yourself.
 
 ## Logging
 

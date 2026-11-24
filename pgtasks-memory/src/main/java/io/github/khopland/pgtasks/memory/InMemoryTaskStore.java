@@ -697,6 +697,17 @@ public final class InMemoryTaskStore implements TaskStore {
         return dead.size();
     }
 
+    @Override
+    public boolean deregisterNode(StoreTransaction transaction, int nodeId) {
+        MemoryTransaction memory = memory(transaction);
+        boolean claiming = queue.values().stream().anyMatch(row -> Integer.valueOf(nodeId).equals(row.nodeId()));
+        if (claiming || !nodes.containsKey(nodeId)) {
+            return false;
+        }
+        memory.remove(nodes, nodeId);
+        return true;
+    }
+
     /** The error's type, or its message if it has none, as Postgres groups them. */
     private static String errorKey(@Nullable String error) {
         String type = jsonField(error, "type");

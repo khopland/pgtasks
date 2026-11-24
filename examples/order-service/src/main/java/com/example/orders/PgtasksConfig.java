@@ -1,9 +1,6 @@
 package com.example.orders;
 
-import java.time.Duration;
 import java.util.Map;
-
-import io.github.khopland.pgtasks.engine.TaskGlobals;
 
 import org.flywaydb.core.Flyway;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,15 +8,9 @@ import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/** Node settings shared by every module, and how the pgtasks schema gets migrated. */
+/** How the pgtasks schema gets migrated. The heartbeat is in application.yml (pgtasks.heartbeat, pgtasks.node-expiry). */
 @Configuration
 class PgtasksConfig {
-
-    @Bean
-    TaskGlobals globals(@Value("${orders.heartbeat:5s}") Duration heartbeat, @Value("${orders.heartbeat-expiry:2m}") Duration expiry) {
-        return globals -> globals
-            .heartbeat(heartbeat, expiry);
-    }
 
     /**
      * The team runs every schema change through Flyway as the owner role, and the application runs

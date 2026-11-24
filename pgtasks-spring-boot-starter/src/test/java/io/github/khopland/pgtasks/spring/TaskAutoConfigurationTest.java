@@ -135,6 +135,34 @@ class TaskAutoConfigurationTest {
     }
 
     @Test
+    void the_node_is_named_after_the_application_and_its_host_and_leaves_no_row_when_it_stops() {
+        postgres().withUserConfiguration(Modules.class)
+            .withPropertyValues("spring.application.name=orders")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                String expected = TaskAutoConfiguration.defaultNode(context.getEnvironment());
+                assertThat(expected).startsWith("orders@").hasSizeGreaterThan("orders@".length());
+                assertThat(database.rows("SELECT name FROM pgtasks.node")).containsExactly(List.of(expected));
+            });
+        assertThat(database.count("SELECT count(*) FROM pgtasks.node")).as("a graceful stop deregisters the node").isZero();
+    }
+
+    @Test
+    void heartbeat_properties_override_the_code_and_are_checked() {
+        memory().withBean(TaskConfigurer.class, () -> tasks -> tasks.eachTask(NOTIFY, task -> { }))
+            .withBean(TaskGlobals.class, () -> globals -> globals.heartbeat(Duration.ofSeconds(30), Duration.ofMinutes(20)))
+            .withPropertyValues("pgtasks.heartbeat=2s", "pgtasks.node-expiry=30s")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBean(TaskEngine.class).health().leaseTerm()).as("four heartbeats").isEqualTo(Duration.ofSeconds(8));
+            });
+        memory().withBean(TaskConfigurer.class, () -> tasks -> tasks.eachTask(NOTIFY, task -> { }))
+            .withPropertyValues("pgtasks.node-expiry=5s")
+            .run(context -> assertThat(context).getFailure().rootCause()
+                .hasMessageContaining("Heartbeat PT15S with node expiry PT5S: expiry must be longer than the heartbeat interval"));
+    }
+
+    @Test
     void the_schema_property_names_the_schema_and_its_notifications() {
         postgres().withUserConfiguration(Modules.class)
             .withPropertyValues("pgtasks.schema=shop_tasks", "pgtasks.topics.notify.poll-interval=1h")

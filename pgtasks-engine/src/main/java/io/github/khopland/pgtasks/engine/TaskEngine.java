@@ -518,7 +518,7 @@ public final class TaskEngine implements AutoCloseable {
      * cancels what is left, whose tasks go back to the queue without counting the attempt. The
      * node keeps heartbeating while it drains, so no other node takes its tasks meanwhile.
      * Then it hands back any claim it holds but isn't processing, gives up the housekeeping lease,
-     * and returns once every thread it started has ended. Threads that ignore cancellation get
+     * deregisters the node, and returns once every thread it started has ended. Threads that ignore cancellation get
      * {@link TopicWorker#PATIENCE} more, and are logged if they still run.
      */
     public synchronized void stop(Duration timeout) {
@@ -575,6 +575,26 @@ public final class TaskEngine implements AutoCloseable {
             if (keeper != null) {
                 keeper.stop();
             }
+            deregister();
+        }
+    }
+
+    /**
+     * Removes this node's row once its heartbeat has stopped, so operators don't see a stopped
+     * node as one that died. A node still holding claims (it couldn't hand them back) stays until
+     * it counts as dead, and another node requeues them. A later start registers a new node.
+     */
+    private void deregister() {
+        int id = nodeId;
+        if (id < 0) {
+            return;
+        }
+        try {
+            if (!EngineCore.transact(store, transaction -> store.deregisterNode(transaction, id))) {
+                LOGGER.info("Node {} ({}) still holds claims, so it stays registered until it counts as dead", id, settings.nodeName());
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Could not deregister node {} ({}); it is forgotten once it counts as dead", id, settings.nodeName(), e);
         }
     }
 

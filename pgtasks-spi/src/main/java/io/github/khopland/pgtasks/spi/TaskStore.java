@@ -272,6 +272,13 @@ public interface TaskStore {
      */
     int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException;
 
+    /**
+     * Forgets a node that stopped on purpose: deletes its row, and with it its leases, so
+     * operators no longer see it. A node that still holds claims stays, until it counts as dead
+     * and its tasks are requeued. Returns whether the row was deleted.
+     */
+    boolean deregisterNode(StoreTransaction transaction, int nodeId) throws SQLException;
+
     /** Every registered node, by id, with the leases whose term hasn't run out. */
     List<NodeView> nodes(StoreTransaction transaction) throws SQLException;
 

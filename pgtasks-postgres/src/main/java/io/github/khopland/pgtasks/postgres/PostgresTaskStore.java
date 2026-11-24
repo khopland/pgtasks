@@ -62,7 +62,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql finish, wait, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks;
-    private final NamedSql deleteDeadNodes, listNodes;
+    private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks;
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
@@ -395,6 +395,11 @@ public final class PostgresTaskStore implements TaskStore {
             DELETE FROM pgtasks.node n
             WHERE n.heartbeat_at < now() - :dead::bigint * interval '1 millisecond'
               -- Only active rows have a node (a CHECK says so), and queue_active_idx covers those.
+              AND NOT EXISTS (SELECT 1 FROM pgtasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
+            """);
+        deregisterNode = sql("""
+            DELETE FROM pgtasks.node n
+            WHERE n.id = :id::integer
               AND NOT EXISTS (SELECT 1 FROM pgtasks.queue q WHERE q.node_id = n.id AND q.state = 'active')
             """);
         listNodes = sql("""
@@ -1337,6 +1342,13 @@ public final class PostgresTaskStore implements TaskStore {
     public int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException {
         try (PreparedStatement statement = deleteDeadNodes.prepare(transaction.connection(), NamedSql.parameters().set("dead", deadFor.toMillis()))) {
             return statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public boolean deregisterNode(StoreTransaction transaction, int nodeId) throws SQLException {
+        try (PreparedStatement statement = deregisterNode.prepare(transaction.connection(), NamedSql.parameters().set("id", nodeId))) {
+            return statement.executeUpdate() > 0;
         }
     }
 
