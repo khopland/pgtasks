@@ -169,6 +169,8 @@ class FailureHandlingTest {
         assertThat(engine.admin().find(id).orElseThrow().state()).as("still claimed").isEqualTo("active");
         assertThat(engine.health().stuck()).extracting(EngineHealth.StuckClaim::taskId).containsExactly(id);
         assertThat(runs).hasValue(1);
+        assertThat(engine.admin().find(id).orElseThrow().error()).as("operators see why it stays active")
+            .contains("ignored cancellation").contains("\"type\":\"hung\"");
 
         finish.set(true);
         EngineFixture.await("the late batch to fail", Duration.ofSeconds(5),

@@ -315,6 +315,23 @@ public final class InMemoryTaskStore implements TaskStore {
         return apply(memory(transaction), topicId, nodeId, completions).size();
     }
 
+    @Override
+    public int noteError(StoreTransaction transaction, int topicId, int nodeId, List<ActiveClaim> claims, String error) {
+        MemoryTransaction memory = memory(transaction);
+        int marked = 0;
+        for (ActiveClaim claim : claims) {
+            Rows.Queued row = queue.get(claim.taskId());
+            if (row == null || row.topicId() != topicId || row.state() != State.ACTIVE
+                || row.attempt() != claim.attempt() || !Objects.equals(row.nodeId(), nodeId)) {
+                continue;
+            }
+            Rows.Task task = task(row.taskId());
+            memory.put(tasks, task.id(), task.failed(error, task.attempts()));
+            marked++;
+        }
+        return marked;
+    }
+
     private Set<Long> apply(MemoryTransaction memory, int topicId, int nodeId, List<Completion> completions) {
         Set<Long> unique = new HashSet<>();
         for (Completion completion : completions) {
@@ -352,7 +369,10 @@ public final class InMemoryTaskStore implements TaskStore {
                         };
                         int attempt = row.attempt() - (waiting.counted() ? 0 : 1);
                         Rows.Queued waited = row.with(state, waiting.delay() == null ? null : now.plus(waiting.delay()), attempt, null, null);
-                        putQueued(memory, waiting.error() == null ? waited : waited.failedAt(now));
+                        // A run that ends waiting by its own decision didn't fail: the failures in a row end
+                        // there. A release (no error, retrying) isn't the end of a run, and keeps them.
+                        boolean decidedToWait = state == State.SCHEDULED || state == State.SUSPENDED;
+                        putQueued(memory, waiting.error() != null ? waited.failedAt(now) : decidedToWait ? waited.withoutFailureStreak() : waited);
                         if (waiting.error() != null) {
                             // The last error stays on the task from the first failure on, as on Postgres.
                             memory.put(tasks, task.id(), task.failed(waiting.error(), attempt));

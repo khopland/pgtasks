@@ -7,6 +7,7 @@ import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.time.OffsetDateTime;
 import java.time.Period;
 import java.time.ZoneOffset;
@@ -58,8 +59,9 @@ public final class PostgresTaskStore implements TaskStore {
     private final DataSource dataSource;
     private final SchemaMode mode;
     private final String schema;
+    private final DatabaseClock clock = new DatabaseClock();
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
-    private final NamedSql finish, wait, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
+    private final NamedSql finish, wait, noteError, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
     private final NamedSql searchTasks;
     private final NamedSql deleteDeadNodes, listNodes;
@@ -113,8 +115,9 @@ public final class PostgresTaskStore implements TaskStore {
         createTopic = sql("SELECT pgtasks.create_topic(:name)");
         findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
         listTopics = sql("SELECT id, name FROM pgtasks.topic ORDER BY id");
-        registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id");
-        heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node");
+        // Both also read the database's time, which sets this store's clock (DatabaseClock).
+        registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id, clock_timestamp()");
+        heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node RETURNING clock_timestamp()");
         // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
         // most often: a producer may push one task per transaction. The others look up older tasks.
         for (Insertion insertion : Insertion.values()) {
@@ -198,8 +201,12 @@ public final class PostgresTaskStore implements TaskStore {
                     node_id = NULL,
                     claimed_at = NULL,
                     attempt = q.attempt - d.uncounted,
-                    failures = q.failures + CASE WHEN d.error IS NULL THEN 0 ELSE 1 END,
-                    first_failed_at = CASE WHEN d.error IS NULL THEN q.first_failed_at ELSE coalesce(q.first_failed_at, now()) END
+                    -- A run that ends waiting by its own decision (later, suspended) didn't fail, so
+                    -- the failures in a row end there; a release (no error, retrying) isn't a run's end.
+                    failures = CASE WHEN d.error IS NOT NULL THEN q.failures + 1
+                                    WHEN d.state IN ('scheduled', 'suspended') THEN 0 ELSE q.failures END,
+                    first_failed_at = CASE WHEN d.error IS NOT NULL THEN coalesce(q.first_failed_at, now())
+                                           WHEN d.state IN ('scheduled', 'suspended') THEN NULL ELSE q.first_failed_at END
                 FROM d
                 WHERE q.task_id = ANY (:ids::bigint[])
                   AND q.task_id = d.task_id
@@ -219,6 +226,24 @@ public final class PostgresTaskStore implements TaskStore {
                   AND t.id = m.task_id AND d.error IS NOT NULL
             )
             SELECT task_id FROM moved
+            """);
+        // Only the task's error: the queue row, and the claim, stay as they are. Fenced like wait.
+        noteError = sql("""
+            WITH d AS (
+                SELECT * FROM unnest(:ids::bigint[], :attempts::integer[]) AS d(task_id, attempt)
+            ),
+            held AS (
+                SELECT q.task_id FROM pgtasks.queue q
+                JOIN d ON d.task_id = q.task_id AND d.attempt = q.attempt
+                WHERE q.task_id = ANY (:ids::bigint[])
+                  AND q.node_id = :node::integer
+                  AND q.topic_id = :topic::integer
+                  AND q.state = 'active'
+            )
+            UPDATE pgtasks.task t
+            SET error = :error::jsonb
+            WHERE t.id = ANY (ARRAY(SELECT task_id FROM held))
+            RETURNING t.id
             """);
         // A LIMIT ... FOR UPDATE SKIP LOCKED selection must be materialized: as the inner side of a
         // semi-join it can be rescanned, and each rescan skips the rows this statement already
@@ -538,7 +563,19 @@ public final class PostgresTaskStore implements TaskStore {
             return;
         }
         try (Connection connection = dataSource.getConnection()) {
+            sampleClock(connection);
             analyzeTasksIfStatisticsSayEmpty(connection);
+        }
+    }
+
+    /** Sets the clock to the database's time at once, for engines that push before their first heartbeat, or never start. */
+    private void sampleClock(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT clock_timestamp()")) {
+            long before = clock.nanos();
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                clock.sample(requiredInstant(resultSet, "clock_timestamp"), before, clock.nanos());
+            }
         }
     }
 
@@ -583,6 +620,16 @@ public final class PostgresTaskStore implements TaskStore {
         FROM pg_class c
         WHERE c.oid = 'pgtasks.task'::regclass
         """;
+
+    /**
+     * The database's time, read at each heartbeat and node registration and moved on by the JVM's
+     * monotonic clock in between, so the engine's comparisons with times the database stamped agree
+     * with the database even when this node's wall clock is off. See {@link DatabaseClock}.
+     */
+    @Override
+    public InstantSource clock() {
+        return clock;
+    }
 
     @Override
     public StoreTransaction begin() throws SQLException {
@@ -631,7 +678,7 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING q.task_id
                 ),
                 superseded_tasks AS (
-                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
+                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = statement_timestamp()
                     WHERE t.id = ANY (ARRAY(SELECT task_id FROM superseded))
                 )
                 """;
@@ -650,7 +697,7 @@ public final class PostgresTaskStore implements TaskStore {
                     RETURNING q.task_id
                 ),
                 replaced_open AS (
-                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = now()
+                    UPDATE pgtasks.task t SET outcome = 'redundant', completed_at = statement_timestamp()
                     WHERE t.id = ANY (ARRAY(SELECT task_id FROM replaced))
                 ),
                 replaced_done AS (
@@ -686,11 +733,11 @@ public final class PostgresTaskStore implements TaskStore {
             queued AS (
                 INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, priority, run_at, dedup_key)
                 SELECT id, :topic::integer, identifier,
-                       CASE WHEN state = 'scheduled' AND due <= now() THEN 'ready' ELSE state END::pgtasks.queue_state, priority,
-                       CASE WHEN state = 'scheduled' AND due > now() THEN due END,
+                       CASE WHEN state = 'scheduled' AND due <= statement_timestamp() THEN 'ready' ELSE state END::pgtasks.queue_state, priority,
+                       CASE WHEN state = 'scheduled' AND due > statement_timestamp() THEN due END,
                        dedup_key
                 FROM input
-                CROSS JOIN LATERAL (SELECT coalesce(run_at::timestamptz, now() + delay_ms * interval '1 millisecond') AS due) AS d
+                CROSS JOIN LATERAL (SELECT coalesce(run_at::timestamptz, statement_timestamp() + delay_ms * interval '1 millisecond') AS due) AS d
                 WHERE state IS NOT NULL
                 ORDER BY ord
                 ON CONFLICT (topic_id, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
@@ -698,10 +745,11 @@ public final class PostgresTaskStore implements TaskStore {
             ),
             stored AS (
                 INSERT INTO pgtasks.task (topic_id, id, identifier, reference, payload, payload_type, parent_id, root_id, headers,
-                                        outcome, completed_at)
+                                        created_at, outcome, completed_at)
                 SELECT :topic::integer, id, identifier, reference, payload, payload_type, parent_id, root_id, headers::jsonb,
+                       statement_timestamp(),
                        CASE WHEN state IS NULL THEN 'redundant'::pgtasks.task_outcome END,
-                       CASE WHEN state IS NULL THEN now() END
+                       CASE WHEN state IS NULL THEN statement_timestamp() END
                 FROM input
                 WHERE state IS NULL OR id IN (SELECT task_id FROM queued)
                 ORDER BY ord
@@ -948,6 +996,22 @@ public final class PostgresTaskStore implements TaskStore {
     public int release(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException {
         Connection connection = transaction.connection();
         return apply(connection, topicId, nodeId, completions).size();
+    }
+
+    @Override
+    public int noteError(StoreTransaction transaction, int topicId, int nodeId, List<ActiveClaim> claims, String error) throws SQLException {
+        if (claims.isEmpty()) {
+            return 0;
+        }
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("topic", topicId)
+            .set("node", nodeId)
+            .array("ids", "bigint", claims.stream().map(ActiveClaim::taskId).toArray())
+            .array("attempts", "integer", claims.stream().map(ActiveClaim::attempt).toArray())
+            .set("error", storable(error));
+        Set<Long> marked = new HashSet<>();
+        collect(noteError, transaction.connection(), parameters, marked);
+        return marked.size();
     }
 
     private Set<Long> apply(Connection connection, int topicId, int nodeId, List<Completion> completions) throws SQLException {
@@ -1203,10 +1267,13 @@ public final class PostgresTaskStore implements TaskStore {
     @Override
     public int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException {
         Connection connection = transaction.connection();
-        try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version));
-             ResultSet resultSet = statement.executeQuery()) {
-            resultSet.next();
-            return resultSet.getInt(1);
+        try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version))) {
+            long before = clock.nanos();
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                clock.sample(requiredInstant(resultSet, "clock_timestamp"), before, clock.nanos());
+                return resultSet.getInt(1);
+            }
         }
     }
 
@@ -1214,7 +1281,14 @@ public final class PostgresTaskStore implements TaskStore {
     public boolean heartbeat(StoreTransaction transaction, int nodeId) throws SQLException {
         Connection connection = transaction.connection();
         try (PreparedStatement statement = heartbeat.prepare(connection, NamedSql.parameters().set("node", nodeId))) {
-            return statement.executeUpdate() == 1;
+            long before = clock.nanos();
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return false;
+                }
+                clock.sample(requiredInstant(resultSet, "clock_timestamp"), before, clock.nanos());
+                return true;
+            }
         }
     }
 

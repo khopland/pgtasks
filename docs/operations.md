@@ -139,6 +139,12 @@ DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVI
 and after stop. Its details show leadership, notifications, and claims stuck past their deadline,
 without changing the status.
 
+A claim is stuck when its handler ignored cancellation after the batch deadline: Java can't stop
+the thread, so its tasks stay active, and their concurrency taken, until it ends, rather than
+run again beside it. The engine leaves an error of type `hung` on each of those tasks, which the
+dashboard and task search show. Stopping the node frees them: other nodes requeue them once it
+counts as dead.
+
 ## Dashboard
 
 ![The dashboard's overview](dashboard.png)
@@ -365,8 +371,10 @@ Each node uses the application's `DataSource`:
   every 10 ms per node, whatever the push rate (see below).
 
 A heartbeat that can't get a connection for long enough (10 minutes by default) lets other nodes
-requeue this node's tasks while it still runs them. The engine warns at startup if
-`maxInFlightBatches` leaves too little room in the pool.
+requeue this node's tasks. Shortly before that, four heartbeats ahead by default, the node fences
+itself: it logs an error, stops claiming and cancels its running handlers, whose tasks go back
+without counting an attempt, and it claims again once a heartbeat gets through. The engine warns
+at startup if `maxInFlightBatches` leaves too little room in the pool.
 
 LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications a direct
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with

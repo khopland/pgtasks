@@ -37,8 +37,11 @@ public interface TaskStore {
     }
 
     /**
-     * The clock the store stamps tasks with. Postgres uses database time; the in-memory store
-     * takes an injectable clock, which the engine then uses too.
+     * The clock the store stamps tasks with, as this node reads it. The engine compares it with
+     * times the store stamped, such as when a task first failed or finished, and keeps its
+     * housekeeping lease by it, so a store on another machine must give its own time here, not
+     * this node's. Postgres reads the database's time at each heartbeat and moves it on with the
+     * JVM's monotonic clock in between; the in-memory store takes an injectable clock.
      */
     default InstantSource clock() {
         return InstantSource.system();
@@ -139,6 +142,14 @@ public interface TaskStore {
      * recording failures after a completion transaction rolled back. Returns how many matched.
      */
     int release(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException;
+
+    /**
+     * Leaves an error on tasks this node still holds active, and changes nothing else, so
+     * operators can see why a task stays active: its handler ignored cancellation and still runs.
+     * Only claims that still match, by node and attempt as in {@link #release}. Returns how many
+     * it marked.
+     */
+    int noteError(StoreTransaction transaction, int topicId, int nodeId, List<ActiveClaim> claims, String error) throws SQLException;
 
     /**
      * Makes up to {@code limit} due delayed tasks and retries ready, earliest first. Returns how
