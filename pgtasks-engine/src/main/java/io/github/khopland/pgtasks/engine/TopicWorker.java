@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;

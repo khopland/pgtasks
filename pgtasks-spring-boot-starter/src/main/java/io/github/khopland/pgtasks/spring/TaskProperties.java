@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import io.github.khopland.pgtasks.SchemaMode;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -64,7 +66,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record TaskProperties(
     @DefaultValue("true") boolean enabled,
     @DefaultValue("postgres") Store store,
-    @DefaultValue("migrate") String schemaMode,
+    @DefaultValue("migrate") SchemaMode schemaMode,
     @DefaultValue("pgtasks") String schema,
     String node,
     Duration heartbeat,

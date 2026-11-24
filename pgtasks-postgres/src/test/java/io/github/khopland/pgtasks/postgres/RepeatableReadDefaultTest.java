@@ -5,6 +5,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;

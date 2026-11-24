@@ -11,6 +11,8 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import java.util.random.RandomGenerator;
 
+import io.github.khopland.pgtasks.engine.extension.BatchListener;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;

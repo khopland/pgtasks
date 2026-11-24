@@ -9,9 +9,10 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.Notifier;
-import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
+import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;
 

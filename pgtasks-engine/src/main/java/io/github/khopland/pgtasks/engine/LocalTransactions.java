@@ -15,6 +15,10 @@ import io.github.khopland.pgtasks.spi.TransactionBinding;
  */
 public final class LocalTransactions implements TransactionBinding {
 
+    /** Creates a binding; share one instance with the engine and the code that uses it. */
+    public LocalTransactions() {
+    }
+
     private static final ScopedValue<Scope> CURRENT = ScopedValue.newInstance();
 
     @FunctionalInterface

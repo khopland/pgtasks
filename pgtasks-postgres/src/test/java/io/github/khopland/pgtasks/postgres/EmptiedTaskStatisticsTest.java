@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.postgres;
 
 import java.sql.SQLException;
 
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 
 import org.junit.jupiter.api.Test;

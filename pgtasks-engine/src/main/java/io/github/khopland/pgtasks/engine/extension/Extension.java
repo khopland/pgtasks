@@ -1,6 +1,8 @@
-package io.github.khopland.pgtasks.engine;
+package io.github.khopland.pgtasks.engine.extension;
 
 import java.util.List;
+
+import io.github.khopland.pgtasks.engine.TaskEngineBuilder;
 
 /**
  * A feature added to the engine from outside its core, through the hooks of

@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.PostgresExtension;

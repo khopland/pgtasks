@@ -8,6 +8,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 
 /**
  * A per-node rate limit, written only against the extension hooks: a setting, a claim gate and

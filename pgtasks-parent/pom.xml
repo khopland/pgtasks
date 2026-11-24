@@ -209,8 +209,9 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>3.16.0</version>
           <configuration>
+            <!-- The Postgres driver and Micrometer have no module descriptors. The modules that need them can only require their automatic names, and Micrometer's types are part of their public API. -->
             <compilerArgs>
-              <arg>-Xlint:all,-serial,-processing,-try</arg>
+              <arg>-Xlint:all,-serial,-processing,-try,-requires-automatic,-requires-transitive-automatic</arg>
               <arg>-parameters</arg>
             </compilerArgs>
             <!-- A module adding its own processors appends with combine.children="append". -->
@@ -265,6 +266,11 @@
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.6.1</version>
           <configuration>
+            <!--
+              Tests compile as patches to their module, so javac enforces the boundaries, but run on the
+              classpath: test-jar fixtures and test-only dependencies aren't part of the module descriptors.
+            -->
+            <useModulePath>false</useModulePath>
             <trimStackTrace>false</trimStackTrace>
             <systemPropertyVariables>
               <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>

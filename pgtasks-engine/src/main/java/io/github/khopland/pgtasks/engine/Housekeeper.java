@@ -17,6 +17,7 @@ import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
