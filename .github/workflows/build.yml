@@ -38,6 +38,23 @@ jobs:
           path: '**/target/surefire-reports/'
           retention-days: 7
 
+  # The release profile without signing or uploading, so a Javadoc or pom problem shows up here
+  # and not when a tag is pushed. The enforcer needs a release version; 0.0.0 is never published.
+  release-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Build the release artifacts
+        run: |
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.0.0 -DprocessAllModules -DgenerateBackupPoms=false
+          mvn -B -ntp -Prelease verify -DskipTests -Dgpg.skip
+
   postgres:
     name: postgres ${{ matrix.postgres }}
     runs-on: ubuntu-latest

@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-micrometer</artifactId>
+  <name>pgtasks Micrometer</name>
 
   <properties>
     <module.name>io.github.khopland.pgtasks.micrometer</module.name>

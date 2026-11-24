@@ -8,6 +8,7 @@
     <relativePath>../pgtasks-parent/pom.xml</relativePath>
   </parent>
   <artifactId>pgtasks-spring-boot-starter</artifactId>
+  <name>pgtasks Spring Boot starter</name>
   <description>pgtasks for Spring Boot 4: an engine from TaskConfigurer beans, pgtasks.* overrides, pushes that join Spring transactions, and a lifecycle that drains on shutdown.</description>
   <properties>
     <module.name>io.github.khopland.pgtasks.spring</module.name>

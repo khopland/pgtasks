@@ -5,8 +5,14 @@
   <!-- Builds every module. The modules inherit from pgtasks-parent, not from this aggregator. -->
   <groupId>io.github.khopland.pgtasks</groupId>
   <artifactId>pgtasks-build</artifactId>
+  <name>pgtasks build</name>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
+
+  <properties>
+    <!-- Only builds the modules; nothing to publish. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
 
   <modules>
     <module>pgtasks-bom</module>

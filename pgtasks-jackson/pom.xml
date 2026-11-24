@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-jackson</artifactId>
+  <name>pgtasks Jackson codecs</name>
   <description>pgtasks JSON payloads with Jackson 3, for payload types without a codec of their own.</description>
 
   <properties>

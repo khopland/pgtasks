@@ -9,7 +9,8 @@
   </parent>
 
   <artifactId>pgtasks-engine</artifactId>
-  <description>pgtasks engine: workers on virtual threads, fenced completion, retries, expiry, wake-ups and rate admission. Storage-agnostic.</description>
+  <name>pgtasks engine</name>
+  <description>pgtasks engine: workers on virtual threads, fenced completion, retries, expiry, wake-ups and extension hooks. Storage-agnostic.</description>
 
   <properties>
     <module.name>io.github.khopland.pgtasks.engine</module.name>

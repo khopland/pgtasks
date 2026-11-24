@@ -5,9 +5,37 @@
   <!-- Import it to use one version of every pgtasks module. No parent: a BOM manages versions and nothing else. -->
   <groupId>io.github.khopland.pgtasks</groupId>
   <artifactId>pgtasks-bom</artifactId>
+  <name>pgtasks BOM</name>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <description>pgtasks bill of materials: import it, then add the modules without versions.</description>
+  <url>https://github.com/khopland/pgtasks</url>
+  <inceptionYear>2020</inceptionYear>
+  <!-- Without a parent, the BOM repeats the metadata Maven Central requires. Keep it in step with pgtasks-parent. -->
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>khopland</id>
+      <name>Kristoffer Larsen Hopland</name>
+      <url>https://github.com/khopland</url>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/khopland/pgtasks.git</connection>
+    <developerConnection>scm:git:git@github.com:khopland/pgtasks.git</developerConnection>
+    <url>https://github.com/khopland/pgtasks</url>
+    <tag>HEAD</tag>
+  </scm>
+  <issueManagement>
+    <system>GitHub</system>
+    <url>https://github.com/khopland/pgtasks/issues</url>
+  </issueManagement>
 
   <dependencyManagement>
     <dependencies>
@@ -58,4 +86,50 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+
+  <!-- The release profile of pgtasks-parent, for a pom without code: signatures and the Central Portal bundle. -->
+  <profiles>
+    <profile>
+      <id>release</id>
+      <properties>
+        <central.skipPublishing>false</central.skipPublishing>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.8</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+                <configuration>
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.12.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>false</autoPublish>
+              <waitUntil>validated</waitUntil>
+              <skipPublishing>${central.skipPublishing}</skipPublishing>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

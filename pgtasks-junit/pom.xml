@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-junit</artifactId>
+  <name>pgtasks JUnit extension</name>
   <description>pgtasks for JUnit 5 tests without Spring: an engine on the in-memory store with a manual clock, per test.</description>
 
   <properties>

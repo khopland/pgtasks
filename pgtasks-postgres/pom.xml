@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-postgres</artifactId>
+  <name>pgtasks Postgres store</name>
   <description>pgtasks storage on Postgres: the pgtasks schema as plain SQL files with a built-in runner, the task store and the LISTEN/NOTIFY notifier. No migration tool dependency.</description>
 
   <properties>

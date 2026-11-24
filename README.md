@@ -132,6 +132,7 @@ engine.close();                                // drains running batches, then s
 - [Writing an extension](docs/extensions.md): adding a feature through the engine's hooks: jobs, claim gates, batch listeners, settings and store capabilities.
 - [Operations](docs/operations.md): schema, endpoint, dashboard, health, metrics and alerts, dead letters, retention, pool sizing and deploys.
 - [Migrating from 1.x](docs/migrating-from-1.x.md): mapping the concepts, and moving queued tasks with `LegacyImport`.
+- [Changelog](CHANGELOG.md) and [how releases are made](RELEASING.md).
 - Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [wake-ups, throughput ceiling and latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 
 pgtasks started as a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)

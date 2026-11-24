@@ -1,0 +1,26 @@
+# Weekly update PRs for Maven dependencies and plugins, and for the GitHub Actions in workflows.
+# Minor and patch updates come grouped in one PR per ecosystem; majors come one by one.
+# examples/order-service is left out: it depends on pgtasks snapshots that no repository has.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      maven-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The embedded Postgres binaries are pinned per supported major (pgtasks-parent profiles);
+      # a new major means a new profile and CI matrix entry, done by hand.
+      - dependency-name: io.zonky.test.postgres:embedded-postgres-binaries-bom
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
