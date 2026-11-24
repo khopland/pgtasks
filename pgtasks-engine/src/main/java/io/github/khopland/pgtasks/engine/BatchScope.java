@@ -33,12 +33,13 @@ final class BatchScope implements AutoCloseable {
     /**
      * @param stopping             whether the engine is stopping, when the scope stops waiting for work that ignores cancellation
      * @param ignoringCancellation told once if work goes on a second after it was cancelled, while the scope waits for it
+     * @param threads              makes the scope's threads
      */
-    BatchScope(String name, BooleanSupplier stopping, Runnable ignoringCancellation) {
+    BatchScope(String name, BooleanSupplier stopping, Runnable ignoringCancellation, Thread.Builder threads) {
         this.name = name;
         this.stopping = stopping;
         this.ignoringCancellation = ignoringCancellation;
-        this.executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(name + "-", 0).factory());
+        this.executor = Executors.newThreadPerTaskExecutor(threads.name(name + "-", 0).factory());
     }
 
     /** Whether work in the scope ignored cancellation and still runs: its claims must not be handed back. */

@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import io.github.khopland.pgtasks.spi.TaskStore;
 
@@ -32,6 +33,7 @@ final class ReadyNotices {
 
     private final TaskStore store;
     private final long window;
+    private final Supplier<Thread.Builder> threads;
     private final Set<Integer> pending = new LinkedHashSet<>();
     private boolean sending;
     private long lastSent = System.nanoTime() - Duration.ofDays(1).toNanos();
@@ -43,8 +45,14 @@ final class ReadyNotices {
     }
 
     ReadyNotices(TaskStore store, Duration window) {
+        this(store, window, Thread::ofVirtual);
+    }
+
+    /** With threads of the given kind: the Fray tests need platform threads. */
+    ReadyNotices(TaskStore store, Duration window, Supplier<Thread.Builder> threads) {
         this.store = store;
         this.window = window.toNanos();
+        this.threads = threads;
     }
 
     /** A push to the topic committed with ready tasks. */
@@ -56,7 +64,7 @@ final class ReadyNotices {
             }
             sending = true;
         }
-        Thread.ofVirtual().name("pgtasks-ready-notices").start(this::send);
+        threads.get().name("pgtasks-ready-notices").start(this::send);
     }
 
     private void send() {

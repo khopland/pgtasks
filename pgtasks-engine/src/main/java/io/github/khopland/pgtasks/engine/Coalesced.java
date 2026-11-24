@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.util.function.Supplier;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -19,6 +20,7 @@ final class Coalesced {
     private final String thread;
     private final String what;
     private final Housekeeper.Job job;
+    private final Supplier<Thread.Builder> threads;
     /** Guarded by this: a run was asked for that hasn't started yet. */
     private boolean requested;
     /** Guarded by this: the thread that runs the job while there are requests, if any. */
@@ -30,9 +32,15 @@ final class Coalesced {
      * @param what   what the job reloads, for the log
      */
     Coalesced(String thread, String what, Housekeeper.Job job) {
+        this(thread, what, job, Thread::ofVirtual);
+    }
+
+    /** With threads of the given kind: the Fray tests need platform threads. */
+    Coalesced(String thread, String what, Housekeeper.Job job, Supplier<Thread.Builder> threads) {
         this.thread = "pgtasks-" + thread;
         this.what = what;
         this.job = job;
+        this.threads = threads;
     }
 
     synchronized void request() {
@@ -41,7 +49,7 @@ final class Coalesced {
         }
         requested = true;
         if (running == null) {
-            running = Thread.ofVirtual().name(thread).start(this::serve);
+            running = threads.get().name(thread).start(this::serve);
         }
     }
 
