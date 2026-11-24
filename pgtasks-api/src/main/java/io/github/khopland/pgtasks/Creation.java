@@ -14,7 +14,8 @@ import org.jspecify.annotations.Nullable;
  * @param identifier the application key
  * @param payload    the payload, encoded with the topic's codec
  * @param reference  an optional correlation value
- * @param delay      if set, the task waits this long before it becomes ready
+ * @param delay      if set, the task waits this long before it becomes ready; at most a
+ *                   thousand years
  * @param suspended  if set, the task waits until something releases it
  * @param priority   higher runs first; 0 by default, which keeps plain FIFO order
  * @param dedupKey   if set, at most one unfinished task per key and topic exists; a push with a
@@ -24,7 +25,8 @@ import org.jspecify.annotations.Nullable;
  *                   current trace's propagation headers; these win over theirs
  * @param runAt      if set, the task waits until this time before it becomes ready, by the
  *                   store's clock (the database's, on Postgres). A time that has come when the
- *                   push is written, the past included, makes it ready at once
+ *                   push is written, the past included, makes it ready at once. Within the
+ *                   years 1 to 9999
  */
 public record Creation<T>(
     String identifier,
@@ -43,9 +45,11 @@ public record Creation<T>(
         if (identifier.isEmpty()) {
             throw new IllegalArgumentException("identifier must not be empty");
         }
-        if (delay != null && delay.isNegative()) {
-            throw new IllegalArgumentException("delay must not be negative");
-        }
+        Headers.checkText("identifier", identifier);
+        Headers.checkText("reference", reference);
+        Headers.checkText("dedupKey", dedupKey);
+        Waits.checkDelay("delay", delay);
+        Waits.checkRunAt(runAt);
         if ((delay != null ? 1 : 0) + (runAt != null ? 1 : 0) + (suspended ? 1 : 0) > 1) {
             throw new IllegalArgumentException("a creation is either delayed, due at a time or suspended");
         }

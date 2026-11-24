@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -169,6 +170,58 @@ class ObserverTest {
         TaskTester.of(engine).awaitIdle();
 
         assertThat(handled).containsExactly("ok");
+        assertThat(TaskTester.of(engine).counts(WORK).total()).isZero();
+    }
+
+    /**
+     * Review 2026-11-24: an observer's headers went to the store unchecked. A null value failed
+     * the push, and for downstream work the completion of the whole batch, on every retry; an
+     * empty name was stored, then refused when the task was loaded, so it could never run.
+     */
+    @Test
+    @DisplayName("Headers an observer gives that a task can't hold are left out or made storable")
+    void headers_a_task_cant_hold_are_left_out_or_made_storable() throws Exception {
+        Map<String, String> unusual = new HashMap<>();
+        unusual.put("", "no name");
+        unusual.put("no-value", null);
+        unusual.put("nul\u0000name", "nul\u0000value");
+        unusual.put("fine", "yes");
+        TopicRef<String> next = TopicRef.of("next", String.class);
+        List<Map<String, String>> seen = new CopyOnWriteArrayList<>();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .observer(new TaskObserver() {
+                @Override
+                public PushObservation pushing(TopicRef<?> topic, int tasks) {
+                    return new PushObservation() {
+                        @Override
+                        public Map<String, String> headers() {
+                            return unusual;
+                        }
+
+                        @Override
+                        public void close() {
+                        }
+                    };
+                }
+            })
+            .configure("work", tasks -> tasks
+                .topic(WORK, batch -> batch.decide(task -> {
+                    seen.add(task.task().headers());
+                    task.push(next, task.identifier(), "downstream");
+                    return Decision.success();
+                }))
+                .topic(next, batch -> batch.decide(task -> {
+                    seen.add(task.task().headers());
+                    return Decision.success();
+                })))
+            .build()
+            .start();
+        engine.tasks().independently().push(WORK, "a", "ok");
+        TaskTester.of(engine).awaitIdle();
+
+        assertThat(seen).as("the task and its downstream work both ran").hasSize(2)
+            .allSatisfy(headers -> assertThat(headers).containsOnly(Map.entry("fine", "yes"), Map.entry("nul\uFFFDname", "nul\uFFFDvalue")));
         assertThat(TaskTester.of(engine).counts(WORK).total()).isZero();
     }
 

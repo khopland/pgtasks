@@ -45,8 +45,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Supported upstream and tested; 17 is the default the build job runs on.
-        postgres: ['15', '16', '18', '19']
+        # Every supported version (TaskSchema.MIN_POSTGRES_VERSION on); 17 is the default the build job runs on.
+        postgres: ['18', '19']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6

@@ -27,7 +27,7 @@ dead letters, where an operator can revive or discard it. Nothing else needs con
 ## Requirements
 
 - Java 25. The engine uses scoped values and virtual threads.
-- PostgreSQL 15 to 19, the versions the PostgreSQL project still supports. CI runs the Postgres tests on each of them. See [Postgres versions](docs/operations.md#postgres-versions).
+- PostgreSQL 17 to 19. CI runs the Postgres tests on each of them, and the store refuses to start on an older server. See [Postgres versions](docs/operations.md#postgres-versions).
 - Spring Boot 4.1 for the starter, which is optional. The engine itself depends on no framework.
 
 ## Modules

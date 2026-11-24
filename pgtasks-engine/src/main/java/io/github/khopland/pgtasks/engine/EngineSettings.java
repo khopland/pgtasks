@@ -60,8 +60,19 @@ record EngineSettings(
         if (maxInFlightBatches < 1) {
             throw new IllegalArgumentException("maxInFlightBatches must be at least 1");
         }
+        positive("heartbeat", heartbeat);
+        positive("promoteInterval", promoteInterval);
+        positive("snapshotInterval", snapshotInterval);
+        positive("purgeInterval", purgeInterval);
         if (expiry.compareTo(heartbeat) <= 0) {
             throw new IllegalArgumentException("expiry must be longer than the heartbeat interval");
+        }
+    }
+
+    /** Each runs on a fixed delay: one that isn't positive would only fail when the engine starts. */
+    private static void positive(String name, Duration interval) {
+        if (!interval.isPositive()) {
+            throw new IllegalArgumentException(name + " must be positive, not " + interval);
         }
     }
 

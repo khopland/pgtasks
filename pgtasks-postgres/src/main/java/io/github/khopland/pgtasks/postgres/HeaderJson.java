@@ -5,6 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A task's headers as the {@code jsonb} object of strings they are stored as. Reads the object
@@ -12,6 +14,8 @@ import org.jspecify.annotations.Nullable;
  * kept as its text, a null one is left out, and anything nested is refused.
  */
 final class HeaderJson {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(HeaderJson.class);
 
     private final String json;
     private int at;
@@ -44,6 +48,21 @@ final class HeaderJson {
         return new HeaderJson(json).object();
     }
 
+    /**
+     * The task's headers, or none if they aren't a JSON object of strings, which only an edit by
+     * hand stores. Read as a claim reads them: failing would roll the claim back, and the same
+     * task would come first in the next one, so one row would stop its topic on every node.
+     * Headers are context, such as a trace: the task runs without them, and a warning says why.
+     */
+    static Map<String, String> readOrNone(long taskId, @Nullable String json) {
+        try {
+            return read(json);
+        } catch (IllegalStateException e) {
+            LOGGER.warn("Task {} runs without its headers: {}", taskId, e.getMessage());
+            return Map.of();
+        }
+    }
+
     private static void string(StringBuilder json, String value) {
         json.append('"');
         for (int index = 0; index < value.length(); index++) {
@@ -54,6 +73,9 @@ final class HeaderJson {
                 case '\n' -> json.append("\\n");
                 case '\r' -> json.append("\\r");
                 case '\t' -> json.append("\\t");
+                // jsonb can't hold one. A creation's own headers are checked for it when made;
+                // this covers what observers add, such as MDC values.
+                case '\0' -> json.append('\uFFFD');
                 default -> {
                     if (c < 0x20) {
                         json.append(String.format("\\u%04x", (int) c));

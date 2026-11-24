@@ -221,7 +221,12 @@ final class TopicWorker<T> {
                 }
             } finally {
                 if (!dispatched) {
-                    release();
+                    // The node-wide permit only if this claim still holds it: an interrupt out of the
+                    // claim comes after it was handed back, and releasing it twice would raise the cap.
+                    if (nodeHeld) {
+                        core.inFlight().release();
+                    }
+                    permits.release();
                 }
             }
         }
@@ -238,7 +243,7 @@ final class TopicWorker<T> {
     /**
      * No batch is running, a claim started after {@code mark} found nothing to do, and nothing has
      * happened since: no claim started and no wake-up arrived. Without the last part, work that
-     * another topic's completion released just after this claim (a fan-in, say) went unnoticed.
+     * another topic's completion released just after this claim went unnoticed.
      */
     boolean quietSince(long mark) {
         long empty = lastEmptyClaim;

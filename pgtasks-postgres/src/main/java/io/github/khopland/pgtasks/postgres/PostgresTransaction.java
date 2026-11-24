@@ -16,14 +16,15 @@ import org.slf4j.LoggerFactory;
  * A store transaction on a JDBC connection: either its own, or an application's it joined.
  *
  * <p>The store's own transactions run at READ COMMITTED, whatever the pool or the database
- * defaults to. The fan-in check takes advisory locks and then counts in a separate statement, which
- * must see what the parts that held those locks before it committed; under REPEATABLE READ its
- * snapshot is older than the lock, two parts completing at once each miss the other, and the
- * group stays suspended for good. Claims would also fail with serialization errors.
+ * defaults to. A SINGULAR_* claim takes the topic's advisory lock and then polls in a separate
+ * statement, which must see what the claim that held the lock before it committed; under
+ * REPEATABLE READ its snapshot is older than the lock, so two nodes could claim one identifier.
+ * Claims and completions would also fail with serialization errors.
  *
  * <p>A joined transaction is the application's, and its isolation is the application's choice; the
  * store assumes READ COMMITTED there too. A push joined to a REPEATABLE READ or SERIALIZABLE
- * transaction works, but a fan-in check in one can miss a part committed concurrently.
+ * transaction works, but a SUPERSEDE or REPLACE push in one may not see an older task for its
+ * identifier that was pushed concurrently.
  */
 final class PostgresTransaction implements StoreTransaction {
 

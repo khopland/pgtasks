@@ -3,12 +3,16 @@ package io.github.khopland.pgtasks.engine;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Review 2026-11-21: stop() switched the reloads off for good, so an engine started again ignored notifications. */
 class RestartTest {
@@ -44,6 +48,46 @@ class RestartTest {
                     () -> !engine.processing().contains("work"));
             }
         } finally {
+            engine.stop(Duration.ofSeconds(5));
+        }
+    }
+
+    /**
+     * Review 2026-11-24: a stop interrupted while it waited for running batches kept the stopped
+     * workers, so a start after it found the topics running and never launched their workers.
+     */
+    @Test
+    void an_engine_started_again_after_an_interrupted_stop_processes_its_topics() throws Exception {
+        List<String> handled = new CopyOnWriteArrayList<>();
+        CountDownLatch slowStarted = new CountDownLatch(1), release = new CountDownLatch(1);
+        TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                if (task.payload().equals("slow")) {
+                    slowStarted.countDown();
+                    release.await(10, TimeUnit.SECONDS);
+                }
+                handled.add(task.payload());
+                return Decision.success();
+            })))
+            .build();
+        try {
+            engine.start();
+            engine.tasks().independently().push(WORK, "a", "slow");
+            assertThat(slowStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Thread stopping = Thread.ofPlatform().start(() -> engine.stop(Duration.ofSeconds(30)));
+            EngineFixture.await("the stop to begin", Duration.ofSeconds(5), () -> !engine.running());
+            Thread.sleep(200);
+            stopping.interrupt();
+            stopping.join(Duration.ofSeconds(10));
+            assertThat(stopping.isAlive()).isFalse();
+            release.countDown();
+
+            engine.start();
+            engine.tasks().independently().push(WORK, "b", "after the restart");
+            EngineFixture.await("the task to run", Duration.ofSeconds(5), () -> handled.contains("after the restart"));
+        } finally {
+            release.countDown();
             engine.stop(Duration.ofSeconds(5));
         }
     }

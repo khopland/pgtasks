@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,6 +27,7 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Push;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
+import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -80,11 +82,28 @@ final class BatchRun<T> {
     void run() {
         Topic<T> topic = worker.topic();
         Map<Long, ClaimedTask> claims = new LinkedHashMap<>();
+        claimed.forEach(claim -> claims.put(claim.id(), claim));
         List<Task<T>> runnable = new ArrayList<>();
         List<Task<?>> all = new ArrayList<>(claimed.size());
         Decisions.Builder early = Decisions.builder();
+        try {
+            prepare(topic, runnable, all, early);
+        } catch (RuntimeException e) {
+            // Before anything ran: without this the claims stayed held here, out of the orphan
+            // sweep's reach, until the node restarted.
+            failUnexpectedly(topic, claims, e);
+            claimed.forEach(claim -> core.held().remove(claim.id(), claim.attempt()));
+            return;
+        }
+        runPrepared(topic, claims, runnable, all, early, new LinkedHashMap<>());
+    }
+
+    /**
+     * Makes each claim a task: decoded, or failed at once if its payload can't be, or if it has
+     * no attempts left. Its headers are only what a task can hold, as an observer's are.
+     */
+    private void prepare(Topic<T> topic, List<Task<T>> runnable, List<Task<?>> all, Decisions.Builder early) {
         for (ClaimedTask claim : claimed) {
-            claims.put(claim.id(), claim);
             @Nullable T payload;
             try {
                 payload = claim.payload() == null ? null : topic.codec().decode(claim.payload());
@@ -104,11 +123,16 @@ final class BatchRun<T> {
                 runnable.add(task);
             }
         }
-        Map<BatchResource<?>, Object> opened = new LinkedHashMap<>();
+    }
+
+    private void runPrepared(Topic<T> topic, Map<Long, ClaimedTask> claims, List<Task<T>> runnable, List<Task<?>> all, Decisions.Builder early,
+                             Map<BatchResource<?>, Object> opened) {
         TaskObserver.BatchObservation observation = core.observer().batch(topic.ref(), all);
         this.batchObservation = observation;
         try {
             runBatch(topic, claims, runnable, early.build(), opened, observation);
+        } catch (RuntimeException e) {
+            failUnexpectedly(topic, claims, e);
         } finally {
             opened.values().forEach(BatchRun::closeQuietly);
             if (scope == null || !scope.abandoned()) {
@@ -136,8 +160,74 @@ final class BatchRun<T> {
             observation.released();
             return;
         }
+        IdentityHashMap<Creation<?>, @Nullable String> encoded = new IdentityHashMap<>();
+        Decisions writable = writable(decisions, encoded);
         try (TaskObserver.Scope ignored = observation.open()) {
-            complete(topic, claims, decisions, early, opened, observation);
+            complete(topic, claims, writable, early, opened, observation, encoded);
+        }
+    }
+
+    /**
+     * The decisions with every continuing task's downstream work checked before the completion:
+     * its topic exists and has a codec, and its payloads encode to something the store can hold.
+     * The completion writes it all in one transaction, so one task's push that can't be written
+     * failed the whole batch: every task in it ran again, and the same task failed it again on
+     * every retry. Such a task fails on its own now. A handler that stages with
+     * {@code task.push(...)} is checked for its topic there already; one that builds its
+     * {@link Decisions} itself is not, and payloads are only encoded here. The encoded payloads
+     * are kept in {@code encoded}, so the completion doesn't encode them again.
+     */
+    private Decisions writable(Decisions decisions, Map<Creation<?>, @Nullable String> encoded) {
+        Decisions checked = decisions;
+        for (Decisions.Verdict verdict : decisions.verdicts()) {
+            if (!verdict.decision().continues()) {
+                continue;
+            }
+            try {
+                for (Push<?> push : verdict.downstream()) {
+                    encode(push, encoded);
+                }
+            } catch (TaskStorageException e) {
+                // Looking the topic up failed, not the push: the completion tries again.
+            } catch (RuntimeException | LinkageError | StackOverflowError e) {
+                observe(verdict.task()).error(e);
+                checked = checked.revise(verdict.task(), Decision.failed(e));
+            }
+        }
+        return checked;
+    }
+
+    private <C> void encode(Push<C> push, Map<Creation<?>, @Nullable String> encoded) {
+        core.tasks().checkTarget(push.topic());
+        encoded.put(push.creation(), core.tasks().encode(push.topic(), push.creation()));
+    }
+
+    /** How long a task waits after a failure the engine couldn't put through the retry policy. */
+    static final Duration UNEXPECTED_BACKOFF = Duration.ofMinutes(1);
+
+    /**
+     * Records a failure that escaped the batch's own handling, a bug in the engine or in what
+     * plugs into it, as a counted failure of every task the batch still holds. Left alone, the
+     * claims would go to the orphan sweep, which hands them back without counting the attempt or
+     * keeping the error: the task would run again and again, and nothing would show why. Counted,
+     * a task that keeps failing this way is dead-lettered once its attempts are used up, as a
+     * claim past the policy's attempts is when it is next claimed. Fenced like any completion, so
+     * tasks whose completion already committed are left as they are.
+     */
+    private void failUnexpectedly(Topic<T> topic, Map<Long, ClaimedTask> claims, RuntimeException e) {
+        LOGGER.error("A batch in {} failed unexpectedly; its tasks are recorded as failed", topic.ref(), e);
+        if (scope != null && scope.abandoned()) {
+            return;
+        }
+        String error = ErrorJson.of("The batch failed unexpectedly", e);
+        List<Completion> failures = claims.values().stream()
+            .map(claim -> new Completion(claim.id(), claim.attempt(), claim.claimedAt(),
+                new Resolution.Waiting(WaitState.RETRYING, UNEXPECTED_BACKOFF, true, error)))
+            .toList();
+        try {
+            core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
+        } catch (Exception recording) {
+            LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
         }
     }
 
@@ -153,7 +243,7 @@ final class BatchRun<T> {
 
     private Task<T> task(ClaimedTask claim, @Nullable T payload) {
         return new Task<>(worker.topic().ref(), claim.id(), claim.identifier(), payload, claim.attempt(), claim.reference(),
-            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), claim.headers());
+            claim.parentId(), claim.rootId(), claim.createdAt(), claim.claimedAt(), SafeObserver.storable(claim.headers()));
     }
 
     /** The task's own observation, asked for once; see {@link TaskObserver.BatchObservation#task}. */
@@ -273,18 +363,18 @@ final class BatchRun<T> {
     }
 
     private void complete(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
-                          TaskObserver.BatchObservation observation) {
+                          TaskObserver.BatchObservation observation, Map<Creation<?>, @Nullable String> encoded) {
         // The node-wide cap on talking to the store, taken again for the completion.
         core.inFlight().acquireUninterruptibly();
         try {
-            completeWithin(topic, claims, decisions, early, opened, observation);
+            completeWithin(topic, claims, decisions, early, opened, observation, encoded);
         } finally {
             core.inFlight().release();
         }
     }
 
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
-                                TaskObserver.BatchObservation observation) {
+                                TaskObserver.BatchObservation observation, Map<Creation<?>, @Nullable String> encoded) {
         List<Completion> completions = new ArrayList<>(claims.size());
         decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
@@ -297,7 +387,7 @@ final class BatchRun<T> {
                 targets.clear();
                 ready.clear();
                 core.store().complete(transaction, worker.topicId(), core.nodeId(), completions);
-                targets.addAll(pushDownstream(transaction, decisions, observations, ready));
+                targets.addAll(pushDownstream(transaction, decisions, observations, ready, encoded));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
                 }
@@ -356,7 +446,8 @@ final class BatchRun<T> {
      * a later insertion may act on an earlier one's tasks; two completions that push one topic
      * with different insertions in opposite orders can still deadlock, and the completion retries.
      */
-    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready) {
+    private Set<String> pushDownstream(StoreTransaction transaction, Decisions decisions, List<Runnable> observations, Set<Integer> ready,
+                                       Map<Creation<?>, @Nullable String> encoded) {
         record Target(TopicRef<?> topic, Insertion insertion) {
         }
         Map<Target, List<Push<?>>> pushes = new LinkedHashMap<>();
@@ -373,7 +464,8 @@ final class BatchRun<T> {
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<Target, List<Push<?>>> entry : byTopicName(pushes, target -> target.topic().name())) {
-            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready));
+            observations.add(write(transaction, entry.getKey().topic(), entry.getKey().insertion(), entry.getValue(), Objects.requireNonNull(parents.get(entry.getKey())), ready,
+                encoded));
             targets.add(entry.getKey().topic().name());
         }
         return targets;
@@ -381,9 +473,9 @@ final class BatchRun<T> {
 
     @SuppressWarnings("unchecked")
     private <C> Runnable write(StoreTransaction transaction, TopicRef<C> topic, Insertion insertion, List<Push<?>> pushes, List<Task<?>> parents,
-                               Set<Integer> ready) {
+                               Set<Integer> ready, Map<Creation<?>, @Nullable String> encoded) {
         List<Creation<C>> creations = pushes.stream().map(push -> (Creation<C>) push.creation()).toList();
-        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready);
+        List<Pushed> results = core.tasks().write(transaction, topic, insertion, creations, parents, parent -> observe(parent).open(), ready, encoded);
         return () -> core.tasks().observed(topic, insertion, creations, results);
     }
 

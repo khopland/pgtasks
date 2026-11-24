@@ -90,11 +90,15 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 
 ## Postgres versions
 
-pgtasks supports PostgreSQL 15 to 19, the major versions the PostgreSQL project still supports.
-CI runs the full build on 17 and the store TCK (plan audit included), the engine's Postgres tests and
-the starter's tests on 15, 16, 18 and 19. 14 passes the same tests today but has been end-of-life
-since November 2026 and isn't tested in CI. The hard floor is 14: the `R__` files use
-`CREATE OR REPLACE TRIGGER`.
+pgtasks supports PostgreSQL 17 to 19. CI runs the full build on 17 and the store TCK (plan audit
+included), the engine's Postgres tests and the starter's tests on 18 and 19.
+
+17 is the floor because of plans, not syntax. The store's statements are written so that each
+reads only the rows it needs whatever the tables' statistics say, and the plan audit checks that
+on every supported version. On 15 and 16 that doesn't hold: the planner costs `= ANY (array)` on
+an index's second column differently, and a SUPERSEDE or REPLACE push can walk its topic's whole
+queue. So with schema mode `MIGRATE` or `VALIDATE` the store refuses to start on a server older
+than 17, before it applies anything. `NONE` skips that check with the others.
 
 To run the tests on another version, name its major version. Maven picks the matching embedded
 binaries, and the tests check that the server they reach runs that version:

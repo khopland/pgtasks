@@ -1,6 +1,8 @@
 package io.github.khopland.pgtasks.spring;
 
 import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import javax.sql.DataSource;
 
@@ -47,13 +49,50 @@ public final class SpringTransactions implements TransactionBinding {
 
             @Override
             public void afterCommit(Runnable action) {
-                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                    @Override
-                    public void afterCommit() {
-                        action.run();
+                // One synchronization per transaction runs them all: Spring stops at the first
+                // synchronization that throws, which would drop every later push of the transaction.
+                // A suspended transaction's synchronizations aren't listed, so an inner REQUIRES_NEW
+                // transaction gets its own.
+                for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                    if (synchronization instanceof AfterCommitActions actions && actions.owner == SpringTransactions.this) {
+                        actions.actions.add(action);
+                        return;
                     }
-                });
+                }
+                AfterCommitActions actions = new AfterCommitActions(SpringTransactions.this);
+                actions.actions.add(action);
+                TransactionSynchronizationManager.registerSynchronization(actions);
             }
         });
+    }
+
+    /** The after-commit actions of one transaction; each runs even if one before it fails. */
+    private static final class AfterCommitActions implements TransactionSynchronization {
+
+        private final SpringTransactions owner;
+        private final List<Runnable> actions = new ArrayList<>();
+
+        AfterCommitActions(SpringTransactions owner) {
+            this.owner = owner;
+        }
+
+        @Override
+        public void afterCommit() {
+            RuntimeException failure = null;
+            for (Runnable action : actions) {
+                try {
+                    action.run();
+                } catch (RuntimeException e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else {
+                        failure.addSuppressed(e);
+                    }
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
+        }
     }
 }

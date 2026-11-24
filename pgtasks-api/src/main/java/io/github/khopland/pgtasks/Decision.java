@@ -38,7 +38,8 @@ public sealed interface Decision {
     }
 
     /**
-     * Not yet: the task runs again after the delay. Never uses up an attempt. Like a delayed
+     * Not yet: the task runs again after the delay, at most a thousand years; to wait for
+     * something rather than a time, use {@link #suspended()}. Never uses up an attempt. Like a delayed
      * push, it doesn't hold back later tasks under {@link Ordering#SINGULAR_BY_IDENTIFIER}.
      */
     static Decision later(Duration delay) {
@@ -47,7 +48,19 @@ public sealed interface Decision {
 
     /** Uses up an attempt; the topic's retry policy chooses between backoff and dead letter. */
     static Decision failed(Throwable cause) {
-        return new Failed(cause.getMessage(), cause);
+        return new Failed(messageOf(cause), cause);
+    }
+
+    /**
+     * The cause's message, or null if asking for it throws: the engine records failures with this
+     * from its own catch blocks, where a second exception would lose the batch's completion.
+     */
+    private static @Nullable String messageOf(Throwable cause) {
+        try {
+            return cause.getMessage();
+        } catch (RuntimeException | LinkageError | StackOverflowError e) {
+            return null;
+        }
     }
 
     static Decision failed(String message) {
@@ -93,9 +106,7 @@ public sealed interface Decision {
     record Later(Duration delay) implements Decision {
         public Later {
             Objects.requireNonNull(delay, "delay");
-            if (delay.isNegative()) {
-                throw new IllegalArgumentException("delay must not be negative");
-            }
+            Waits.checkDelay("delay", delay);
         }
 
         @Override

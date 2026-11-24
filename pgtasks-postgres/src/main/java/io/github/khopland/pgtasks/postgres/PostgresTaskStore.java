@@ -124,7 +124,7 @@ public final class PostgresTaskStore implements TaskStore {
         }
         // Order per identifier is task-id order, and ids are drawn before commit. Two pushes for one
         // identifier could commit out of id order, and the one that commits first can't see the
-        // other's task to supersede, replace or delete it: an older task would then outlive, or run
+        // other's task to supersede or replace it: an older task would then outlive, or run
         // after, a newer one. So a push that does more than append locks each of its identifiers,
         // in one order so two pushes can't deadlock on them, before its statement draws ids, and
         // holds the locks until it commits; the next push's statement takes its snapshot after
@@ -612,9 +612,8 @@ public final class PostgresTaskStore implements TaskStore {
         // Older queue rows are deleted by task_id, and also by topic and identifier, which never
         // change: by task_id alone, a planner that believes the queue is empty may look them up in
         // queue_identifier_idx, where task_id is the last column, and walk the whole index on every
-        // push (found by the drained-queue pass of the TCK). History is deleted by one array of
-        // ids: with an OR of two IN lists, the only index condition left was the topic, so every
-        // DELETE push read the topic's whole history.
+        // push (found by the drained-queue pass of the TCK). REPLACE marks earlier finished tasks
+        // by one array of ids, so it reaches the task table by primary key, as every statement does.
         String cleanup = switch (insertion) {
             case APPEND -> "";
             case SUPERSEDE -> """
@@ -908,8 +907,9 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = Objects.requireNonNull(polls.get(request.ordering())).prepare(connection, parameters);
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
+                long taskId = resultSet.getLong("task_id");
                 tasks.add(new ClaimedTask(
-                    resultSet.getLong("task_id"),
+                    taskId,
                     resultSet.getString("identifier"),
                     resultSet.getInt("attempt"),
                     resultSet.getInt("priority"),
@@ -920,7 +920,7 @@ public final class PostgresTaskStore implements TaskStore {
                     resultSet.getObject("root_id", Long.class),
                     requiredInstant(resultSet, "created_at"),
                     requiredInstant(resultSet, "claimed_at"),
-                    HeaderJson.read(resultSet.getString("headers")),
+                    HeaderJson.readOrNone(taskId, resultSet.getString("headers")),
                     resultSet.getInt("failures"),
                     instant(resultSet, "first_failed_at")
                 ));
@@ -972,7 +972,7 @@ public final class PostgresTaskStore implements TaskStore {
                     case SUCCEEDED -> "succeeded";
                     case FILTERED -> "filtered";
                 };
-                outputs[index] = resolution.output();
+                outputs[index] = storable(resolution.output());
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1000,7 +1000,7 @@ public final class PostgresTaskStore implements TaskStore {
                 };
                 delays[index] = resolution.delay() == null ? null : resolution.delay().toMillis();
                 uncounted[index] = resolution.counted() ? 0 : 1;
-                errors[index] = resolution.error();
+                errors[index] = storable(resolution.error());
             }
             NamedSql.Parameters parameters = NamedSql.parameters()
                 .set("topic", topicId)
@@ -1014,6 +1014,15 @@ public final class PostgresTaskStore implements TaskStore {
             collect(wait, connection, parameters, matched);
         }
         return matched;
+    }
+
+    /**
+     * A task's output, filter reason or error as Postgres can store it: text and jsonb can't hold
+     * a NUL character, and one in a single task's message would fail the completion of its whole
+     * batch. It becomes U+FFFD; the text is for people, so nothing reads it back as data.
+     */
+    private static @Nullable String storable(@Nullable String text) {
+        return text == null || text.indexOf('\0') < 0 ? text : text.replace('\0', '\uFFFD');
     }
 
     private static void collect(NamedSql sql, Connection connection, NamedSql.Parameters parameters, Set<Long> matched) throws SQLException {
@@ -1272,7 +1281,7 @@ public final class PostgresTaskStore implements TaskStore {
             throw new IllegalArgumentException("Invalid channel '" + channel + "': a lowercase word other than ready");
         }
         try (PreparedStatement statement = notifyChannel.prepare(transaction.connection(),
-            NamedSql.parameters().set("channel", schema + "_" + channel).set("payload", payload))) {
+            NamedSql.parameters().set("channel", TaskSchema.channel(schema, channel)).set("payload", payload))) {
             statement.execute();
         }
     }
@@ -1354,7 +1363,7 @@ public final class PostgresTaskStore implements TaskStore {
             instant(resultSet, "completed_at"),
             resultSet.getInt("failures"),
             instant(resultSet, "first_failed_at"),
-            HeaderJson.read(resultSet.getString("headers"))
+            HeaderJson.readOrNone(resultSet.getLong("id"), resultSet.getString("headers"))
         );
     }
 

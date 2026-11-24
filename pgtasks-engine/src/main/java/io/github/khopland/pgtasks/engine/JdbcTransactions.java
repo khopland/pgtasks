@@ -99,7 +99,7 @@ public final class JdbcTransactions implements TransactionBinding {
         }
 
         void committed() {
-            afterCommit.forEach(Runnable::run);
+            AfterCommit.runAll(afterCommit);
         }
     }
 }

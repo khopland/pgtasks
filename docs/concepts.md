@@ -194,7 +194,9 @@ Each layer overrides the one before it:
 5. Overrides: `pgtasks.topics.<topic>.<setting>` in Spring, or `builder.overrides(map)`. The keys
    are `concurrency`, `batch-size`, `ordering`, `poll-interval`, `batch-deadline`,
    `retry.max-attempts`, `retry.give-up-after`, `retry.first-backoff`,
-   `retry.max-backoff` and `retain.<outcome>`.
+   `retry.max-backoff` and `retain.<outcome>`. Each `retry.*` key changes one part of the
+   topic's policy. Keys that contradict each other fail the build: `retry.max-attempts` with
+   `retry.give-up-after`, or a first backoff above the max backoff.
 
 `engine.effectiveSettings()`, and the endpoint, show each topic's values and the layer each one
 came from.

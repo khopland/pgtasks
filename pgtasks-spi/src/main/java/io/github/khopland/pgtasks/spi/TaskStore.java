@@ -115,7 +115,9 @@ public interface TaskStore {
     /**
      * Sends a message on a channel ({@link Notifier#CHANNEL}) to every node whose notifier
      * listens to it, once the transaction commits; nothing if it rolls back. A hint, like a
-     * wake-up: a node may miss it, so a listener also reloads on every heartbeat.
+     * wake-up: a node may miss it, so a listener also reloads on every heartbeat. Keep the
+     * payload short, such as an id: Postgres refuses one of 8000 bytes or more, failing the
+     * transaction, and the listener should read what changed from the store anyway.
      */
     void notify(StoreTransaction transaction, String channel, String payload) throws SQLException;
 
@@ -170,7 +172,8 @@ public interface TaskStore {
      *
      * @param deadLetterAt the expiry that dead-letters the task, such as the third
      * @param backoff      how long the first expiry waits before the task is ready again, doubling
-     *                     with each further one; zero makes it ready at once
+     *                     with each further one, up to 2^20 times; zero makes it ready at once. At
+     *                     most 100 days, so the longest wait stays within what Postgres can hold
      */
     record Expiries(int deadLetterAt, Duration backoff) {
         /** Ready at once, never dead-lettered: how expiry worked before it was counted. */
@@ -180,6 +183,9 @@ public interface TaskStore {
             Objects.requireNonNull(backoff, "backoff");
             if (deadLetterAt < 1) {
                 throw new IllegalArgumentException("deadLetterAt must be at least 1");
+            }
+            if (backoff.isNegative() || backoff.compareTo(Duration.ofDays(100)) > 0) {
+                throw new IllegalArgumentException("backoff must be between zero and 100 days, not " + backoff);
             }
         }
     }
@@ -286,7 +292,7 @@ public interface TaskStore {
     /**
      * Gives the matching dead letters, the lowest ids first, another round of attempts: they become
      * ready, their attempts and failures back at zero, so the topic's whole retry policy applies
-     * again. Their attempt log stays.
+     * again.
      *
      * @return the revived ids
      */
