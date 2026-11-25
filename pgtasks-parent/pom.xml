@@ -61,6 +61,15 @@
     <nullaway.version>0.14.4</nullaway.version>
     <!-- Release profile: true builds the Central bundle without uploading it, to check it locally. -->
     <central.skipPublishing>false</central.skipPublishing>
+    <!--
+      API compatibility (japicmp): every jar is compared with the same artifact at this released
+      version, and any binary or source incompatible change fails the build. Empty until 0.1.0 is
+      on Maven Central; after each release, RELEASING.md sets it to that version and clears the
+      accepted breaks in the japicmp plugin below. A break made on purpose is added there as an
+      exclude, with a line in CHANGELOG.md, so it is a decision and not an accident.
+    -->
+    <pgtasks.api.baseline></pgtasks.api.baseline>
+    <japicmp.skip>true</japicmp.skip>
   </properties>
 
   <dependencyManagement>
@@ -330,6 +339,16 @@
             </systemPropertyVariables>
           </configuration>
         </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>0.8.16</version>
+        </plugin>
+        <plugin>
+          <groupId>com.github.siom79.japicmp</groupId>
+          <artifactId>japicmp-maven-plugin</artifactId>
+          <version>0.27.0</version>
+        </plugin>
       </plugins>
     </pluginManagement>
     <plugins>
@@ -353,6 +372,47 @@
                 </requireMavenVersion>
               </rules>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- See pgtasks.api.baseline: skipped until there is a release to compare with. -->
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <configuration>
+          <oldVersion>
+            <dependency>
+              <groupId>${project.groupId}</groupId>
+              <artifactId>${project.artifactId}</artifactId>
+              <version>${pgtasks.api.baseline}</version>
+              <type>jar</type>
+            </dependency>
+          </oldVersion>
+          <parameter>
+            <accessModifier>protected</accessModifier>
+            <onlyModified>true</onlyModified>
+            <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+            <breakBuildOnSourceIncompatibleModifications>true</breakBuildOnSourceIncompatibleModifications>
+            <!-- A module that didn't exist at the baseline has nothing to be compatible with. -->
+            <ignoreMissingOldVersion>true</ignoreMissingOldVersion>
+            <ignoreNonResolvableArtifacts>false</ignoreNonResolvableArtifacts>
+            <skipPomModules>true</skipPomModules>
+            <!--
+              Accepted breaks since the baseline, cleared with each release: a class
+              (<exclude>io.github.khopland.pgtasks.Foo</exclude>) or a member
+              (<exclude>io.github.khopland.pgtasks.Foo#bar(java.lang.String)</exclude>).
+            -->
+            <excludes>
+            </excludes>
+          </parameter>
+        </configuration>
+        <executions>
+          <execution>
+            <id>api-compatibility</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>cmp</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
@@ -456,8 +516,34 @@
               <skipPublishing>${central.skipPublishing}</skipPublishing>
               <excludeArtifacts>
                 <artifact>pgtasks-benchmark</artifact>
+                <artifact>pgtasks-coverage</artifact>
               </excludeArtifacts>
             </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <!--
+      Test coverage with JaCoCo: each module's tests run with the agent, and pgtasks-coverage
+      merges them into one report in pgtasks-coverage/target/site/jacoco-aggregate. CI's
+      coverage job runs with it. Off by default, so local runs and the Fray and benchmark JVMs
+      don't carry the agent.
+    -->
+    <profile>
+      <id>coverage</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.jacoco</groupId>
+            <artifactId>jacoco-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>prepare-agent</id>
+                <goals>
+                  <goal>prepare-agent</goal>
+                </goals>
+              </execution>
+            </executions>
           </plugin>
         </plugins>
       </build>

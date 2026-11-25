@@ -52,6 +52,11 @@ next snapshot; the workflow takes the release version from the tag.
    mvn org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.2.0-SNAPSHOT -DprocessAllModules -DgenerateBackupPoms=false
    ```
 
+5. In `pgtasks-parent/pom.xml`, set `pgtasks.api.baseline` to the version just published, set
+   `japicmp.skip` to `false` (only after the first release), and empty the japicmp plugin's
+   `<excludes>`. From then on, every build compares each jar with that release; see
+   [API compatibility](#api-compatibility).
+
 ## Checking the release build locally
 
 The `release` profile builds the sources and Javadoc jars, signs everything and bundles it. To
@@ -63,8 +68,28 @@ mvn -Prelease verify -DskipTests -Dgpg.skip
 
 The enforcer in the profile fails on a snapshot version or a snapshot dependency.
 
+## API compatibility
+
+Once a release is the baseline, `mvn verify` runs japicmp on every published jar and fails on any
+binary or source incompatible change to a public or protected class or member, with a report in
+each module's `target/japicmp/`. Before 1.0 a minor release may still break the API, but only on
+purpose: add the changed class or member to the plugin's `<excludes>` in `pgtasks-parent/pom.xml`
+(the build failure names it) and say what changed under `[Unreleased]` in `CHANGELOG.md`. To try
+it against a version in your local repository:
+
+```sh
+mvn verify -DskipTests -Dpgtasks.api.baseline=0.1.0 -Djapicmp.skip=false
+```
+
+## Test coverage
+
+`mvn verify -Pcoverage` runs every module's tests with the JaCoCo agent and writes one report for
+all modules to `pgtasks-coverage/target/site/jacoco-aggregate/index.html`. CI's coverage job does the
+same, puts the totals in the job summary and keeps the report as an artifact. It never fails
+the run; the build job, without the agent, is the one that gates.
+
 ## What is published
 
 Every module in the default build except the aggregator (`pgtasks-build`): `pgtasks-bom`,
-`pgtasks-parent` and the library modules. `pgtasks-benchmark` (profile `benchmark`) and
-`examples/` are never published.
+`pgtasks-parent` and the library modules. `pgtasks-benchmark` (profile `benchmark`),
+`pgtasks-coverage` (profile `coverage`) and `examples/` are never published.
