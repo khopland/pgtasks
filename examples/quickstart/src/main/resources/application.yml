@@ -1,0 +1,23 @@
+spring:
+  application.name: quickstart
+  datasource:
+    url: jdbc:postgresql://localhost:55433/quickstart
+    username: quickstart
+    password: quickstart
+  sql.init.mode: always   # runs schema.sql: the application's own table
+
+quickstart:
+  follow-up-delay: 30s
+
+pgtasks:
+  dashboard.enabled: true
+  # A node killed with -9 keeps its claims until it counts as dead: a minute here, 10 by default.
+  heartbeat: 5s
+  node-expiry: 1m
+  topics:
+    # Retries start at 10 s by default; shorter here, so the tutorial's flaky address is quick to watch.
+    welcome: { retry.first-backoff: 2s }
+
+management:
+  endpoints.web.exposure.include: health,tasks
+  endpoint.health.show-details: always

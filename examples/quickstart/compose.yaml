@@ -1,0 +1,14 @@
+# Postgres for the quickstart: docker compose up -d --wait
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: quickstart
+      POSTGRES_PASSWORD: quickstart
+      POSTGRES_DB: quickstart
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "quickstart", "-d", "quickstart"]
+      interval: 2s
+      retries: 30
