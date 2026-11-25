@@ -2,9 +2,10 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a circuit breaker or
-recurring tasks, belong in extensions; none ships with pgtasks yet. An extension uses the same
-hooks the engine's own housekeeping uses, so it needs no change to the engine. Everything an
-extension implements or receives is in the package `io.github.khopland.pgtasks.engine.extension`.
+recurring tasks, belong in extensions. One ships: [`pgtasks-rate-limit`](#shipped-extensions). An
+extension uses the same hooks the engine's own housekeeping uses, so it needs no change to the
+engine. Everything an extension implements or receives is in the package
+`io.github.khopland.pgtasks.engine.extension`.
 
 ```java
 public final class NightlyReport implements Extension {
@@ -77,10 +78,81 @@ public final class PostgresWindows implements StoreCapability {
 ```
 
 The extension asks for it with `context.capability(WindowStore.class)`. Without a provider for the
-engine's store, that fails with a message naming the missing module. An extension's own tables are
-its own to create, for now: the schema runner applies only the engine's files.
+engine's store, that fails with a message naming the missing module.
 
-## An example
+An extension that needs a table ships its SQL in its own jar; it does not add files to the engine's
+schema. `ExtensionSchema` names that classpath directory and the tables it expects:
 
-`NodeRateLimit`, in the engine's tests, is a per-node rate limit in one file: a `SettingKey` for
-the rate, a `ClaimGate` that keeps a token bucket per topic, and nothing else.
+```java
+private static final ExtensionSchema WINDOWS = ExtensionSchema.of("windows", PostgresWindowStore.class,
+    "io/example/windows/db", List.of("V001__windows.sql"), List.of("window"));
+```
+
+`WINDOWS.apply(postgres)` applies the files with the built-in runner when the store's schema mode
+is `migrate`, checks the tables in `validate`, and does nothing in `none`. The runner keeps history
+in `<schema>.windows_schema_history` under its own advisory lock, so version numbers and checksums
+can't clash with the engine's or with another extension's. The files use the same
+`${pgtasks_schema}` placeholder and `V<version>__...` / `R__...` rules as the engine's, and
+applications using Flyway, Liquibase or a DBA pipeline can apply them from the jar the same way. An
+extension calls `apply` before it first uses its tables, best from an `onStart` action, so a bad
+`validate` setup fails the engine's start with a message naming the file and table it needs. A
+claim gate that throws is skipped and the claim goes ahead, so a gate that must hold claims back
+when its storage fails catches the error and returns a wait itself.
+
+## Shipped extensions
+
+`pgtasks-rate-limit` is that pattern as a module. `RateLimit` declares `rate.per-second` and
+`rate.burst`, keeps a token bucket per topic using the store's clock, and installs a claim gate:
+
+```java
+TaskEngine engine = TaskEngine.builder()
+    .extension(new RateLimit())
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task),
+        options -> options.set(RateLimit.PER_SECOND, 20.0)))
+    .build();
+```
+
+With Spring, declare a `RateLimit` bean instead. A topic without a positive `rate.per-second` is
+unlimited; `rate.burst` defaults to one second's worth. Both can be set in defaults and overridden
+in YAML, like any other setting: `pgtasks.topics.work.rate.burst: 5`.
+
+The limit is per node, not per cluster: each node keeps its own bucket, so three nodes can claim up
+to three times the configured rate. It limits claims, not completions, and a topic still claims no
+more often than its poll interval.
+
+`ClusterRateLimit` shares a sliding-window counter across every node. Add
+`pgtasks-rate-limit-postgres` alongside `pgtasks-rate-limit` when the store is Postgres; it provides
+the `SlidingWindowStore` capability from a `rate_limit_window` table in the pgtasks schema, locked
+a row at a time so nodes spend the same allowance in turn. That table comes from the module's own
+`V001__rate_limit_window.sql`, recorded in `rate_limit_schema_history`; the engine's V001 knows
+nothing about it. In `validate` mode, apply that file with your own migration tool first: without
+the table, the engine doesn't start. If the counter fails once the engine runs, the topic waits and
+asks again rather than claiming without a limit.
+
+```java
+TaskEngine engine = TaskEngine.builder()
+    .dataSource(dataSource)
+    .extension(new ClusterRateLimit())
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task),
+        options -> options.set(ClusterRateLimit.PER_WINDOW, 60L)))
+    .build();
+```
+
+`cluster.window` defaults to one minute (and must be at least a millisecond), and
+`cluster.per-window`, a whole number, to zero (unlimited). Here three nodes together claim at most
+60 tasks a minute. An idle topic can spend the whole minute's 60 at once; once the counter is busy,
+the previous window's count fades as the next one advances, so roughly one claim is freed every
+second instead of a fresh 60 appearing at the minute boundary. Both can also be set in YAML:
+`pgtasks.topics.work.cluster.per-window: 60`. For a rate below one per window, use a longer window.
+
+The engine tells each claim gate how many tasks the claim wants, so a reservation takes no more
+than the batch size (or what an earlier gate allowed). It is optimistic: the gate reserves, then
+returns what its claim didn't use, so another node can spend it. The engine settles every permit,
+with zero when another gate held the claim back or the claim failed, and the return comes off the
+window it was counted in even if the window has moved on since. A node that dies in between leaves
+its reservation in the counter until its windows pass. Every node counts by the database's clock,
+so nodes whose own clocks drift still agree on where the window is. A claim that uses exactly what
+it reserved costs one short transaction on the topic's counter row; one that uses less costs two.
+
+The counter is shared through the store, not through the notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
+message from the other nodes.

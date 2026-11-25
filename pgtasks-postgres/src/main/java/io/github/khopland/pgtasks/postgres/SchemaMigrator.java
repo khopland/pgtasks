@@ -18,11 +18,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The built-in runner. Takes a session advisory lock per schema, keeps its history in the
- * schema's own {@code schema_history} table, runs each versioned file once in its own transaction, re-runs
- * repeatable files whose checksum changed unless a higher revision of them is applied, and refuses
- * to run if an applied versioned file has changed. If a newer node has already moved the schema
- * ahead, it changes nothing and only checks that this version may run against it.
+ * The built-in runner. Takes a session advisory lock per history table, keeps its history in the
+ * schema's own {@code schema_history} (or an extension's own table), runs each versioned file once
+ * in its own transaction, re-runs repeatable files whose checksum changed unless a higher revision
+ * of them is applied, and refuses to run if an applied versioned file has changed. If a newer node
+ * has already moved the schema ahead, it changes nothing and only checks that this version may run
+ * against it.
  */
 final class SchemaMigrator {
 
@@ -43,12 +44,23 @@ final class SchemaMigrator {
     private final List<SchemaScript> versioned;
     private final List<SchemaScript> repeatable;
     private final String schema;
+    private final String historyTable;
+    private final boolean usesMeta;
     private final Duration lockTimeout;
     private final int attempts;
     private final Duration backoff;
 
     SchemaMigrator(List<SchemaScript> scripts, String schema) {
-        this(scripts, schema, LOCK_TIMEOUT, ATTEMPTS, BACKOFF);
+        this(scripts, schema, "schema_history", true, LOCK_TIMEOUT, ATTEMPTS, BACKOFF);
+    }
+
+    /** A runner for an extension's own files: its own history table, and no core meta table to check. */
+    SchemaMigrator(List<SchemaScript> scripts, String schema, String historyTable) {
+        this(scripts, schema, historyTable, false, LOCK_TIMEOUT, ATTEMPTS, BACKOFF);
+    }
+
+    SchemaMigrator(List<SchemaScript> scripts, String schema, Duration lockTimeout, int attempts, Duration backoff) {
+        this(scripts, schema, "schema_history", true, lockTimeout, attempts, backoff);
     }
 
     /**
@@ -59,7 +71,8 @@ final class SchemaMigrator {
      * @param attempts    tries per file before giving up, each after a lock timeout
      * @param backoff     the wait after the first lock timeout, doubled after each later one
      */
-    SchemaMigrator(List<SchemaScript> scripts, String schema, Duration lockTimeout, int attempts, Duration backoff) {
+    SchemaMigrator(List<SchemaScript> scripts, String schema, String historyTable, boolean usesMeta,
+                   Duration lockTimeout, int attempts, Duration backoff) {
         if (lockTimeout.toMillis() < 1 || attempts < 1 || backoff.isNegative()) {
             throw new IllegalArgumentException("Need a lock timeout of at least 1 ms, at least one attempt and a backoff of zero or more");
         }
@@ -67,6 +80,8 @@ final class SchemaMigrator {
         this.attempts = attempts;
         this.backoff = backoff;
         this.schema = TaskSchema.validName(schema);
+        this.historyTable = TaskSchema.validName(historyTable);
+        this.usesMeta = usesMeta;
         this.versioned = scripts.stream().filter(script -> !script.repeatable()).sorted(Comparator.comparingInt(SchemaScript::number)).toList();
         this.repeatable = scripts.stream().filter(SchemaScript::repeatable).sorted(Comparator.comparing(SchemaScript::description)).toList();
         for (int index = 1; index < versioned.size(); index++) {
@@ -86,19 +101,19 @@ final class SchemaMigrator {
     TaskSchema.Status migrate(Connection connection) throws SQLException {
         boolean autoCommit = connection.getAutoCommit();
         connection.setAutoCommit(true);
-        execute(connection, "SELECT pg_advisory_lock(hashtextextended('" + schema + ".schema_history', 0))");
+        execute(connection, "SELECT pg_advisory_lock(hashtextextended('" + schema + "." + historyTable + "', 0))");
         String previousLockTimeout = null;
         try {
             // Set after taking the advisory lock: waiting for another runner to finish is fine.
             previousLockTimeout = setLockTimeout(connection, lockTimeout.toMillis() + "ms");
             execute(connection, "CREATE SCHEMA IF NOT EXISTS " + schema);
-            execute(connection, history(schema));
-            execute(connection, "ALTER TABLE " + schema + ".schema_history ADD COLUMN IF NOT EXISTS revision integer");
+            execute(connection, history(schema, historyTable));
+            execute(connection, "ALTER TABLE " + schema + "." + historyTable + " ADD COLUMN IF NOT EXISTS revision integer");
             Map<Integer, String> appliedVersions = new HashMap<>();
             Map<String, Recorded> repeatableApplied = new HashMap<>();
             try (Statement statement = connection.createStatement();
                  ResultSet resultSet = statement.executeQuery("SELECT version, script, checksum, coalesce(revision, 0) FROM " + schema
-                     + ".schema_history ORDER BY installed_rank")) {
+                     + "." + historyTable + " ORDER BY installed_rank")) {
                 while (resultSet.next()) {
                     Integer version = resultSet.getObject(1, Integer.class);
                     if (version == null) {
@@ -111,23 +126,29 @@ final class SchemaMigrator {
             for (Map.Entry<Integer, String> applied : appliedVersions.entrySet()) {
                 Optional<SchemaScript> local = versioned.stream().filter(script -> script.number() == applied.getKey()).findFirst();
                 if (local.isEmpty() && applied.getKey() <= latest()) {
-                    throw new TaskSchemaException("Version " + applied.getKey() + " of the " + schema + " schema was applied, but this library has no such file. "
+                    throw new TaskSchemaException("Version " + applied.getKey() + " of the " + schema + "." + historyTable + " history was applied, but these files have no such version. "
                         + "Applied versioned files must never be removed or renumbered.");
                 }
                 if (local.isPresent() && !local.get().checksum().equals(applied.getValue())) {
                     throw new TaskSchemaException(local.get().name() + " has changed since it was applied (checksum "
-                        + applied.getValue() + " in " + schema + ".schema_history, " + local.get().checksum() + " now). "
+                        + applied.getValue() + " in " + schema + "." + historyTable + ", " + local.get().checksum() + " now). "
                         + "Applied versioned files must never change; add a new versioned file instead.");
                 }
             }
-            Optional<TaskSchema.Meta> meta = TaskSchema.readMeta(connection, schema);
-            if (meta.isPresent() && appliedVersions.isEmpty()) {
+            Optional<TaskSchema.Meta> meta = usesMeta ? TaskSchema.readMeta(connection, schema) : Optional.empty();
+            if (usesMeta && meta.isPresent() && appliedVersions.isEmpty()) {
                 throw new TaskSchemaException("The " + schema + " schema is at version " + meta.get().version() + ", but " + schema
-                    + ".schema_history doesn't know "
+                    + "." + historyTable + " doesn't know "
                     + "how it got there: another tool applied it. Keep applying it with that tool (Flyway, Liquibase or your DBA pipeline) "
                     + "and run the library with schema mode VALIDATE.");
             }
-            if (meta.isPresent() && meta.get().version() > latest()) {
+            if (!usesMeta && appliedVersions.keySet().stream().mapToInt(Integer::intValue).max().orElse(0) > latest()) {
+                // A newer node applied this extension's files. Leave them alone.
+                int version = appliedVersions.keySet().stream().mapToInt(Integer::intValue).max().orElse(0);
+                LOGGER.info("{} is at version {}, ahead of this library's {}; leaving it as it is", historyTable, version, latest());
+                return new TaskSchema.Status(version, version, latest(), List.of());
+            }
+            if (usesMeta && meta.isPresent() && meta.get().version() > latest()) {
                 // A newer node has migrated already. Never downgrade its functions or views.
                 TaskSchema.Status status = TaskSchema.check(schema, meta, latest(), List.of());
                 LOGGER.info("The {} schema is at version {}, ahead of this library's {} and compatible with it; leaving it as it is",
@@ -150,7 +171,9 @@ final class SchemaMigrator {
             if (!applied.isEmpty()) {
                 LOGGER.info("Applied to the {} schema: {}", schema, String.join(", ", applied));
             }
-            return TaskSchema.check(schema, TaskSchema.readMeta(connection, schema), latest(), applied);
+            return usesMeta
+                ? TaskSchema.check(schema, TaskSchema.readMeta(connection, schema), latest(), applied)
+                : new TaskSchema.Status(latest(), latest(), latest(), applied);
         } finally {
             try {
                 if (previousLockTimeout != null) {
@@ -158,7 +181,7 @@ final class SchemaMigrator {
                 }
             } finally {
                 try {
-                    execute(connection, "SELECT pg_advisory_unlock(hashtextextended('" + schema + ".schema_history', 0))");
+                    execute(connection, "SELECT pg_advisory_unlock(hashtextextended('" + schema + "." + historyTable + "', 0))");
                 } finally {
                     connection.setAutoCommit(autoCommit);
                 }
@@ -295,7 +318,7 @@ final class SchemaMigrator {
             for (int index = 0; index < statements.size(); index++) {
                 run(connection, script, statements, index);
             }
-            record(connection, schema, script, started);
+            record(connection, schema, historyTable, script, started);
             return;
         }
         connection.setAutoCommit(false);
@@ -303,14 +326,14 @@ final class SchemaMigrator {
             for (int index = 0; index < statements.size(); index++) {
                 run(connection, script, statements, index);
             }
-            if (!script.repeatable()) {
+            if (usesMeta && !script.repeatable()) {
                 Optional<TaskSchema.Meta> meta = TaskSchema.readMeta(connection, schema);
                 if (meta.isEmpty() || meta.get().version() != script.number()) {
                     throw new TaskSchemaException(script.name() + " must end by recording version " + script.version()
                         + " in " + schema + ".meta, but it says " + meta.map(m -> String.valueOf(m.version())).orElse("nothing"));
                 }
             }
-            record(connection, schema, script, started);
+            record(connection, schema, historyTable, script, started);
             connection.commit();
         } catch (SQLException | RuntimeException e) {
             connection.rollback();
@@ -329,9 +352,9 @@ final class SchemaMigrator {
         }
     }
 
-    private static void record(Connection connection, String schema, SchemaScript script, long started) throws SQLException {
+    private static void record(Connection connection, String schema, String historyTable, SchemaScript script, long started) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-            "INSERT INTO " + schema + ".schema_history (version, script, checksum, execution_ms, revision) VALUES (?, ?, ?, ?, ?)")) {
+            "INSERT INTO " + schema + "." + historyTable + " (version, script, checksum, execution_ms, revision) VALUES (?, ?, ?, ?, ?)")) {
             statement.setObject(1, script.version());
             statement.setString(2, script.name());
             statement.setString(3, script.checksum());
@@ -341,9 +364,9 @@ final class SchemaMigrator {
         }
     }
 
-    private static String history(String schema) {
+    private static String history(String schema, String table) {
         return """
-            CREATE TABLE IF NOT EXISTS %s.schema_history (
+            CREATE TABLE IF NOT EXISTS %s.%s (
                 installed_rank  integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 version         integer,
                 script          text NOT NULL,
@@ -351,7 +374,7 @@ final class SchemaMigrator {
                 applied_at      timestamptz NOT NULL DEFAULT now(),
                 applied_by      text NOT NULL DEFAULT current_user,
                 execution_ms    integer NOT NULL
-            )""".formatted(schema);
+            )""".formatted(schema, table);
     }
 
     private static void execute(Connection connection, String sql) throws SQLException {
