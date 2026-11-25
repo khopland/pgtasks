@@ -49,6 +49,9 @@ headers, and the MDC keys named in `pgtasks.mdc-headers`, such as a correlation 
 [operations](operations.md#tracing-and-correlation)). A creation's own headers win over theirs.
 The reference is one indexed value to look a task up by; headers are context that travels with
 it.
+The store indexes identifiers, references and dedup keys, so each is at most 2,048 bytes of UTF-8
+(`Creation.MAX_KEY_BYTES`); a creation with a longer one fails where it is made. Key a task by a
+hash of anything longer.
 
 `withDelay(duration)` waits that long from the push itself, even late in a long transaction (on
 Postgres, from the push statement's time, not the transaction's start); `withRunAt(instant)` waits until a moment,

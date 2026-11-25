@@ -42,4 +42,39 @@ final class Headers {
             throw new IllegalArgumentException(what + " must not contain the NUL character (\\u0000), which the store can't hold");
         }
     }
+
+    /**
+     * Refuses a key longer than {@link Creation#MAX_KEY_BYTES} in UTF-8, besides what
+     * {@link #checkText} refuses. Postgres indexes identifiers, references and dedup keys, and a
+     * B-tree entry can't be much over 2.7 KB: a longer key would fail the push, and staged by a
+     * handler, the completion of its whole batch.
+     */
+    static void checkKey(String what, @Nullable String key) {
+        checkText(what, key);
+        if (key != null && key.length() > Creation.MAX_KEY_BYTES / 3) {
+            int bytes = utf8Length(key);
+            if (bytes > Creation.MAX_KEY_BYTES) {
+                throw new IllegalArgumentException(what + " is " + bytes + " bytes in UTF-8, and the store indexes it, so it takes at most "
+                    + Creation.MAX_KEY_BYTES + "; use a shorter key, such as a hash of this one");
+            }
+        }
+    }
+
+    private static int utf8Length(String text) {
+        int bytes = 0;
+        for (int index = 0; index < text.length(); index++) {
+            char c = text.charAt(index);
+            if (c < 0x80) {
+                bytes += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(c) && index + 1 < text.length() && Character.isLowSurrogate(text.charAt(index + 1))) {
+                bytes += 4;
+                index++;
+            } else {
+                bytes += 3;
+            }
+        }
+        return bytes;
+    }
 }

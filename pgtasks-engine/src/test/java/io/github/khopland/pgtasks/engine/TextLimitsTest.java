@@ -99,6 +99,55 @@ class TextLimitsTest {
         assertThat(forever.error()).contains("at most a thousand years");
     }
 
+    /**
+     * Review 2026-11-25: a downstream push with an identifier too long for Postgres to index failed
+     * the completion of the whole batch, so the tasks beside it were retried with it until all of
+     * them were dead-lettered. Keys at the limit, of text that doesn't compress, are stored.
+     */
+    @Test
+    void a_key_too_long_to_index_fails_only_the_task_that_made_it(PostgresDatabase database) throws Exception {
+        fixture = new EngineFixture(database);
+        fixture.createTopics(WORK.name(), ITEMS.name());
+        String longest = incompressible(Creation.MAX_KEY_BYTES);
+        Map<String, AtomicInteger> runs = new ConcurrentHashMap<>();
+        Topic<String> work = Topic.of(WORK, batch -> batch.decide(task -> {
+            runs.computeIfAbsent(task.identifier(), ignored -> new AtomicInteger()).incrementAndGet();
+            if (task.payload().equals("too long")) {
+                task.push(ITEMS, longest + "x", new Item("x"));
+            } else {
+                task.push(ITEMS, Insertion.APPEND, Creation.of(longest, new Item("x")).withReference(longest).withDedupKey((task.identifier() + longest).substring(0, Creation.MAX_KEY_BYTES)));
+            }
+            return Decision.success();
+        }));
+        work = work.with(work.settings().withRetry(Retry.none()).withBatchSize(10));
+        TaskEngine engine = fixture.create("node-a", List.of(work), settings -> settings.withCodecs(Map.of(Item.class, PayloadCodec.of(Item::text, Item::new))));
+        List<Long> ids = engine.tasks().independently().push(WORK, Insertion.APPEND, List.of(
+            Creation.of("fine-1", "fine"), Creation.of("too-long", "too long"), Creation.of("fine-2", "fine")))
+            .stream().map(pushed -> pushed.id()).toList();
+        engine.start();
+
+        EngineFixture.await("the batch settled", Duration.ofSeconds(10),
+            () -> database.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'work' AND q.state <> 'failed'") == 0);
+
+        assertThat(engine.admin().find(ids.get(0)).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(engine.admin().find(ids.get(2)).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(runs.get("fine-1")).as("not run again for the other task's key").hasValue(1);
+        TaskView tooLong = engine.admin().find(ids.get(1)).orElseThrow();
+        assertThat(tooLong.state()).isEqualTo("failed");
+        assertThat(tooLong.error()).contains("identifier is 2049 bytes");
+        assertThat(database.count("SELECT count(*) FROM pgtasks.task t JOIN pgtasks.topic tp ON tp.id = t.topic_id WHERE tp.name = 'items'"))
+            .as("both pushes with keys at the limit stored").isEqualTo(2);
+    }
+
+    private static String incompressible(int length) {
+        StringBuilder text = new StringBuilder(length);
+        java.util.Random random = new java.util.Random(42);
+        while (text.length() < length) {
+            text.append(Character.forDigit(random.nextInt(36), 36));
+        }
+        return text.toString();
+    }
+
     record Item(String text) {
     }
 
