@@ -103,9 +103,12 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
 4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
    Add the new file's checksum there when it is released. It also pins the checksum of every
    revision of every `R__` file, so changing one without raising its revision fails the build; add
-   the new revision's checksum next to the old ones. With the first release, add an upgrade test
-   that applies the released files with tasks in every state, then the current files, and checks
-   the tasks are still usable.
+   the new revision's checksum next to the old ones.
+5. `SchemaUpgradeTest` upgrades from every released schema: it applies that release's files, loads
+   the rows its code left with tasks in every state (ready, scheduled, retrying, suspended, a dead
+   letter, a claim held by a node that died, finished and superseded ones), applies the current
+   files, and runs them with the current store. A release adds its snapshot (RELEASING.md); the
+   cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`.
 
 ### Tables an extension owns
 
