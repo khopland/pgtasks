@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-rate-limit-postgres</artifactId>
+  <name>pgtasks rate limit for Postgres</name>
   <description>Shared sliding-window counters for pgtasks-rate-limit on Postgres: the store capability that makes the cluster rate limit work across nodes.</description>
 
   <properties>

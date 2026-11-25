@@ -4,6 +4,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.TaskEngine;
@@ -111,6 +114,54 @@ final class ClusterRateLimitTest {
         SlidingCounter state = counters.counters.get("work");
         assertThat(state).isNotNull();
         assertThat(state.current()).isEqualTo(3);
+    }
+
+    @Test
+    void the_engine_does_not_start_when_the_counter_cannot_be_readied() {
+        SlidingWindowStore unusable = new SlidingWindowStore() {
+            @Override
+            public <R> R update(String topic, Update<R> action) {
+                throw new AssertionError("Not asked before it is ready");
+            }
+
+            @Override
+            public void prepare() {
+                throw new IllegalStateException("The rate_limit_window table is missing");
+            }
+        };
+        TopicRef<String> work = TopicRef.of("work", String.class);
+        TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore(ManualClock.startingNow()))
+            .extension(new ClusterRateLimit(unusable))
+            .configure("work", tasks -> tasks.eachTask(work, task -> { },
+                options -> options.set(ClusterRateLimit.PER_WINDOW, 100L)))
+            .build();
+        try (engine) {
+            assertThatThrownBy(engine::start).isInstanceOf(IllegalStateException.class).hasMessageContaining("rate_limit_window");
+        }
+    }
+
+    @Test
+    void a_counter_that_fails_holds_the_topic_back_instead_of_claiming_without_a_limit() throws Exception {
+        CountDownLatch asked = new CountDownLatch(2);
+        SlidingWindowStore failing = new SlidingWindowStore() {
+            @Override
+            public <R> R update(String topic, Update<R> action) {
+                asked.countDown();
+                throw new IllegalStateException("The database is gone");
+            }
+        };
+        TopicRef<String> work = TopicRef.of("work", String.class);
+        AtomicInteger handled = new AtomicInteger();
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore(ManualClock.startingNow()))
+            .extension(new ClusterRateLimit(failing))
+            .configure("work", tasks -> tasks.eachTask(work, task -> handled.incrementAndGet(),
+                options -> options.set(ClusterRateLimit.PER_WINDOW, 100L)))
+            .build().start()) {
+            engine.tasks().independently().push(work, "a", "x");
+            // Each claim asks the counter first, so a second question means the first claim was held back.
+            assertThat(asked.await(30, TimeUnit.SECONDS)).isTrue();
+            assertThat(handled).hasValue(0);
+        }
     }
 
     /** A counter shared by every engine in one process at a fixed time; the Postgres capability does the same across JVMs. */

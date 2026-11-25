@@ -18,6 +18,13 @@ public interface SlidingWindowStore {
      */
     <R> R update(String topic, Update<R> action);
 
+    /**
+     * Readies the shared storage before the first claim, such as applying or checking its tables,
+     * and throws if it can't be used. Called each time the engine starts; nothing by default.
+     */
+    default void prepare() {
+    }
+
     /** A change to one topic's counter at the shared time {@code now}. */
     @FunctionalInterface
     interface Update<R> {

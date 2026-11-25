@@ -94,8 +94,10 @@ in `<schema>.windows_schema_history` under its own advisory lock, so version num
 can't clash with the engine's or with another extension's. The files use the same
 `${pgtasks_schema}` placeholder and `V<version>__...` / `R__...` rules as the engine's, and
 applications using Flyway, Liquibase or a DBA pipeline can apply them from the jar the same way. An
-extension calls `apply` before it first uses its tables, so a bad `validate` setup fails on the
-first claim with a message naming the file and table it needs.
+extension calls `apply` before it first uses its tables, best from an `onStart` action, so a bad
+`validate` setup fails the engine's start with a message naming the file and table it needs. A
+claim gate that throws is skipped and the claim goes ahead, so a gate that must hold claims back
+when its storage fails catches the error and returns a wait itself.
 
 ## Shipped extensions
 
@@ -123,7 +125,9 @@ more often than its poll interval.
 the `SlidingWindowStore` capability from a `rate_limit_window` table in the pgtasks schema, locked
 a row at a time so nodes spend the same allowance in turn. That table comes from the module's own
 `V001__rate_limit_window.sql`, recorded in `rate_limit_schema_history`; the engine's V001 knows
-nothing about it. In `validate` mode, apply that file with your own migration tool first.
+nothing about it. In `validate` mode, apply that file with your own migration tool first: without
+the table, the engine doesn't start. If the counter fails once the engine runs, the topic waits and
+asks again rather than claiming without a limit.
 
 ```java
 TaskEngine engine = TaskEngine.builder()

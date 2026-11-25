@@ -39,13 +39,18 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
     }
 
     @Override
-    public <R> R update(String topic, Update<R> action) {
+    public void prepare() {
         try {
             ensureSchema();
         } catch (SQLException | RuntimeException e) {
             throw new IllegalStateException("Could not apply " + SCHEMA.describe() + " to " + table
                 + ": the cluster rate limit needs its own table", e);
         }
+    }
+
+    @Override
+    public <R> R update(String topic, Update<R> action) {
+        prepare();
         try (StoreTransaction transaction = store.begin()) {
             Loaded loaded = lock(transaction, topic);
             if (loaded == null) {

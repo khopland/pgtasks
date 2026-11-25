@@ -21,6 +21,10 @@ import org.jspecify.annotations.Nullable;
  * the previous window counts for less, instead of a fresh allowance at each window boundary.
  * Register one with {@code TaskEngine.builder().extension(new ClusterRateLimit())}; the store needs
  * a {@link SlidingWindowStore} capability, from the module that provides it for that store.
+ *
+ * <p>The engine doesn't start when the counter can't be readied, such as when its table is missing
+ * in schema mode {@code VALIDATE}. A counter that fails later holds the topic back instead of
+ * letting it claim without a limit.
  */
 public final class ClusterRateLimit implements Extension {
 
@@ -31,6 +35,11 @@ public final class ClusterRateLimit implements Extension {
     /** Claims allowed per window across all nodes; zero, the default, leaves the topic unlimited. */
     public static final SettingKey<Long> PER_WINDOW =
         SettingKey.of("cluster.per-window", Long.class, 0L, ClusterRateLimit::nonNegative);
+
+    /** How long a topic waits after the shared counter failed, before asking it again. */
+    static final Duration FAILED_COUNTER_WAIT = Duration.ofSeconds(1);
+
+    private static final System.Logger LOGGER = System.getLogger(ClusterRateLimit.class.getName());
 
     private final @Nullable SlidingWindowStore store;
 
@@ -55,6 +64,8 @@ public final class ClusterRateLimit implements Extension {
         // One map per installed gate: one extension instance may serve several engines. A topic
         // polls on one thread per engine, so it holds at most one reservation at a time.
         Map<TopicRef<?>, SlidingCounter.Admission> reservations = new ConcurrentHashMap<>();
+        // Fails the start, not the first claim, when the counter can't be used.
+        context.onStart(counter::prepare);
         context.claimGate(new ClaimGate() {
             @Override
             public Permit permit(TopicRef<?> topic) {
@@ -71,12 +82,21 @@ public final class ClusterRateLimit implements Extension {
                 long window = Math.max(1, context.topicSetting(topic, WINDOW).orElse(WINDOW.defaultValue()).toMillis());
                 // A reservation left from a permit the engine never settled is handed back first.
                 SlidingCounter.Admission stale = reservations.remove(topic);
-                SlidingCounter.Admission admitted = counter.update(topic.name(), (state, now) -> {
-                    if (stale != null) {
-                        state.settle(stale, 0, now);
-                    }
-                    return state.admit(now, window, limit, Math.max(1, wanted));
-                });
+                SlidingCounter.Admission admitted;
+                try {
+                    admitted = counter.update(topic.name(), (state, now) -> {
+                        if (stale != null) {
+                            state.settle(stale, 0, now);
+                        }
+                        return state.admit(now, window, limit, Math.max(1, wanted));
+                    });
+                } catch (RuntimeException e) {
+                    // The engine claims without a gate that throws; a limit that can't be counted
+                    // holds the topic back instead. A stale reservation fades with its window.
+                    LOGGER.log(System.Logger.Level.WARNING,
+                        "The shared rate limit counter failed for " + topic + "; holding claims back", e);
+                    return Permit.waitFor(FAILED_COUNTER_WAIT);
+                }
                 if (admitted.waits()) {
                     return Permit.waitFor(admitted.delay());
                 }

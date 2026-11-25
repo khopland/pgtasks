@@ -9,7 +9,8 @@
   </parent>
 
   <artifactId>pgtasks-rate-limit</artifactId>
-  <description>A per-topic rate limit for pgtasks, built on the engine's extension hooks: a token bucket per topic, with typed topic settings and no engine changes.</description>
+  <name>pgtasks rate limit</name>
+  <description>Rate limits for pgtasks, built on the engine's extension hooks: a per-node token bucket and a cluster-wide sliding window per topic, with typed topic settings.</description>
 
   <properties>
     <module.name>io.github.khopland.pgtasks.ratelimit</module.name>
