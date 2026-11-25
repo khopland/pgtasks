@@ -15,19 +15,28 @@ import java.util.function.LongSupplier;
  *
  * <p>Each heartbeat and node registration takes a sample, placed halfway through its round trip,
  * so it is off by at most half of one. A sample whose round trip took longer than
- * {@link #SLOW_SAMPLE} is ignored once the clock has a better one. The clock never goes back:
- * a sample that would move it back only holds it still until it catches up.
+ * {@link #SLOW_SAMPLE} is ignored once the clock has a better one. Once sampled, the clock never
+ * goes back: a sample that would move it back only holds it still until it catches up. The first
+ * sample may: before it the clock is the node's own, and held at a node clock that runs ahead of
+ * the database's, it would stand still for as long as the skew.
  */
 final class DatabaseClock implements InstantSource {
 
     static final Duration SLOW_SAMPLE = Duration.ofSeconds(1);
 
     private record Anchor(Instant database, long nanos, boolean sampled) {
+
+        Instant at(long nanos) {
+            return database.plusNanos(nanos - this.nanos);
+        }
+    }
+
+    /** The anchor and the latest time read, changed together, so the first sample can reset what was read before it. */
+    private record State(Anchor anchor, Instant latest) {
     }
 
     private final LongSupplier nanoTime;
-    private volatile Anchor anchor;
-    private final AtomicReference<Instant> latest;
+    private final AtomicReference<State> state;
 
     DatabaseClock() {
         this(InstantSource.system(), System::nanoTime);
@@ -36,8 +45,7 @@ final class DatabaseClock implements InstantSource {
     DatabaseClock(InstantSource start, LongSupplier nanoTime) {
         this.nanoTime = nanoTime;
         Instant now = start.instant();
-        this.anchor = new Anchor(now, nanoTime.getAsLong(), false);
-        this.latest = new AtomicReference<>(now);
+        this.state = new AtomicReference<>(new State(new Anchor(now, nanoTime.getAsLong(), false), now));
     }
 
     /** The JVM's monotonic clock, to read before and after the statement that samples the database's. */
@@ -52,17 +60,25 @@ final class DatabaseClock implements InstantSource {
      */
     void sample(Instant database, long before, long after) {
         long roundTrip = after - before;
-        if (roundTrip < 0 || (roundTrip > SLOW_SAMPLE.toNanos() && anchor.sampled())) {
+        if (roundTrip < 0) {
             return;
         }
-        anchor = new Anchor(database, before + roundTrip / 2, true);
+        Anchor sampled = new Anchor(database, before + roundTrip / 2, true);
+        state.updateAndGet(current -> {
+            if (!current.anchor().sampled()) {
+                // The node's clock until now: whatever was read from it doesn't hold this one back.
+                return new State(sampled, sampled.at(nanoTime.getAsLong()));
+            }
+            return roundTrip > SLOW_SAMPLE.toNanos() ? current : new State(sampled, current.latest());
+        });
     }
 
     @Override
     public Instant instant() {
-        Anchor current = anchor;
-        Instant now = current.database().plusNanos(nanoTime.getAsLong() - current.nanos());
-        return latest.accumulateAndGet(now, (previous, next) -> next.isAfter(previous) ? next : previous);
+        return state.updateAndGet(current -> {
+            Instant now = current.anchor().at(nanoTime.getAsLong());
+            return now.isAfter(current.latest()) ? new State(current.anchor(), now) : current;
+        }).latest();
     }
 
     @Override
