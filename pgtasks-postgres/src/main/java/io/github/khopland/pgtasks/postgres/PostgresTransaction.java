@@ -2,6 +2,7 @@ package io.github.khopland.pgtasks.postgres;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -43,17 +44,32 @@ final class PostgresTransaction implements StoreTransaction {
     private final boolean owned;
     /** The isolation to restore on close, or -1 when the connection was already at READ COMMITTED. */
     private final int restore;
+    /** The network timeout to restore on close, or -1 when it wasn't changed. */
+    private final int restoreNetworkTimeout;
     private boolean done;
 
-    private PostgresTransaction(Connection connection, boolean owned, int restore) {
+    private PostgresTransaction(Connection connection, boolean owned, int restore, int restoreNetworkTimeout) {
         this.connection = connection;
         this.owned = owned;
         this.restore = restore;
+        this.restoreNetworkTimeout = restoreNetworkTimeout;
     }
 
-    static PostgresTransaction open(Connection connection) throws SQLException {
+    /**
+     * @param networkTimeout how long each statement waits for the database's reply before the
+     *                       connection is given up as broken; see {@link PostgresTaskStore#NETWORK_TIMEOUT}.
+     *                       A local setting of the socket, which costs no round trip
+     */
+    static PostgresTransaction open(Connection connection, Duration networkTimeout) throws SQLException {
         int restore = -1;
+        int restoreNetworkTimeout = -1;
         try {
+            int previous = connection.getNetworkTimeout();
+            int bound = Math.toIntExact(Math.min(networkTimeout.toMillis(), Integer.MAX_VALUE));
+            if (previous == 0 || previous > bound) {
+                connection.setNetworkTimeout(Runnable::run, bound);
+                restoreNetworkTimeout = previous;
+            }
             int isolation = nativeIsolation(connection);
             if (isolation != Connection.TRANSACTION_READ_COMMITTED) {
                 if (!warned) {
@@ -72,6 +88,9 @@ final class PostgresTransaction implements StoreTransaction {
                 if (restore != -1) {
                     connection.setTransactionIsolation(restore);
                 }
+                if (restoreNetworkTimeout != -1) {
+                    connection.setNetworkTimeout(Runnable::run, restoreNetworkTimeout);
+                }
             } catch (SQLException | RuntimeException suppressed) {
                 e.addSuppressed(suppressed);
             } finally {
@@ -79,7 +98,7 @@ final class PostgresTransaction implements StoreTransaction {
             }
             throw e;
         }
-        return new PostgresTransaction(connection, true, restore);
+        return new PostgresTransaction(connection, true, restore, restoreNetworkTimeout);
     }
 
     private static int nativeIsolation(Connection connection) throws SQLException {
@@ -117,7 +136,12 @@ final class PostgresTransaction implements StoreTransaction {
         } catch (SQLException e) {
             throw new IllegalStateException("Could not inspect the connection", e);
         }
-        return new PostgresTransaction(connection, false, -1);
+        return new PostgresTransaction(connection, false, -1, -1);
+    }
+
+    /** Whether the store began this transaction, rather than joined an application's. */
+    boolean owned() {
+        return owned;
     }
 
     @Override
@@ -154,6 +178,10 @@ final class PostgresTransaction implements StoreTransaction {
                 // Not every pool resets the level when the connection goes back, and the cache
                 // above assumes it is what it was.
                 connection.setTransactionIsolation(restore);
+            }
+            if (restoreNetworkTimeout != -1) {
+                // The application's own use of the connection keeps its own timeout.
+                connection.setNetworkTimeout(Runnable::run, restoreNetworkTimeout);
             }
         } finally {
             connection.close();

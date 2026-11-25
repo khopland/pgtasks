@@ -63,6 +63,7 @@ public final class PostgresTaskStore implements TaskStore {
     private static final int SINGULAR_CLAIM_LOCK = -0x7067_6c6b;
 
     private final DataSource dataSource;
+    private final Duration networkTimeout;
     private final SchemaMode mode;
     private final String schema;
     private final DatabaseClock clock = new DatabaseClock();
@@ -72,7 +73,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, releaseSuspended;
     private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
-    private final NamedSql singularClaimLock, identifierLocks;
+    private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded;
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -92,6 +93,37 @@ public final class PostgresTaskStore implements TaskStore {
      * @throws IllegalArgumentException if the name isn't a plain lowercase identifier
      */
     public PostgresTaskStore(DataSource dataSource, SchemaMode mode, String schema) {
+        this(dataSource, mode, schema, STUCK_TRANSACTION_TIMEOUT, NETWORK_TIMEOUT);
+    }
+
+    /**
+     * How long the store's own transactions that hold locks others wait for may sit idle between
+     * statements: a claim, which under a SINGULAR_* ordering holds its topic's lock until it
+     * commits, a lease renewal, and a push of the store's own that locks identifiers (the
+     * downstream work of a completion). A node that dies silently there (a frozen VM, a network
+     * that drops packets without closing the connection) left its transaction open, and the locks
+     * held, until the server's TCP keepalive gave up on it: hours, by default. Every node's claims
+     * on that topic, or the other nodes' heartbeats, waited as long. Past this, Postgres ends the
+     * session and its locks go with it.
+     */
+    public static final Duration STUCK_TRANSACTION_TIMEOUT = Duration.ofMinutes(1);
+
+    /**
+     * How long a statement of the store's own transactions may wait for the database's reply. A
+     * reply lost on a connection the network dropped without closing never arrives, and without a
+     * bound the thread waiting for it, a topic's poller or a completion, waited forever. Generous,
+     * since a statement may rightly wait for a lock an application transaction holds.
+     */
+    public static final Duration NETWORK_TIMEOUT = Duration.ofMinutes(5);
+
+    /** With other timeouts, for tests that don't want to wait minutes. */
+    PostgresTaskStore(DataSource dataSource, SchemaMode mode, String schema, Duration stuckTransactionTimeout, Duration networkTimeout) {
+        if (!stuckTransactionTimeout.isPositive() || !networkTimeout.isPositive()) {
+            throw new IllegalArgumentException("Timeouts must be positive");
+        }
+        this.networkTimeout = networkTimeout;
+        // Set by the first statement of the transactions it guards, so it costs no round trip of its own.
+        String guard = "set_config('idle_in_transaction_session_timeout', '" + stuckTransactionTimeout.toMillis() + "', true)";
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.mode = Objects.requireNonNull(mode, "mode");
         this.schema = TaskSchema.validName(schema);
@@ -148,6 +180,12 @@ public final class PostgresTaskStore implements TaskStore {
             SELECT count(pg_advisory_xact_lock(key))
             FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
             """);
+        // In the store's own transactions only: an application's transaction is the application's.
+        identifierLocksGuarded = sql("""
+            SELECT count(pg_advisory_xact_lock(key)), max(guard)
+            FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
+            CROSS JOIN (SELECT %s AS guard) AS guard
+            """.formatted(guard));
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)));
         }
@@ -160,8 +198,8 @@ public final class PostgresTaskStore implements TaskStore {
         claimPlanning = sql("""
             SELECT set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true),
                    set_config('enable_sort', 'off', true), set_config('enable_hashjoin', 'off', true),
-                   set_config('enable_mergejoin', 'off', true)
-            """);
+                   set_config('enable_mergejoin', 'off', true), %s
+            """.formatted(guard));
         // A SINGULAR_* poll checks other tasks for each candidate's identifier in its statement
         // snapshot, where another node's uncommitted claim still looks ready: with an earlier task
         // turned ready meanwhile (a promotion, a release), both nodes would claim one identifier.
@@ -507,7 +545,7 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         // A push's foreign key check takes a share lock on the topic row, so this waits for
         // pushes in flight and makes later ones wait, then fail, once the row is gone.
-        lockTopic = sql("SELECT name FROM pgtasks.topic WHERE id = :topic::integer FOR UPDATE");
+        lockTopic = sql("SELECT name, " + guard + " FROM pgtasks.topic WHERE id = :topic::integer FOR UPDATE");
         topicHasTasks = sql("SELECT EXISTS (SELECT 1 FROM pgtasks.task WHERE topic_id = :topic::integer)");
         // The delete trigger on pgtasks.topic tells every node (R__notify_topic.sql).
         deleteTopic = sql("""
@@ -552,16 +590,19 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         // Takes a lease nobody holds or whose term ran out, or renews this node's own. Two nodes
         // asking at once serialize on the row; the second sees the first's fresh term and gets nothing.
+        // Guarded: every node renews or asks for it on its heartbeat thread, so one stuck holding
+        // the row would hold up every other node's heartbeat.
         lead = sql("""
             INSERT INTO pgtasks.lease AS l (name, node_id, acquired_at, expires_at)
-            VALUES (:name, :node::integer, now(), now() + :term::bigint * interval '1 millisecond')
+            SELECT :name, :node::integer, now(), now() + :term::bigint * interval '1 millisecond'
+            FROM (SELECT %s) AS guard
             ON CONFLICT (name) DO UPDATE
             SET node_id = excluded.node_id,
                 acquired_at = CASE WHEN l.node_id = excluded.node_id THEN l.acquired_at ELSE excluded.acquired_at END,
                 expires_at = excluded.expires_at
             WHERE l.node_id = excluded.node_id OR l.expires_at < now()
             RETURNING l.expires_at
-            """);
+            """.formatted(guard));
         resign = sql("DELETE FROM pgtasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
             SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at,
@@ -680,7 +721,7 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public StoreTransaction begin() throws SQLException {
-        return PostgresTransaction.open(dataSource.getConnection());
+        return PostgresTransaction.open(dataSource.getConnection(), networkTimeout);
     }
 
     @Override
@@ -953,7 +994,8 @@ public final class PostgresTaskStore implements TaskStore {
             .array("headers", "text", headers)
             .array("run_ats", "text", runAts);
         if (insertion != Insertion.APPEND) {
-            try (PreparedStatement statement = identifierLocks.prepare(connection, NamedSql.parameters().set("topic", topicId).array("identifiers", "text", identifiers));
+            NamedSql locks = transaction instanceof PostgresTransaction own && own.owned() ? identifierLocksGuarded : identifierLocks;
+            try (PreparedStatement statement = locks.prepare(connection, NamedSql.parameters().set("topic", topicId).array("identifiers", "text", identifiers));
                  ResultSet resultSet = statement.executeQuery()) {
                 resultSet.next();
             }

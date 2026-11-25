@@ -452,6 +452,20 @@ itself: it logs an error, stops claiming and cancels its running handlers, whose
 without counting an attempt, and it claims again once a heartbeat gets through. The engine warns
 at startup if `maxInFlightBatches` leaves too little room in the pool.
 
+A node can also go silent in the middle of a transaction: a frozen VM, or a network that drops
+packets without closing the connection, as a failover or a NAT timing out a flow does. Postgres
+keeps such a transaction, and its locks, until its TCP keepalive gives up, which takes hours by
+default. So the transactions of the store's own that hold locks other nodes wait for (a claim,
+which under a `SINGULAR_*` ordering holds its topic's lock until it commits, a lease renewal, the
+identifier locks of a completion's downstream `SUPERSEDE` or `REPLACE` work, and the cluster rate
+limit's counter) set `idle_in_transaction_session_timeout` to one minute
+(`PostgresTaskStore.STUCK_TRANSACTION_TIMEOUT`) with their first statement, at no extra round
+trip: past it, Postgres ends the session and the locks go with it. Statements of the store's own
+transactions wait at most five minutes for a reply (`NETWORK_TIMEOUT`, a socket timeout on the
+connection while the store uses it), so a reply lost on a silent connection fails the statement
+instead of holding a topic's poller forever. A smaller `socketTimeout` in the JDBC URL wins.
+Transactions an application pushes in are the application's, and keep its settings.
+
 LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications a direct
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
 `pgtasks.notifications=false`; polling still finds the work, within the poll interval. Use

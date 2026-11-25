@@ -1,11 +1,5 @@
 package io.github.khopland.pgtasks.postgres;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.sql.DriverManager;
 import java.time.Duration;
@@ -110,7 +104,7 @@ class PostgresNotifierTest {
     @Test
     void reconnects_when_the_connection_goes_quiet_without_closing() throws Exception {
         URI target = URI.create(database.jdbcUrl().substring("jdbc:".length()));
-        Proxy proxy = new Proxy(target.getHost(), target.getPort());
+        TcpProxy proxy = new TcpProxy(target.getHost(), target.getPort());
         resources.add(proxy);
         String url = database.jdbcUrl().replace(target.getHost() + ":" + target.getPort(), "127.0.0.1:" + proxy.port());
         PostgresNotifier notifier = start(new PostgresNotifier(() -> DriverManager.getConnection(url, database.user(), database.password()),
@@ -163,78 +157,6 @@ class PostgresNotifierTest {
         @Override
         public void missed() {
             events.add("missed");
-        }
-    }
-
-    /** Forwards TCP to the database, and can stop forwarding on the links it has without closing them. */
-    private static final class Proxy implements AutoCloseable {
-
-        private final ServerSocket server;
-        private final List<Link> links = new CopyOnWriteArrayList<>();
-
-        Proxy(String host, int port) throws IOException {
-            server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
-            Thread.ofVirtual().start(() -> {
-                while (!server.isClosed()) {
-                    try {
-                        Socket client = server.accept();
-                        Link link = new Link(client, new Socket(host, port));
-                        links.add(link);
-                        link.start();
-                    } catch (IOException e) {
-                        return;
-                    }
-                }
-            });
-        }
-
-        int port() {
-            return server.getLocalPort();
-        }
-
-        void blackholeOpenLinks() {
-            links.forEach(link -> link.blackholed = true);
-        }
-
-        @Override
-        public void close() throws IOException {
-            server.close();
-            for (Link link : links) {
-                link.client.close();
-                link.upstream.close();
-            }
-        }
-    }
-
-    private static final class Link {
-
-        final Socket client;
-        final Socket upstream;
-        volatile boolean blackholed;
-
-        Link(Socket client, Socket upstream) {
-            this.client = client;
-            this.upstream = upstream;
-        }
-
-        void start() {
-            Thread.ofVirtual().start(() -> pump(client, upstream));
-            Thread.ofVirtual().start(() -> pump(upstream, client));
-        }
-
-        private void pump(Socket from, Socket to) {
-            byte[] buffer = new byte[8192];
-            try (InputStream in = from.getInputStream(); OutputStream out = to.getOutputStream()) {
-                int read;
-                while ((read = in.read(buffer)) >= 0) {
-                    if (!blackholed) {
-                        out.write(buffer, 0, read);
-                        out.flush();
-                    }
-                }
-            } catch (IOException ignored) {
-                // closed
-            }
         }
     }
 }
