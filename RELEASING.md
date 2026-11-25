@@ -33,6 +33,17 @@ next snapshot; the workflow takes the release version from the tag.
 1. In `CHANGELOG.md`, move what is under `[Unreleased]` to a new `## [x.y.z]` section and update
    the links at the bottom. The workflow refuses a tag without a section, and uses that section
    as the GitHub release notes.
+   In the same commit, snapshot the schemas the release ships, so every later build tests an
+   upgrade from them (`SchemaUpgradeTest`, `RateLimitSchemaUpgradeTest`):
+
+   ```sh
+   mvn test -pl pgtasks-postgres,pgtasks-rate-limit-postgres -am -Dpgtasks.schema.snapshot=0.1.0 \
+     -Dtest='SchemaSnapshot,RateLimitSchemaSnapshot' -Dsurefire.failIfNoSpecifiedTests=false
+   ```
+
+   It copies the schema files and the rows the release leaves in every state into each
+   module's `src/test/resources/.../released/0.1.0/`; commit them as they are. Pin each new
+   versioned file's checksum in `SchemaFreezeTest.RELEASED` too.
 2. Commit, merge to `main`, then tag that commit and push the tag:
 
    ```sh
