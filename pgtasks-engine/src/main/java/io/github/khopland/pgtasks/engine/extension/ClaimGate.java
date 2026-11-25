@@ -16,7 +16,20 @@ public interface ClaimGate {
 
     Permit permit(TopicRef<?> topic);
 
-    /** After a claim it permitted: how many tasks it got, possibly none. */
+    /**
+     * Like {@link #permit(TopicRef)}, knowing the claim takes at most {@code wanted} tasks: the
+     * topic's batch size, or less when an earlier gate allowed less. A gate that reserves a shared
+     * allowance reserves no more than this.
+     */
+    default Permit permit(TopicRef<?> topic, int wanted) {
+        return permit(topic);
+    }
+
+    /**
+     * Once after every permit that didn't wait: how many tasks the claim got. Zero when it got
+     * none, and also when no claim was made because another gate said wait or the claim failed,
+     * so a gate can hand back what it reserved.
+     */
     default void claimed(TopicRef<?> topic, int tasks) {
     }
 

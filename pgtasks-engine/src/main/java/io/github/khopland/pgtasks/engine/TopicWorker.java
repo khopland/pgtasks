@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -118,23 +119,28 @@ final class TopicWorker<T> {
                 // asked, so none hands out a permit for a claim that isn't made.
                 gateWait = topic.settings().pollInterval();
             }
+            // The gates that granted a permit; each is told once what came of it.
+            List<ClaimGate> granted = new ArrayList<>(fenced ? 0 : core.gates().size());
             for (ClaimGate gate : fenced ? List.<ClaimGate>of() : core.gates()) {
                 ClaimGate.Permit permit;
                 try {
-                    permit = gate.permit(topic.ref());
+                    permit = gate.permit(topic.ref(), limit);
                 } catch (RuntimeException e) {
                     // A broken gate doesn't stop the topic: it claims as if the gate allowed it.
                     LOGGER.warn("A claim gate failed for {}; claiming without it", topic.ref(), e);
-                    permit = ClaimGate.Permit.ANY;
+                    continue;
                 }
                 if (permit.waits()) {
                     gateWait = permit.delay().compareTo(gateWait) > 0 ? permit.delay() : gateWait;
                 } else {
+                    granted.add(gate);
                     limit = Math.min(limit, permit.maxTasks());
                 }
             }
             if (!gateWait.isZero()) {
                 // Held back by a gate: counts as having found nothing, so an idle node looks idle.
+                // The gates that did grant a permit get it back, unused.
+                settle(granted, 0);
                 release();
                 signalsAtEmptyClaim = signalsBefore;
                 lastEmptyClaim = claim;
@@ -150,21 +156,16 @@ final class TopicWorker<T> {
             boolean nodeHeld = true;
             try {
                 TaskStore.ClaimRequest request = request(limit);
-                TaskStore.Claim claimed;
+                TaskStore.Claim claimed = null;
                 try {
                     claimed = core.transact(transaction -> core.store().claim(transaction, request));
                 } finally {
                     core.inFlight().release();
                     nodeHeld = false;
+                    // A failed claim got nothing, so the gates get their permits back.
+                    settle(granted, claimed == null ? 0 : claimed.tasks().size());
                 }
                 failures = 0;
-                for (ClaimGate gate : core.gates()) {
-                    try {
-                        gate.claimed(topic.ref(), claimed.tasks().size());
-                    } catch (RuntimeException e) {
-                        LOGGER.warn("A claim gate failed for {}", topic.ref(), e);
-                    }
-                }
                 if (!claimed.tasks().isEmpty()) {
                     claimed.tasks().forEach(task -> core.held().put(task.id(), task.attempt()));
                     BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());
@@ -244,6 +245,17 @@ final class TopicWorker<T> {
                     }
                     permits.release();
                 }
+            }
+        }
+    }
+
+    /** Tells each gate that granted this claim's permit how many tasks it got. */
+    private void settle(List<ClaimGate> granted, int tasks) {
+        for (ClaimGate gate : granted) {
+            try {
+                gate.claimed(topic.ref(), tasks);
+            } catch (RuntimeException e) {
+                LOGGER.warn("A claim gate failed for {}", topic.ref(), e);
             }
         }
     }
