@@ -144,7 +144,8 @@ class TaskEndpointTest {
         Response dead = get("/tasks/topics/work/dead-letters?limit=10");
         assertThat(dead.status()).isEqualTo(200);
         assertThat(dead.body().path("deadLetters").get(0).path("id").asLong()).isEqualTo(id);
-        assertThat(dead.body().path("deadLetters").get(0).path("error").asString()).contains("not yet");
+        assertThat(dead.body().path("deadLetters").get(0).path("error").path("message").asString())
+            .as("the error is an object, not JSON in a string").isEqualTo("not yet");
         assertThat(get("/tasks/topics/work/failing").status()).as("no longer a route").isEqualTo(404);
 
         assertThat(send("POST", "/tasks/topics/work/discard", "{}").status()).as("all of them only when asked for").isEqualTo(400);
@@ -155,6 +156,22 @@ class TaskEndpointTest {
         assertThat(revived.body().path("revived").asInt()).isEqualTo(1);
         EngineFixture.await("the revived task succeeded", Duration.ofSeconds(5),
             () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + id).body().path("state").asString())));
+    }
+
+    @Test
+    void suspended_tasks_are_released() throws Exception {
+        long held = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("release-a", "held").asSuspended()).id();
+        long other = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("release-b", "other").asSuspended()).id();
+
+        assertThat(send("POST", "/tasks/topics/work/release", "{}").status()).as("all of them only when asked for").isEqualTo(400);
+        assertThat(send("POST", "/tasks/topics/work/release", "{\"ids\": \"x\"}").status()).isEqualTo(400);
+        Response released = send("POST", "/tasks/topics/work/release", "{\"identifier\": \"release-a\"}");
+        assertThat(released.status()).isEqualTo(200);
+        assertThat(released.body().path("released").asInt()).isEqualTo(1);
+        EngineFixture.await("the released task succeeded", Duration.ofSeconds(5),
+            () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + held).body().path("state").asString())));
+        assertThat(get("/tasks/tasks/" + other).body().path("state").asString()).isEqualTo("suspended");
+        assertThat(send("POST", "/tasks/topics/work/release", "{\"ids\": \"" + other + "\"}").body().path("released").asInt()).isEqualTo(1);
     }
 
     @Test

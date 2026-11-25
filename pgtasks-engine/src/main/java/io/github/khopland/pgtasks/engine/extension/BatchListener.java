@@ -1,8 +1,9 @@
-package io.github.khopland.pgtasks.engine;
+    package io.github.khopland.pgtasks.engine.extension;
 
 import java.util.List;
 
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.TaskObserver;
 
 /**
  * Told what became of each task of a batch on this node, once its completion committed (or its

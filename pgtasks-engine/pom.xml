@@ -14,6 +14,7 @@
 
   <properties>
     <module.name>io.github.khopland.pgtasks.engine</module.name>
+    <fray.version>0.9.2</fray.version>
   </properties>
 
   <dependencies>
@@ -61,6 +62,13 @@
       <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- The *FrayTest classes; they compile always and run with -Pfray. -->
+    <dependency>
+      <groupId>org.pastalab.fray</groupId>
+      <artifactId>fray-junit</artifactId>
+      <version>${fray.version}</version>
+      <scope>test</scope>
+    </dependency>
     <!-- slf4j-simple's MDC does nothing; the MDC header tests read it back. -->
     <dependency>
       <groupId>ch.qos.logback</groupId>
@@ -71,6 +79,23 @@
   </dependencies>
   <build>
     <plugins>
+      <!-- ThreadDump, used by the tests, reads the JDK's management MXBeans. -->
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs combine.children="append">
+                <arg>--add-modules</arg>
+                <arg>jdk.management</arg>
+                <arg>--add-reads</arg>
+                <arg>${module.name}=java.management,jdk.management</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- The vertical slice (io.github.khopland.pgtasks.slice) is reused by the Spring Boot starter's tests. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -83,6 +108,51 @@
           </execution>
         </executions>
       </plugin>
+      <!-- The *FrayTest classes explore thread interleavings on Fray's instrumented JDK and run only
+           with -Pfray: mvn verify -pl pgtasks-engine -am -Pfray -Dtest='*FrayTest' -Dsurefire.failIfNoSpecifiedTests=false
+           A failure leaves a replayable schedule in target/fray/fray-report. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*FrayTest.java</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>fray</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.pastalab.fray.maven</groupId>
+            <artifactId>fray-plugins-maven</artifactId>
+            <version>${fray.version}</version>
+            <executions>
+              <execution>
+                <id>prepare-fray</id>
+                <goals>
+                  <goal>prepare-fray</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration combine.self="override">
+              <trimStackTrace>false</trimStackTrace>
+              <includes>
+                <include>**/*FrayTest.java</include>
+              </includes>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

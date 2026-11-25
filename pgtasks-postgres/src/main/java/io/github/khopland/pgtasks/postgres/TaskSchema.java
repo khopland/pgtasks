@@ -16,6 +16,8 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
+import io.github.khopland.pgtasks.SchemaMode;
+
 /**
  * The pgtasks schema, named {@value #DEFAULT_SCHEMA} unless configured otherwise (see
  * {@link #validName}). It ships as plain SQL files under {@value #LOCATION}, so the library
@@ -259,7 +261,7 @@ public final class TaskSchema {
         List<SchemaScript> scripts = new ArrayList<>();
         for (String name : FILES) {
             String path = LOCATION + "/" + name;
-            try (InputStream input = TaskSchema.class.getClassLoader().getResourceAsStream(path)) {
+            try (InputStream input = TaskSchema.class.getResourceAsStream("/" + path)) {
                 if (input == null) {
                     throw new IllegalStateException("Missing schema file on the classpath: " + path);
                 }

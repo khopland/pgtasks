@@ -205,6 +205,25 @@ class BuilderTest {
     }
 
     @Test
+    void the_builders_heartbeat_overrides_the_globals_and_keeps_what_it_leaves_out() {
+        TaskGlobals globals = options -> options.heartbeat(Duration.ofSeconds(5), Duration.ofMinutes(1));
+        EngineSettings both = TaskEngine.builder().store(new InMemoryTaskStore()).globals(globals)
+            .heartbeat(Duration.ofSeconds(2), Duration.ofSeconds(30)).build().settings();
+        assertThat(both.heartbeat()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(both.expiry()).isEqualTo(Duration.ofSeconds(30));
+
+        EngineSettings expiryOnly = TaskEngine.builder().store(new InMemoryTaskStore()).globals(globals)
+            .heartbeat(null, Duration.ofMinutes(2)).build().settings();
+        assertThat(expiryOnly.heartbeat()).as("the code's").isEqualTo(Duration.ofSeconds(5));
+        assertThat(expiryOnly.expiry()).isEqualTo(Duration.ofMinutes(2));
+
+        assertThat(TaskEngine.builder().store(new InMemoryTaskStore()).heartbeat(null, null).build().settings().heartbeat())
+            .isEqualTo(Duration.ofSeconds(15));
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore()).heartbeat(Duration.ofMinutes(20), null).build())
+            .hasMessageContaining("expiry must be longer than the heartbeat interval");
+    }
+
+    @Test
     void the_in_memory_store_is_never_chosen_automatically() {
         assertThatThrownBy(() -> TaskEngine.builder().configure(notifyTasks()).build())
             .isInstanceOf(IllegalStateException.class)

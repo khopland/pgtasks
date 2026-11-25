@@ -50,7 +50,8 @@ headers, and the MDC keys named in `pgtasks.mdc-headers`, such as a correlation 
 The reference is one indexed value to look a task up by; headers are context that travels with
 it.
 
-`withDelay(duration)` waits that long from the push; `withRunAt(instant)` waits until a moment,
+`withDelay(duration)` waits that long from the push itself, even late in a long transaction (on
+Postgres, from the push statement's time, not the transaction's start); `withRunAt(instant)` waits until a moment,
 such as the start of the next business day. The run time is compared with the store's clock (the
 database's, on Postgres), so nodes with skewed clocks agree on it, and a time that has already
 come, the past included, makes the task ready at once. Delay, run time and suspension exclude each
@@ -107,6 +108,13 @@ order, the later task may start first; the earlier one then waits until it is do
 beside it. Claims under a `SINGULAR_…` ordering take turns per topic until they commit, so a claim
 always sees what the previous one took; `FIFO` claims don't wait for each other.
 
+"Never at once" holds as long as each node's heartbeat gets through. A node silent for the expiry
+(10 minutes by default) counts as dead, and other nodes take its tasks over. A node whose heartbeat
+is late while it otherwise runs (no free connection in the pool, a long GC or VM pause, the
+database out of its reach) fences itself shortly before that: it stops claiming and cancels its
+running handlers, whose tasks go back without counting an attempt. A handler that ignores
+cancellation can still run beside the task's next run elsewhere.
+
 ## Handlers and decisions
 
 The common case is a `TaskHandler`: it succeeds when it returns and fails when it throws.
@@ -139,7 +147,7 @@ deciders that wait on a remote call per task.
 | `success()`, `success(output)` | Done. Staged downstream work is committed. | — |
 | `filtered(reason)` | Done, not needed. Nothing downstream. | — |
 | `later(delay)` | Runs again after the delay. | no |
-| `suspended()` | Waits, out of the way of later tasks under most orderings. Nothing releases it in this version. | no |
+| `suspended()` | Waits, out of the way of later tasks under most orderings, until it is released: by an operator (`admin().release(...)`, the endpoint or the dashboard), or by pushing it again with `REPLACE`. | no |
 | `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
 An exception from a decider fails only that task. One from the handler fails the batch. A task
@@ -164,7 +172,9 @@ Retry.standard()
     .deadLetterAt(ValidationException.class)                           // the task's fault: dead letter at once
 ```
 
-The time budget counts from the task's first failure. Backoffs have 20 % jitter. A payload the
+The time budget, and the growing backoff, count from the first of the task's failures in a row. A
+run that ends in `later(...)` or `suspended()` didn't fail, so the next failure starts afresh.
+Backoffs have 20 % jitter. A payload the
 codec can't decode is always dead-lettered at once, since retrying won't change it.
 
 A dead letter stays in the queue, holding back later tasks under `…_ON_FAILURE` and

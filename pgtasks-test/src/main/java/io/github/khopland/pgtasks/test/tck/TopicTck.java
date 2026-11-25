@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** TCK: the registered topics and pausing them. */
+/** TCK: the registered topics, and deleting one. */
 public abstract class TopicTck extends StoreTck {
 
     private static List<TaskStore.TopicInfo> topics(StoreFixture fixture, String... names) throws SQLException {

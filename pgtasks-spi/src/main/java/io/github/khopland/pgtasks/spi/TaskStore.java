@@ -37,8 +37,11 @@ public interface TaskStore {
     }
 
     /**
-     * The clock the store stamps tasks with. Postgres uses database time; the in-memory store
-     * takes an injectable clock, which the engine then uses too.
+     * The clock the store stamps tasks with, as this node reads it. The engine compares it with
+     * times the store stamped, such as when a task first failed or finished, and keeps its
+     * housekeeping lease by it, so a store on another machine must give its own time here, not
+     * this node's. Postgres reads the database's time at each heartbeat and moves it on with the
+     * JVM's monotonic clock in between; the in-memory store takes an injectable clock.
      */
     default InstantSource clock() {
         return InstantSource.system();
@@ -139,6 +142,14 @@ public interface TaskStore {
      * recording failures after a completion transaction rolled back. Returns how many matched.
      */
     int release(StoreTransaction transaction, int topicId, int nodeId, List<Completion> completions) throws SQLException;
+
+    /**
+     * Leaves an error on tasks this node still holds active, and changes nothing else, so
+     * operators can see why a task stays active: its handler ignored cancellation and still runs.
+     * Only claims that still match, by node and attempt as in {@link #release}. Returns how many
+     * it marked.
+     */
+    int noteError(StoreTransaction transaction, int topicId, int nodeId, List<ActiveClaim> claims, String error) throws SQLException;
 
     /**
      * Makes up to {@code limit} due delayed tasks and retries ready, earliest first. Returns how
@@ -272,6 +283,13 @@ public interface TaskStore {
      */
     int deleteDeadNodes(StoreTransaction transaction, Duration deadFor) throws SQLException;
 
+    /**
+     * Forgets a node that stopped on purpose: deletes its row, and with it its leases, so
+     * operators no longer see it. A node that still holds claims stays, until it counts as dead
+     * and its tasks are requeued. Returns whether the row was deleted.
+     */
+    boolean deregisterNode(StoreTransaction transaction, int nodeId) throws SQLException;
+
     /** Every registered node, by id, with the leases whose term hasn't run out. */
     List<NodeView> nodes(StoreTransaction transaction) throws SQLException;
 
@@ -318,6 +336,16 @@ public interface TaskStore {
 
     /** A topic's unfinished tasks that match the query, in any state, lowest id first. */
     List<TaskView> tasks(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
+     * Makes the matching suspended tasks ready, the lowest ids first, keeping their attempts and
+     * failures. Only suspended tasks are taken, whatever states the query names. Like
+     * {@link #revive}, it skips rows another transaction holds locked, and wakes the topic's
+     * workers once it commits.
+     *
+     * @return the released ids
+     */
+    List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
@@ -435,7 +463,7 @@ public interface TaskStore {
     enum WaitState {
         /** Delayed; runs at a time, doesn't hold back later tasks under SINGULAR ordering. */
         SCHEDULED,
-        /** Backing off after a failure or throttling; holds its place in line. */
+        /** Backing off after a failure, counted or not; holds its place in line. */
         RETRYING,
         /** Waits until released. */
         SUSPENDED,

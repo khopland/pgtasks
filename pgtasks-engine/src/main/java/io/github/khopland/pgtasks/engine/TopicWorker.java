@@ -1,6 +1,9 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -10,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.github.khopland.pgtasks.Ordering;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -45,6 +49,8 @@ final class TopicWorker<T> {
     private final AtomicLong claims = new AtomicLong();
     private final AtomicLong claimedTasks = new AtomicLong();
     private final AtomicInteger runningBatches = new AtomicInteger();
+    /** The batches running now, so a fence can cancel them. */
+    private final Set<BatchRun<T>> inProgress = ConcurrentHashMap.newKeySet();
     private volatile long lastEmptyClaim = -1;
     /** The wake-ups there had been when the last empty claim began. */
     private volatile long signalsAtEmptyClaim;
@@ -54,7 +60,7 @@ final class TopicWorker<T> {
         this.topicId = topicId;
         this.core = core;
         this.permits = new Semaphore(topic.settings().concurrency());
-        this.batches = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("pgtasks-" + topic.ref().name() + "-", 0).factory());
+        this.batches = Executors.newThreadPerTaskExecutor(core.threads().get().name("pgtasks-" + topic.ref().name() + "-", 0).factory());
     }
 
     Topic<T> topic() {
@@ -71,7 +77,7 @@ final class TopicWorker<T> {
 
     void start() {
         running = true;
-        poller = Thread.ofVirtual().name("pgtasks-poll-" + topic.ref().name()).start(this::loop);
+        poller = core.threads().get().name("pgtasks-poll-" + topic.ref().name()).start(this::loop);
     }
 
     void wake() {
@@ -105,7 +111,14 @@ final class TopicWorker<T> {
             long claim = claims.incrementAndGet();
             int limit = topic.settings().batchSize();
             Duration gateWait = Duration.ZERO;
-            for (ClaimGate gate : core.gates()) {
+            boolean fenced = core.fenced().getAsBoolean();
+            if (fenced) {
+                // The heartbeat is too late: claims could be taken over by another node while they run.
+                // Counts as having found nothing; lifting the fence wakes this worker. The gates aren't
+                // asked, so none hands out a permit for a claim that isn't made.
+                gateWait = topic.settings().pollInterval();
+            }
+            for (ClaimGate gate : fenced ? List.<ClaimGate>of() : core.gates()) {
                 ClaimGate.Permit permit;
                 try {
                     permit = gate.permit(topic.ref());
@@ -158,12 +171,14 @@ final class TopicWorker<T> {
                     claimedTasks.addAndGet(claimed.tasks().size());
                     runningBatches.incrementAndGet();
                     try {
+                        inProgress.add(run);
                         batches.execute(() -> {
                             try {
                                 run.run();
                             } catch (RuntimeException | Error e) {
                                 LOGGER.error("A batch in {} failed unexpectedly", topic.ref(), e);
                             } finally {
+                                inProgress.remove(run);
                                 runningBatches.decrementAndGet();
                                 permits.release();
                                 // Finishing a task can unblock later tasks for its identifier. No
@@ -174,6 +189,7 @@ final class TopicWorker<T> {
                             }
                         });
                     } catch (RejectedExecutionException e) {
+                        inProgress.remove(run);
                         // Stopping: hand the tasks back instead of leaving them until expiry. A stop
                         // past its deadline interrupts this thread, and a pool refuses an interrupted
                         // thread a connection, so the interrupt waits until they are back.
@@ -232,12 +248,22 @@ final class TopicWorker<T> {
         }
     }
 
+    /** Cancels the handlers of the batches running now: the node's heartbeat is too late. See {@link HeartbeatFence}. */
+    void fence() {
+        inProgress.forEach(BatchRun::fence);
+    }
+
     long claims() {
         return claims.get();
     }
 
     long claimedTasks() {
         return claimedTasks.get();
+    }
+
+    /** The topic permits not taken by a claim or a running batch. */
+    int freePermits() {
+        return permits.availablePermits();
     }
 
     /**

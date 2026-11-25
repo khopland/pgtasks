@@ -47,7 +47,7 @@ class OrderFlowTest {
     @RegisterExtension
     static final TaskEngineExtension ENGINE = TaskEngineExtension.with(builder -> builder
         .codecs(new JacksonPayloadCodecs(JsonMapper.builder().build()))
-        .globals(new PgtasksConfig().globals(Duration.ofSeconds(5), Duration.ofMinutes(2)))
+        .heartbeat(Duration.ofSeconds(5), Duration.ofMinutes(2))   // as application.yml
         .configure("payment", new PaymentTasks().payments(PARTNERS, WRITES))
         .configure("stock", new StockTasks().stock(WRITES))
         .configure("shipping", new ShippingTasks().shipping(PARTNERS, WRITES, WRITES))
@@ -116,7 +116,7 @@ class OrderFlowTest {
         tester.drain(NOTIFY);
 
         assertThat(PARTNERS.calls("/shipments")).isZero();
-        assertThat(tester.counts(SHIP).suspended()).as("the replaced ship task").isZero();
+        assertThat(tester.counts(SHIP).total()).as("the replaced ship task and the cancel both finished").isZero();
         assertThat(WRITES.statements("o-2")).anyMatch(sql -> sql.contains("'release'")).anyMatch(sql -> sql.contains("'CANCELLED'"));
         assertThat(tester.pushedPayloads(NOTIFY)).extracting(Notice::kind).containsExactly("declined");
     }

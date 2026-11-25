@@ -9,6 +9,10 @@ import io.github.khopland.pgtasks.spi.TaskStore;
 /** A capability for the in-memory store only, registered for the engine's tests. */
 public final class TestCapabilities implements StoreCapability {
 
+    /** Created by the engine's test service loader. */
+    public TestCapabilities() {
+    }
+
     /** What an extension asks for: the store's name, to show which store it got. */
     public interface StoreName {
         String name();

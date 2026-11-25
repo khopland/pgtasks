@@ -136,4 +136,4 @@ engine.close();                                // drains running batches, then s
 - Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [wake-ups, throughput ceiling and latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 
 pgtasks started as a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)
-(1.x), and keeps its Apache 2.0 license. 1.x lives on in this repository's `main` branch.
+(1.x), and keeps its Apache 2.0 license. 1.x stays in that repository.

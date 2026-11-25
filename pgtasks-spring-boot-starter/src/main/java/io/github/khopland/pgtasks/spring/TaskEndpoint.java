@@ -11,8 +11,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
@@ -47,6 +45,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  *                                                        &amp;createdFrom=&amp;createdUntil=   unfinished tasks, lowest id first
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
+ * POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}; or {"identifier": "order-7"}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
@@ -155,12 +154,12 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: revive, discard, purge. */
+    /** Topic actions: revive, discard, release, purge. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
                                            @Nullable String error, @Nullable String failedFrom, @Nullable String failedUntil,
-                                           @Nullable String all) throws Exception {
+                                           @Nullable String all, @Nullable String identifier) throws Exception {
         if (!kind.equals("topics")) {
             return notFound();
         }
@@ -187,6 +186,14 @@ public class TaskEndpoint {
                 }
                 body.put(action.equals("revive") ? "revived" : "discarded",
                     action.equals("revive") ? engine.admin().revive(name, query) : engine.admin().discard(name, query));
+            }
+            case "release" -> {
+                String only = blankToNull(identifier);
+                if (taskIds == null && only == null && !"true".equalsIgnoreCase(all)) {
+                    return badRequest("Name the suspended tasks: \"ids\", or \"identifier\", or \"all\": \"true\" for every one");
+                }
+                TaskQuery query = (taskIds == null ? TaskQuery.ALL : TaskQuery.ids(taskIds)).withIdentifier(only);
+                body.put("released", engine.admin().release(name, query));
             }
             case "purge" -> {
                 if (outcome == null || before == null) {
@@ -342,7 +349,7 @@ public class TaskEndpoint {
         task.put("payloadType", view.payloadType());
         task.put("payload", shown || view.payload() == null ? view.payload() : HIDDEN);
         task.put("output", shown || view.output() == null ? view.output() : HIDDEN);
-        task.put("error", shown || view.error() == null ? view.error() : errorType(view.error()));
+        task.put("error", view.error() == null ? null : shown ? StoredError.parse(view.error()) : StoredError.typeOnly(view.error(), HIDDEN));
         task.put("failures", view.failures());
         task.put("firstFailedAt", text(view.firstFailedAt()));
         task.put("createdAt", text(view.createdAt()));
@@ -351,12 +358,6 @@ public class TaskEndpoint {
         view.headers().forEach((name, value) -> headers.put(name, shown ? value : HIDDEN));
         task.put("headers", headers);
         return task;
-    }
-
-    /** A stored error without its message and stack: {"type": "..."}, or hidden if it has no type. */
-    private static String errorType(String error) {
-        Matcher type = Pattern.compile("\"type\"\\s*:\\s*\"([^\"]*)\"").matcher(error);
-        return type.find() ? "{\"type\":\"" + type.group(1) + "\",\"message\":\"" + HIDDEN + "\"}" : HIDDEN;
     }
 
     private static @Nullable String text(@Nullable Instant instant) {

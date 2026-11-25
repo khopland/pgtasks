@@ -1,5 +1,7 @@
 package io.github.khopland.pgtasks.spring;
 
+import java.io.IOException;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -8,13 +10,13 @@ import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.engine.PayloadCodecs;
-import io.github.khopland.pgtasks.engine.Extension;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskEngineBuilder;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.engine.TaskTester;
+import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -67,7 +69,8 @@ public class TaskAutoConfiguration {
                                  ObjectProvider<BuildProperties> build,
                                  ObjectProvider<PayloadCodecs> codecs) {
         TaskEngineBuilder builder = TaskEngine.builder()
-            .node(properties.node() != null ? properties.node() : environment.getProperty("spring.application.name", "task"))
+            .node(properties.node() != null ? properties.node() : defaultNode(environment))
+            .heartbeat(properties.heartbeat(), properties.nodeExpiry())
             .notifications(properties.notifications())
             .overrides(properties.overrides());
         if (properties.store() == TaskProperties.Store.MEMORY) {
@@ -99,6 +102,24 @@ public class TaskAutoConfiguration {
         builder.version(properties.version() != null ? properties.version()
             : build.getIfAvailable() != null ? build.getIfAvailable().getVersion() : null);
         return builder.build();
+    }
+
+    /**
+     * {@code <application>@<host>}: every instance of a deployment has the same application name,
+     * so the host tells them apart on the dashboard. {@code HOSTNAME} is the pod's name in
+     * Kubernetes; elsewhere, the machine's name.
+     */
+    static String defaultNode(Environment environment) {
+        String application = environment.getProperty("spring.application.name", "pgtasks");
+        String host = System.getenv("HOSTNAME");
+        if (host == null || host.isBlank()) {
+            try {
+                host = InetAddress.getLocalHost().getHostName();
+            } catch (IOException | RuntimeException e) {
+                host = "unknown-host";
+            }
+        }
+        return application + "@" + host;
     }
 
     /**

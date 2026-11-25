@@ -20,7 +20,7 @@ class NotifyTasksTest {
     void sends_and_archives(Tasks tasks, TaskTester tester, LocalTransactions transactions) throws Exception {
         transactions.inTransaction(() -> tasks.push(NOTIFY, "anna", "hello"));
 
-        tester.drain(NOTIFY);                       // runs it, jumping the clock past retries and delays
+        tester.drain(NOTIFY);                       // runs until NOTIFY is done, jumping the clock past retries and delays
 
         tester.assertPushed(ARCHIVE, 1);
         assertThat(tester.pushedPayloads(ARCHIVE)).containsExactly("sent hello");
@@ -35,8 +35,10 @@ globals or codecs.
 ## TaskTester
 
 - `awaitIdle()`: waits until nothing is left to do now, without moving the clock.
-- `drain(topic)`: runs a topic until nothing in it can run, jumping the clock past delays,
-  and backoffs. Suspended tasks and dead letters stay.
+- `drain(topic)`: runs until nothing in the topic can run, jumping the clock past delays and
+  backoffs. Suspended tasks and dead letters stay. Every topic of the engine runs meanwhile, not
+  only this one, and the clock jumps for all of them: to check what waits on a step, push that
+  step's input in the test rather than draining the topic before it.
 - `advance(duration)`: moves the clock and runs housekeeping once, as if that much time passed.
 - `pushed(topic)`, `pushedPayloads(topic)`, `pushedIdentifiers(topic)`, `assertPushed(topic, n)`,
   `assertNothingPushed(topic)`: what was pushed and committed.

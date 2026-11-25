@@ -103,6 +103,16 @@ class BulkActionLocksTest {
     }
 
     @Test
+    void a_release_takes_a_suspended_task_that_was_locked_while_its_batch_ran() throws Exception {
+        List<Long> ids = push(3);
+        database.execute("UPDATE pgtasks.queue SET state = 'suspended'");
+        lock(ids.getFirst());
+
+        assertThat(engine.admin().release(WORK.name(), TaskQuery.ALL)).isEqualTo(3);
+        assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'ready'")).isEqualTo(3);
+    }
+
+    @Test
     void a_task_still_locked_is_left_and_not_counted() throws Exception {
         List<Long> ids = push(3);
         database.execute("UPDATE pgtasks.queue SET state = 'failed', failures = 1, first_failed_at = now()");

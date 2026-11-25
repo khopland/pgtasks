@@ -51,6 +51,8 @@ Requirements: Java 25, Maven, Docker (colima works).
 mvn package -Dmaven.repo.local=$HOME/.m2-pgtasks-app-trial -Dmaven.repo.local.tail=$HOME/.m2/repository
 
 # 3. Postgres, the partner stub, three instances (8081-8083)
+#    A database left from a run before pgtasks' schema was squashed fails validation at startup:
+#    start from a fresh one with `docker compose down -v` first.
 docker compose up -d --wait
 java stub/Stub.java > run/stub.log 2>&1 &
 for n in 1 2 3; do scripts/cluster.sh start $n; done
@@ -66,7 +68,7 @@ for n in 1 2 3; do scripts/cluster.sh start $n; done
 
 ```bash
 java scripts/LoadGen.java --rate 40 --minutes 32 --burst-every 120 --burst 600 > run/load.log &
-scripts/chaos.sh &            # kill -9, Postgres restart, partner outage, pause, rolling restart; see the script
+scripts/chaos.sh &            # kill -9, Postgres restart, partner outage, rolling restart; see the script
 # when the load is done and the queues have drained:
 scripts/verify.sh
 ```
@@ -75,7 +77,7 @@ The load generator places 40 orders a second, with a burst of 300 a second for 2
 minutes, spread round robin over the instances (skipping one that refuses connections), and
 resends 2 % of requests with an earlier request id. `verify.sh` checks every order's final state,
 stock bookkeeping, notifications, the stub's side effects per order and idempotency key, what is
-left in the queues, and that the recurring task ran once a minute.
+left in the queues, and that the reconcile task ran about once a minute.
 
 ### Tests
 

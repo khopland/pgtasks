@@ -6,7 +6,7 @@ import java.util.Locale;
 public enum QueueState {
     /** Delayed: runs at a time. */
     SCHEDULED,
-    /** Backing off after a failure or throttling. */
+    /** Backing off after a failure, counted or not. */
     RETRYING,
     /** Waits for a worker. */
     READY,

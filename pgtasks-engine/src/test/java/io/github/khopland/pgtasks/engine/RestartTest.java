@@ -24,7 +24,7 @@ class RestartTest {
     void an_engine_started_again_after_a_stop_processes_and_hears_notifications() throws Exception {
         InMemoryTaskStore store = new InMemoryTaskStore();
         List<String> handled = new CopyOnWriteArrayList<>();
-        // An hour between heartbeats: only a notification can carry the pause below.
+        // An hour between heartbeats: only a notification can carry the deletion below.
         TaskGlobals slowHeartbeat = globals -> globals.heartbeat(Duration.ofHours(1), Duration.ofHours(2));
         TaskEngine engine = TaskEngine.builder().store(store).globals(slowHeartbeat)
             .configure("work", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {

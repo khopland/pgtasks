@@ -97,7 +97,7 @@ class CompletionPlanTest {
         finish(fixture, topic, node, StoreFixture.succeeded());
         finish(fixture, topic, node, StoreFixture.filtered("not for us"));
         finish(fixture, topic, node, StoreFixture.retrying(Duration.ofHours(1)));
-        finish(fixture, topic, node, StoreFixture.throttled(Duration.ofHours(1)));
+        finish(fixture, topic, node, StoreFixture.uncountedRetry(Duration.ofHours(1)));
         finish(fixture, topic, node, StoreFixture.later(Duration.ofHours(1)));
         finish(fixture, topic, node, StoreFixture.suspension());
         finish(fixture, topic, node, StoreFixture.deadLetter());

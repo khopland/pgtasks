@@ -17,6 +17,7 @@ import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
 import io.github.khopland.pgtasks.Outcome;
+import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -47,6 +48,13 @@ final class Housekeeper {
      */
     static final TaskStore.Expiries EXPIRIES = new TaskStore.Expiries(3, Duration.ofSeconds(30));
 
+    /** What the node does when its heartbeat is so late that it fences itself, and when that ends; see {@link HeartbeatFence}. */
+    interface Fencing {
+        void fenced();
+
+        void lifted();
+    }
+
     /** Kept for the engine's own callbacks. */
     @FunctionalInterface
     interface Job extends HousekeepingJob.Action {
@@ -59,6 +67,10 @@ final class Housekeeper {
     private final IntConsumer wake;
     private final Job sweepOrphans;
     private final Job reconcile;
+    private final HeartbeatFence fence;
+    private final Fencing fencing;
+    /** What the watchdog last saw; only its thread touches it. */
+    private boolean fenced;
     /** Jobs extensions added; each runs on a thread of its own. */
     private final List<HousekeepingJob> extensionJobs;
     private final Object leadership = new Object();
@@ -66,10 +78,11 @@ final class Housekeeper {
     private @Nullable Instant leaseEnds;
     private volatile @Nullable Instant lastHeartbeat;
     /**
-     * Three threads, so a slow job can't hold up the others: the heartbeat and lease alone on
+     * Four threads, so a slow job can't hold up the others: the heartbeat and lease alone on
      * one (a node that misses them loses the lease, and its health turns DOWN), the regular jobs
-     * on another, and retention, which can run long after downtime, on a third. Each extension
-     * job gets one more, so an extension can't hold up the engine's own.
+     * on another, retention, which can run long after downtime, on a third, and the fence's
+     * watchdog, which never waits for the store, on a fourth. Each extension job gets one more, so
+     * an extension can't hold up the engine's own.
      */
     private final List<ScheduledExecutorService> executors = new ArrayList<>();
     /** How long one retention run may delete before it leaves the rest to the next run. */
@@ -85,9 +98,13 @@ final class Housekeeper {
      * @param sweepOrphans releases tasks this node holds but isn't processing
      * @param reconcile    brings this node in line with the store, in case a notification was
      *                     lost: the topics it runs
+     * @param fence        tells when the heartbeat is too late; its clock started when the node registered
+     * @param fencing      stops this node's work while it is fenced, and resumes it after
      */
     Housekeeper(TaskStore store, EngineSettings settings, IntSupplier nodeId, Job rejoin, IntConsumer wake, Job sweepOrphans, Job reconcile,
-                Duration purgeBudget, List<HousekeepingJob> extensionJobs) {
+                Duration purgeBudget, List<HousekeepingJob> extensionJobs, HeartbeatFence fence, Fencing fencing) {
+        this.fence = fence;
+        this.fencing = fencing;
         this.extensionJobs = List.copyOf(extensionJobs);
         this.purgeBudget = purgeBudget;
         this.store = store;
@@ -106,6 +123,8 @@ final class Housekeeper {
         ScheduledExecutorService jobs = executor("pgtasks-housekeeping-");
         ScheduledExecutorService slow = executor("pgtasks-retention-");
         schedule(beats, HousekeepingJob.everyNode("heartbeat", settings.heartbeat(), this::heartbeat));
+        // Its own thread, which never waits for the store: it must act exactly when the heartbeat can't.
+        schedule(executor("pgtasks-fence-"), HousekeepingJob.everyNode("fence", fence.checkInterval(), this::watch));
         for (HousekeepingJob job : coreJobs()) {
             schedule(job.name().equals(RETENTION) ? slow : jobs, job);
         }
@@ -212,6 +231,7 @@ final class Housekeeper {
     }
 
     private void beat() throws Exception {
+        long began = fence.now();
         Instant beat = store.clock().instant();
         int node = nodeId.getAsInt();
         if (!EngineCore.transact(store, transaction -> store.heartbeat(transaction, node))) {
@@ -220,6 +240,7 @@ final class Housekeeper {
             }
             rejoin.run();
         }
+        fence.beat(began);
         lastHeartbeat = beat;
         Duration term = settings.leaseTerm();
         // Counted from before the call, so this node never believes in a lease longer than the store does.
@@ -233,6 +254,23 @@ final class Housekeeper {
         }
         if (held != was) {
             LOGGER.info(held ? "This node now runs the cluster-wide housekeeping" : "Another node now runs the cluster-wide housekeeping");
+        }
+    }
+
+    /** Fences this node when its heartbeat is too late, and lifts the fence once one gets through. */
+    private void watch() {
+        boolean now = fence.fenced();
+        if (now == fenced) {
+            return;
+        }
+        fenced = now;
+        if (now) {
+            LOGGER.error("No heartbeat got through for {}; other nodes take over this node's tasks once it has been silent for {}. "
+                + "It stops claiming and cancels its running handlers until a heartbeat gets through", fence.silence(), settings.expiry());
+            fencing.fenced();
+        } else {
+            LOGGER.warn("A heartbeat got through again; this node claims again");
+            fencing.lifted();
         }
     }
 

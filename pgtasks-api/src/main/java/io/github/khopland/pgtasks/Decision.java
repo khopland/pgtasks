@@ -32,7 +32,12 @@ public sealed interface Decision {
         return new Filtered(reason);
     }
 
-    /** A prerequisite is missing; the task waits until it is released. Never uses up an attempt. */
+    /**
+     * A prerequisite is missing; the task waits until it is released. An operator releases it
+     * (the engine's {@code admin().release(...)}, the Actuator endpoint or the dashboard), or code
+     * pushes it again with {@link Insertion#REPLACE}. Nothing releases it on its own, so use
+     * {@link #later(Duration)} to wait for a time. Never uses up an attempt.
+     */
     static Decision suspended() {
         return Suspended.INSTANCE;
     }

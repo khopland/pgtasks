@@ -27,9 +27,12 @@ import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.PayloadCodec;
+import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Setting;
 import io.github.khopland.pgtasks.engine.EffectiveSettings.Source;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StoreProvider;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -75,6 +78,8 @@ public final class TaskEngineBuilder {
     private final List<Named<TaskConfigurer>> configurers = new ArrayList<>();
     private final List<Named<TaskGlobals>> globals = new ArrayList<>();
     private Map<String, String> overrides = Map.of();
+    private @Nullable Duration heartbeat;
+    private @Nullable Duration expiry;
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
     private final List<Extension> extensions = new ArrayList<>();
@@ -109,9 +114,9 @@ public final class TaskEngineBuilder {
         return this;
     }
 
-    /** migrate (the default), validate or none: how a Postgres store treats its schema at startup. */
-    public TaskEngineBuilder schemaMode(String mode) {
-        storeOptions.put("schema-mode", mode);
+    /** How the store from {@link #dataSource} treats its schema at startup: {@link SchemaMode#MIGRATE} by default. */
+    public TaskEngineBuilder schemaMode(SchemaMode mode) {
+        storeOptions.put("schema-mode", Objects.requireNonNull(mode, "mode").label());
         return this;
     }
 
@@ -156,6 +161,19 @@ public final class TaskEngineBuilder {
      */
     public TaskEngineBuilder overrides(Map<String, String> overrides) {
         this.overrides = Map.copyOf(overrides);
+        return this;
+    }
+
+    /**
+     * Per-environment heartbeat settings, over what a {@link TaskGlobals} sets: how often this node
+     * records that it is alive, and how long a node may stay silent before another requeues its
+     * tasks. A null keeps the code's value (15 s and 10 minutes by default). The expiry must be
+     * longer than the interval; keep it several intervals long, so a short pause isn't taken for
+     * a dead node.
+     */
+    public TaskEngineBuilder heartbeat(@Nullable Duration interval, @Nullable Duration expiry) {
+        this.heartbeat = interval;
+        this.expiry = expiry;
         return this;
     }
 
@@ -430,6 +448,15 @@ public final class TaskEngineBuilder {
         }
         Globals global = new Globals();
         globals.forEach(each -> each.value().configure(global));
+        if (heartbeat != null || expiry != null) {
+            Duration interval = heartbeat != null ? heartbeat : global.settings.heartbeat();
+            Duration silence = expiry != null ? expiry : global.settings.expiry();
+            try {
+                global.heartbeat(interval, silence);
+            } catch (IllegalArgumentException e) {
+                problems.add("Heartbeat " + interval + " with node expiry " + silence + ": " + e.getMessage());
+            }
+        }
 
         Map<String, TopicSpec<?>> topics = new LinkedHashMap<>();
         Map<Class<?>, PayloadCodec<?>> allCodecs = new HashMap<>(codecs);

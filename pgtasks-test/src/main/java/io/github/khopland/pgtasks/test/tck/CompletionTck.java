@@ -10,9 +10,11 @@ import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import static io.github.khopland.pgtasks.test.tck.StoreFixture.completion;
@@ -188,6 +190,84 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
+    void a_run_that_ends_in_later_ends_the_failures_in_a_row() throws Exception {
+        aRunThatDecidesToWaitEndsTheFailuresInARow(TaskStore.WaitState.SCHEDULED, Duration.ofHours(1));
+    }
+
+    @Test
+    void a_run_that_ends_suspended_ends_the_failures_in_a_row() throws Exception {
+        aRunThatDecidesToWaitEndsTheFailuresInARow(TaskStore.WaitState.SUSPENDED, null);
+    }
+
+    private void aRunThatDecidesToWaitEndsTheFailuresInARow(TaskStore.WaitState waiting, @Nullable Duration delay) throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        failAndRetry(fixture, id);
+        ClaimedTask claimed = fixture.claim(topic, node).getFirst();
+        assertThat(claimed.failures()).isEqualTo(1);
+
+        fixture.complete(topic, node, claimed, new TaskStore.Resolution.Waiting(waiting, delay, false, null));
+
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.failures()).as("the run didn't fail, so a time budget and the backoff start afresh").isZero();
+        assertThat(view.firstFailedAt()).isNull();
+        assertThat(view.error()).as("the last error stays for operators").contains("boom");
+    }
+
+    @Test
+    void an_error_noted_on_a_held_task_changes_nothing_else() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        ClaimedTask claimed = fixture.claim(topic, node).getFirst();
+        int marked;
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            marked = fixture.store().noteError(transaction, topic, node, List.of(
+                new TaskStore.ActiveClaim(topic, id, claimed.attempt(), claimed.claimedAt())), "{\"message\":\"still running\",\"type\":\"hung\"}");
+            transaction.commit();
+        }
+
+        assertThat(marked).isOne();
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.state()).isEqualTo("active");
+        assertThat(view.attempt()).isEqualTo(claimed.attempt());
+        assertThat(view.error()).contains("still running");
+        fixture.complete(topic, node, claimed, StoreFixture.succeeded());
+        assertThat(fixture.view(id).orElseThrow().state()).as("the claim stands").isEqualTo("succeeded");
+    }
+
+    @Test
+    void an_error_is_noted_only_on_claims_that_still_match() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        ClaimedTask claimed = fixture.claim(topic, node).getFirst();
+        int other = fixture.node("node-b");
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            assertThat(fixture.store().noteError(transaction, topic, other, List.of(
+                new TaskStore.ActiveClaim(topic, id, claimed.attempt(), claimed.claimedAt())), "{\"message\":\"other node\"}")).isZero();
+            assertThat(fixture.store().noteError(transaction, topic, node, List.of(
+                new TaskStore.ActiveClaim(topic, id, claimed.attempt() + 1, claimed.claimedAt())), "{\"message\":\"other attempt\"}")).isZero();
+            transaction.commit();
+        }
+
+        assertThat(fixture.view(id).orElseThrow().error()).isNull();
+    }
+
+    @Test
+    void a_release_keeps_the_failures_in_a_row() throws Exception {
+        StoreFixture fixture = setUp();
+        long id = fixture.push(topic, "a");
+        failAndRetry(fixture, id);
+        Instant firstFailed = fixture.view(id).orElseThrow().firstFailedAt();
+        ClaimedTask claimed = fixture.claim(topic, node).getFirst();
+
+        fixture.complete(topic, node, claimed, new TaskStore.Resolution.Waiting(TaskStore.WaitState.RETRYING, Duration.ZERO, false, null));
+
+        TaskView view = fixture.view(id).orElseThrow();
+        assertThat(view.failures()).as("handed back unrun, as on stop: not a run that ended").isEqualTo(1);
+        assertThat(view.firstFailedAt()).isEqualTo(firstFailed);
+    }
+
+    @Test
     void failing_tasks_are_counted() throws Exception {
         StoreFixture fixture = setUp();
         fixture.push(topic, Insertion.APPEND, task("a"), task("b"), task("c"), task("fine"));
@@ -245,11 +325,11 @@ public abstract class CompletionTck extends StoreTck {
     }
 
     @Test
-    void suspension_delay_and_throttling_give_the_attempt_back() throws SQLException {
+    void suspension_delay_and_an_uncounted_failure_give_the_attempt_back() throws SQLException {
         StoreFixture fixture = setUp();
         long suspended = fixture.push(topic, "s");
         long delayed = fixture.push(topic, "d");
-        long throttled = fixture.push(topic, "t");
+        long uncounted = fixture.push(topic, "t");
         List<ClaimedTask> claimed = fixture.claim(topic, node);
         assertThat(claimed).extracting(ClaimedTask::attempt).containsOnly(1);
 
@@ -257,13 +337,13 @@ public abstract class CompletionTck extends StoreTck {
             fixture.store().complete(transaction, topic, node, List.of(
                 completion(claimed.get(0), StoreFixture.suspension()),
                 completion(claimed.get(1), StoreFixture.later(Duration.ofSeconds(30))),
-                completion(claimed.get(2), StoreFixture.throttled(Duration.ofSeconds(30)))
+                completion(claimed.get(2), StoreFixture.uncountedRetry(Duration.ofSeconds(30)))
             ));
             return null;
         });
 
-        assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::state).containsExactly("suspended", "scheduled", "retrying");
-        assertThat(List.of(suspended, delayed, throttled)).extracting(fixture::attempt).containsOnly(0);
+        assertThat(List.of(suspended, delayed, uncounted)).extracting(fixture::state).containsExactly("suspended", "scheduled", "retrying");
+        assertThat(List.of(suspended, delayed, uncounted)).extracting(fixture::attempt).containsOnly(0);
     }
 
     @Test

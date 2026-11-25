@@ -24,6 +24,13 @@ import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.extension.BatchListener;
+import io.github.khopland.pgtasks.engine.extension.ClaimGate;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.HandlerDecorator;
+import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StoreCapability;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -38,11 +45,11 @@ import org.slf4j.LoggerFactory;
  * it runs, plus housekeeping.
  *
  * <p>Which topics it runs follows the store: every topic registered by name that the store has. A
- * topic deleted on any node is broadcast, and every node also compares the store's topics with what it runs on each heartbeat,
- * so a lost notification delays a change by at most one heartbeat. A deleted topic's running
- * batches finish; nothing is claimed from it until it is resumed.
+ * topic deleted on any node is broadcast, and every node also compares the store's topics with
+ * what it runs on each heartbeat, so a lost notification delays a change by at most one
+ * heartbeat. A deleted topic's running batches finish, and nothing more is claimed from it.
  *
- * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}
+ * <p>Built with {@link #builder()}. Producers use {@link #tasks()}, operators {@link #admin()}.
  * Every method throws only unchecked exceptions.
  */
 public final class TaskEngine implements AutoCloseable {
@@ -234,9 +241,12 @@ public final class TaskEngine implements AutoCloseable {
             reconcileSoon.restart();
             channels.values().forEach(reloads -> reloads.forEach(Coalesced::restart));
         }
+        // Started before registering, which records the first heartbeat, so the fence errs early.
+        HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners));
+            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced,
+            Thread::ofVirtual);
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
         housekeeper = null;
@@ -273,7 +283,17 @@ public final class TaskEngine implements AutoCloseable {
             Housekeeper keeper = new Housekeeper(store, settings, () -> nodeId, this::rejoin, this::wakeById, () -> releaseOrphans(orphanGrace()), () -> {
                 reconcileTopics();
                 reloadChannels();
-            }, purgeBudget, extensionJobs);
+            }, purgeBudget, extensionJobs, fence, new Housekeeper.Fencing() {
+                @Override
+                public void fenced() {
+                    allWorkers().forEach(TopicWorker::fence);
+                }
+
+                @Override
+                public void lifted() {
+                    allWorkers().forEach(TopicWorker::wake);
+                }
+            });
             housekeeper = keeper;
             keeper.start();
             started = true;
@@ -518,7 +538,7 @@ public final class TaskEngine implements AutoCloseable {
      * cancels what is left, whose tasks go back to the queue without counting the attempt. The
      * node keeps heartbeating while it drains, so no other node takes its tasks meanwhile.
      * Then it hands back any claim it holds but isn't processing, gives up the housekeeping lease,
-     * and returns once every thread it started has ended. Threads that ignore cancellation get
+     * deregisters the node, and returns once every thread it started has ended. Threads that ignore cancellation get
      * {@link TopicWorker#PATIENCE} more, and are logged if they still run.
      */
     public synchronized void stop(Duration timeout) {
@@ -575,6 +595,35 @@ public final class TaskEngine implements AutoCloseable {
             if (keeper != null) {
                 keeper.stop();
             }
+            deregister();
+        }
+    }
+
+    /**
+     * Removes this node's row once its heartbeat has stopped, so operators don't see a stopped
+     * node as one that died. A node still holding claims (it couldn't hand them back) stays until
+     * it counts as dead, and another node requeues them. A later start registers a new node.
+     */
+    private void deregister() {
+        int id = nodeId;
+        if (id < 0) {
+            return;
+        }
+        try {
+            if (!EngineCore.transact(store, transaction -> store.deregisterNode(transaction, id))) {
+                LOGGER.info("Node {} ({}) still holds claims, so it stays registered until it counts as dead", id, settings.nodeName());
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Could not deregister node {} ({}); it is forgotten once it counts as dead", id, settings.nodeName(), e);
+        }
+    }
+
+    /** The workers polling now, and those of retired topics whose batches still run. */
+    private List<TopicWorker<?>> allWorkers() {
+        synchronized (topicsLock) {
+            List<TopicWorker<?>> all = new ArrayList<>(workersByName.values());
+            all.addAll(draining.keySet());
+            return all;
         }
     }
 

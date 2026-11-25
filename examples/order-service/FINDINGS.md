@@ -4,6 +4,23 @@ What a team would hit using pgtasks for an order service in production, found by
 app in this directory and running it on Postgres with three instances, load and chaos. The list
 is ranked by severity within each section. Library commits referred to are on branch `app/trial`.
 
+> **A record of the run on 2026-11-22, before the core was trimmed.** Several features it used
+> were removed afterwards: cluster-wide rate limits, circuit breakers, pausing topics, recurring
+> tasks, junctions, and `Decision.throttled`/`unavailable`. The app now does without them (see
+> the README). Where each finding stands today:
+>
+> | Finding | Now |
+> |---|---|
+> | 1, 3, 4, 5, 11, 15, 16 | Gone with the feature they were about |
+> | 2 | Fixed (`89fd677`) |
+> | 6 | Suspended tasks are released with `admin().release(...)`, the endpoint or the dashboard |
+> | 7 | Nodes are named `<application>@<host>`, and a graceful stop removes the node's row |
+> | 8, 20 | `pgtasks.heartbeat` and `pgtasks.node-expiry`; operations.md says what a `kill -9` costs |
+> | 9, 14, 18, 19 | Documented in testing.md and operations.md |
+> | 13 | The endpoint returns an error as an object |
+> | 17 | patterns.md's fan-in example was rewritten around `later()` |
+> | 10, 12 | Open |
+
 ## The runs
 
 | | Calibration | Long run |

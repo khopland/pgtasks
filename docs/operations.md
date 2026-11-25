@@ -51,6 +51,25 @@ in. With another tool, pass the same name the engine uses:
       .migrate();
   ```
 
+  With Spring Boot, run it from a `FlywayMigrationStrategy` bean, before the application's own
+  migrations (which may refer to the pgtasks schema, for instance to grant the runtime role
+  access), and set `pgtasks.schema-mode=validate`. The engine starts after every bean is ready,
+  so it finds the schema in place:
+
+  ```java
+  @Bean
+  FlywayMigrationStrategy migrations(DataSource dataSource) {
+      return application -> {
+          Flyway.configure()...load().migrate();   // pgtasks, as above
+          application.migrate();
+      };
+  }
+  ```
+
+  Flyway creates the schema it is given before V001 runs, so its log says
+  `schema "pgtasks" already exists, skipping` for V001's `CREATE SCHEMA IF NOT EXISTS`. That is
+  expected.
+
 - **Liquibase**: include `io/github/khopland/pgtasks/postgres/db/changelog.xml` from your changelog.
   The changelog parameter `pgtasks_schema` names the schema and defaults to `pgtasks`. Set it before
   the include is parsed: with `spring.liquibase.parameters.pgtasks_schema=billing_tasks`,
@@ -123,10 +142,15 @@ GET    /actuator/tasks/topics/{topic}                    status, counts, setting
 GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
+POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
 ```
+
+Every `POST` needs `Content-Type: application/json` and a JSON object body, `{}` at least.
+Without one, Actuator answers 415; with Spring Security rules that deny everything else, the
+error dispatch that follows can then show up as a 403 that looks like a CSRF failure.
 
 Payloads, outputs and error messages often contain personal data, so the endpoint hides them
 unless `management.endpoint.tasks.show-values` allows it: `never` (default), `when-authorized`
@@ -138,6 +162,12 @@ The `tasks` health indicator is UP while the engine runs and its heartbeat is on
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
 and after stop. Its details show leadership, notifications, and claims stuck past their deadline,
 without changing the status.
+
+A claim is stuck when its handler ignored cancellation after the batch deadline: Java can't stop
+the thread, so its tasks stay active, and their concurrency taken, until it ends, rather than
+run again beside it. The engine leaves an error of type `hung` on each of those tasks, which the
+dashboard and task search show. Stopping the node frees them: other nodes requeue them once it
+counts as dead.
 
 ## Dashboard
 
@@ -164,7 +194,8 @@ Then open `http://<host>/pgtasks/`. It shows:
   and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
-  one without an identifier or reference reads the topic's backlog.
+  one without an identifier or reference reads the topic's backlog. A suspended task in the
+  results has a Release button, and a topic with suspended tasks has "Release all suspended…".
 - **Task**: look one up by id in the header, with its error.
 
 Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
@@ -240,15 +271,29 @@ shows the same topics, counts, dead letters and nodes, since they come from the 
 
 With Micrometer (Spring Boot Actuator sets it up), the engine records:
 
-| Metric | What |
-|---|---|
-| `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
-| `pgtasks.pushed{topic,status}` | Committed pushes |
-| `pgtasks.completed{topic,result}` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
-| `pgtasks.queue{topic,state}` | Unfinished tasks per state, from the last snapshot |
-| `pgtasks.queue.oldest.ready{topic}` | Seconds since the oldest ready task was pushed |
-| `pgtasks.queue.failing{topic}`, `pgtasks.queue.oldest.failing{topic}` | Tasks whose last run failed, and since when the longest-failing one has failed |
-| `pgtasks.queue.snapshot.age{topic}` | Seconds since the counts were taken |
+| Metric | In Prometheus | What |
+|---|---|---|
+| `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | `pgtasks_push_seconds_count`, `_sum`, `_max` (and `batch`, `task` alike) | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
+| `pgtasks.pushed{topic,status}` | `pgtasks_pushed_tasks_total` | Committed pushes |
+| `pgtasks.completed{topic,result}` | `pgtasks_completed_tasks_total` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
+| `pgtasks.queue{topic,state}` | `pgtasks_queue_tasks` | Unfinished tasks per state, from the last snapshot |
+| `pgtasks.queue.oldest.ready{topic}` | `pgtasks_queue_oldest_ready_seconds` | Seconds since the oldest ready task was pushed |
+| `pgtasks.queue.failing{topic}` | `pgtasks_queue_failing_tasks` | Tasks whose last run failed |
+| `pgtasks.queue.oldest.failing{topic}` | `pgtasks_queue_oldest_failing_seconds` | Since when the longest-failing task has failed |
+| `pgtasks.queue.snapshot.age{topic}` | `pgtasks_queue_snapshot_age_seconds` | Seconds since the counts were taken |
+| `pgtasks.queue.topics` | `pgtasks_queue_topics` | Topics in the last snapshot |
+
+Prometheus names add the base unit and, for counters, `_total`, as Micrometer's Prometheus
+registry writes them. Write alerts against those.
+
+Ready to use, in [`docs/monitoring`](monitoring):
+
+- [`pgtasks-alerts.yml`](monitoring/pgtasks-alerts.yml): Prometheus alerting rules for the alerts
+  below, plus dead letters and missing metrics. Load it with `rule_files`, or as a
+  `PrometheusRule`'s groups.
+- [`pgtasks-dashboard.json`](monitoring/pgtasks-dashboard.json): a Grafana dashboard (import it,
+  pick the Prometheus data source) with dead letters, failing tasks, queue states, throughput by
+  result, the oldest ready task and batch times, per topic.
 
 Queue gauges come from snapshots the housekeeping leader takes every minute, so scraping never
 counts the queue. Alert on:
@@ -312,10 +357,25 @@ their values only where `show-values` allows.
 
 ## Dead letters
 
-1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors.
+1. Look at what fails: `GET .../topics/{topic}/dead-letters` lists them with their errors. An
+   error is an object, `{"type": ..., "message": ..., "stack": ...}`, the type alone when values
+   are hidden.
 2. Fix the cause and deploy the fix.
 3. Revive by error type and time range, or by ids. Discard what should never run. Nothing
    revives or discards every dead letter of a topic without `"all": "true"`.
+
+## Suspended tasks
+
+A task waits as suspended when its handler decided `Decision.suspended()`, or when it was pushed
+with `Creation.asSuspended()`. Nothing releases it on its own. Once what it waited for is there:
+
+- Release it: `admin().release(topic, ids)`, or `admin().release(topic, query)` for the
+  suspended tasks a `TaskQuery` matches, the endpoint's `release` action, or the dashboard. It
+  becomes ready and keeps its attempts, so a later failure backs off from where it was.
+- Or, from code, push it again with `Insertion.REPLACE`: the suspended task becomes redundant
+  and the new one runs.
+
+The `pgtasks.queue{state="suspended"}` gauge shows how many wait in each topic.
 
 ## Unfinished tasks
 
@@ -365,8 +425,10 @@ Each node uses the application's `DataSource`:
   every 10 ms per node, whatever the push rate (see below).
 
 A heartbeat that can't get a connection for long enough (10 minutes by default) lets other nodes
-requeue this node's tasks while it still runs them. The engine warns at startup if
-`maxInFlightBatches` leaves too little room in the pool.
+requeue this node's tasks. Shortly before that, four heartbeats ahead by default, the node fences
+itself: it logs an error, stops claiming and cancels its running handlers, whose tasks go back
+without counting an attempt, and it claims again once a heartbeat gets through. The engine warns
+at startup if `maxInFlightBatches` leaves too little room in the pool.
 
 LISTEN needs a session. Behind PgBouncer in transaction mode, give notifications a direct
 connection (`builder.notifier(new PostgresNotifier(...))`) or turn them off with
@@ -405,6 +467,23 @@ push with `tasks.push(...)` in a bound transaction instead.
   within about a second through LISTEN/NOTIFY, and within one heartbeat (15 s) otherwise.
 - One node at a time holds the housekeeping lease (four heartbeats long), which moves to another
   node if it stops renewing it.
+- A node that dies without stopping (`kill -9`, an OOM kill, a lost VM) keeps its claims until it
+  counts as dead: no heartbeat for the expiry, 10 minutes by default. Then another node requeues
+  its tasks. Under a `SINGULAR_*` ordering those tasks also hold back every later task for their
+  identifiers until then. `pgtasks.node-expiry` shortens it, and `pgtasks.heartbeat` sets how
+  often a node writes that it is alive (15 s); both override a `TaskGlobals` bean. Keep the expiry
+  several heartbeats long, so a short pause or a slow database doesn't count as death:
+
+  ```yaml
+  pgtasks:
+    heartbeat: 5s
+    node-expiry: 2m
+  ```
+- A node that stops gracefully removes its row from `pgtasks.node`, so the endpoint and the
+  dashboard list only live nodes and ones that died. Each start registers a new row.
+- A node is named `<spring.application.name>@<host>`, where the host is `HOSTNAME` (the pod's name
+  in Kubernetes) or the machine's name, so the instances of one deployment tell apart.
+  `pgtasks.node` names it yourself.
 
 ## Logging
 

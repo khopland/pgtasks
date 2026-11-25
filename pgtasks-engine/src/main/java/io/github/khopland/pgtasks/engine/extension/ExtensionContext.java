@@ -1,10 +1,11 @@
-package io.github.khopland.pgtasks.engine;
+package io.github.khopland.pgtasks.engine.extension;
 
 import java.time.InstantSource;
 import java.util.Optional;
 
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.TaskObserver;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 /**
