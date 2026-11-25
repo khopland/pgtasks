@@ -243,7 +243,7 @@ public final class TaskEngine implements AutoCloseable {
         }
         // Started before registering, which records the first heartbeat, so the fence errs early.
         HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
-        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
+        nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version, settings.expiry()));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
             held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced,
             Thread::ofVirtual);
@@ -482,7 +482,7 @@ public final class TaskEngine implements AutoCloseable {
      */
     private void rejoin() throws Exception {
         int forgotten = nodeId;
-        int fresh = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version));
+        int fresh = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version, settings.expiry()));
         nodeId = fresh;
         LOGGER.error("The cluster forgot node {} ({}): it was silent for too long, as after a suspended VM or a long network partition. "
             + "It registered again as node {}; whatever it was still running under the old id is discarded", forgotten, settings.nodeName(), fresh);

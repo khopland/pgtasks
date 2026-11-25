@@ -172,8 +172,14 @@ public interface TaskStore {
     }
 
     /**
-     * Requeues the active tasks of other nodes whose heartbeat is older than {@code expiry}.
-     * The attempt is kept, so the expired run counts. Returns the affected topics.
+     * Requeues the active tasks of other nodes whose heartbeat is older than their own expiry, the
+     * one they registered with, or {@code expiry} for a node registered without one. The attempt
+     * is kept, so the expired run counts. Returns the affected topics.
+     *
+     * <p>Each node is judged by its own expiry because it fences itself by it (stops claiming and
+     * cancels its handlers shortly before it runs out). Judged by the leader's, a node configured
+     * with a longer expiry, during a rolling deploy that changes it or in another service sharing
+     * the schema, would have its tasks requeued while it still ran them.
      */
     List<Integer> requeueExpired(StoreTransaction transaction, int nodeId, Duration expiry, Expiries expiries) throws SQLException;
 
@@ -219,7 +225,18 @@ public interface TaskStore {
         return activeClaims(transaction, nodeId).stream().filter(claim -> claimedFor.isZero() || !claim.claimedAt().isAfter(cutoff)).toList();
     }
 
-    int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException;
+    /** Registers a node without an expiry of its own; see {@link #registerNode(StoreTransaction, String, String, Duration)}. */
+    default int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException {
+        return registerNode(transaction, name, version, null);
+    }
+
+    /**
+     * Registers a node, alive as of now.
+     *
+     * @param expiry how long the node may go without a heartbeat before {@link #requeueExpired}
+     *               takes its tasks; null for whatever the node that requeues them uses
+     */
+    int registerNode(StoreTransaction transaction, String name, @Nullable String version, @Nullable Duration expiry) throws SQLException;
 
     /**
      * Takes or renews this node's lease on a group of cluster-wide jobs, such as housekeeping. At

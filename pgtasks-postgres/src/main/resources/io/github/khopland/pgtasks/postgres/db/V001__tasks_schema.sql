@@ -44,7 +44,10 @@ CREATE TABLE ${pgtasks_schema}.node (
     name          text NOT NULL,
     version       text,
     started_at    timestamptz NOT NULL DEFAULT now(),
-    heartbeat_at  timestamptz NOT NULL DEFAULT now()
+    heartbeat_at  timestamptz NOT NULL DEFAULT now(),
+    -- How long the node may go without a heartbeat before the housekeeping leader requeues its
+    -- tasks: its own setting, which it fences itself by, not the leader's. NULL: the leader's.
+    expiry        interval CHECK (expiry > interval '0')
 );
 CREATE INDEX node_heartbeat_idx ON ${pgtasks_schema}.node (heartbeat_at);
 

@@ -376,6 +376,36 @@ public abstract class CompletionTck extends StoreTck {
         assertThat(fixture.attempt(theirs)).isEqualTo(1);
     }
 
+    /**
+     * Review 2026-11-25: the requeuer's expiry decided for every node. A leader configured with a
+     * shorter one than another node, during a rolling deploy that changed it or in another service
+     * sharing the schema, requeued that node's tasks while it still ran them: before the node
+     * fenced itself by its own, so the task ran twice at once.
+     */
+    @Test
+    void each_node_is_expired_by_its_own_expiry() throws Exception {
+        StoreFixture fixture = setUp();
+        long patient = fixture.push(topic, "patient");
+        fixture.claim(topic, fixture.node("slow", Duration.ofHours(2)));
+        long hasty = fixture.push(topic, "hasty");
+        fixture.claim(topic, fixture.node("quick", Duration.ofMinutes(5)));
+        long plain = fixture.push(topic, "plain");
+        fixture.claim(topic, fixture.node("unset"));
+        fixture.advance(Duration.ofHours(1));
+        fixture.heartbeat(node);
+
+        assertThat(fixture.requeueExpired(node, Duration.ofMinutes(10))).containsExactly(topic);
+
+        assertThat(fixture.state(patient)).as("silent for an hour of its own two").isEqualTo("active");
+        assertThat(fixture.state(hasty)).as("past its own five minutes").isEqualTo("ready");
+        assertThat(fixture.state(plain)).as("no expiry of its own: the requeuer's ten minutes").isEqualTo("ready");
+
+        fixture.advance(Duration.ofHours(2));
+        fixture.heartbeat(node);
+        fixture.requeueExpired(node, Duration.ofMinutes(10));
+        assertThat(fixture.state(patient)).isEqualTo("ready");
+    }
+
     @Test
     void each_expiry_backs_off_longer_and_the_last_one_dead_letters_the_task() throws Exception {
         StoreFixture fixture = setUp();

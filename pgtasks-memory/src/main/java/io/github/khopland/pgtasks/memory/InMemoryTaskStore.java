@@ -407,7 +407,7 @@ public final class InMemoryTaskStore implements TaskStore {
         Instant now = now();
         Set<Integer> stale = new HashSet<>();
         nodes.values().forEach(node -> {
-            if (node.id() != nodeId && node.heartbeatAt().isBefore(now.minus(expiry))) {
+            if (node.id() != nodeId && node.heartbeatAt().isBefore(now.minus(node.expiry() != null ? node.expiry() : expiry))) {
                 stale.add(node.id());
             }
         });
@@ -534,11 +534,14 @@ public final class InMemoryTaskStore implements TaskStore {
     }
 
     @Override
-    public int registerNode(StoreTransaction transaction, String name, @Nullable String version) {
+    public int registerNode(StoreTransaction transaction, String name, @Nullable String version, @Nullable Duration expiry) {
+        if (expiry != null && !expiry.isPositive()) {
+            throw new IllegalArgumentException("A node's expiry must be positive, not " + expiry);
+        }
         MemoryTransaction memory = memory(transaction);
         int id = nextNode++;
         Instant now = now();
-        memory.put(nodes, id, new Rows.Node(id, name, version, now, now));
+        memory.put(nodes, id, new Rows.Node(id, name, version, now, now, expiry));
         return id;
     }
 

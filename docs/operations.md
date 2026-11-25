@@ -491,8 +491,10 @@ push with `tasks.push(...)` in a bound transaction instead.
   counts as dead: no heartbeat for the expiry, 10 minutes by default. Then another node requeues
   its tasks. Under a `SINGULAR_*` ordering those tasks also hold back every later task for their
   identifiers until then. `pgtasks.node-expiry` shortens it, and `pgtasks.heartbeat` sets how
-  often a node writes that it is alive (15 s); both override a `TaskGlobals` bean. Keep the expiry
-  several heartbeats long, so a short pause or a slow database doesn't count as death:
+  often a node writes that it is alive (15 s); both override a `TaskGlobals` bean. Each node
+  records its expiry when it registers and is judged by it, whichever node requeues, so nodes may
+  differ: during a rolling deploy that changes it, or in services that share a schema. Keep the
+  expiry several heartbeats long, so a short pause or a slow database doesn't count as death:
 
   ```yaml
   pgtasks:

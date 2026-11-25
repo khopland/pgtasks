@@ -63,6 +63,11 @@ public abstract class StoreFixture implements AutoCloseable {
         return inTransaction(transaction -> store().registerNode(transaction, name, "test"));
     }
 
+    /** A node that counts as dead once it has gone {@code expiry} without a heartbeat, whoever requeues its tasks. */
+    public int node(String name, Duration expiry) throws SQLException {
+        return inTransaction(transaction -> store().registerNode(transaction, name, "test", expiry));
+    }
+
     /** Whether the node is registered, and so heartbeat. */
     public boolean heartbeat(int node) throws SQLException {
         return inTransaction(transaction -> store().heartbeat(transaction, node));
