@@ -57,6 +57,18 @@ public final class PostgresTaskStore implements TaskStore {
     /** The first key of the advisory lock SINGULAR_* claims take per topic; never a topic id, which is positive. */
     private static final int SINGULAR_CLAIM_LOCK = -0x7067_6c6b;
 
+    /** The first key of the advisory lock non-APPEND pushes take per topic, shared or exclusive; never a topic id either. */
+    private static final int PUSH_LOCK = -0x7075_7368;
+
+    /**
+     * The most identifiers a non-APPEND push locks one by one. Each advisory lock takes a slot in
+     * the server's shared lock table, which holds about {@code max_locks_per_transaction} (64) times
+     * {@code max_connections} for every session together: a push of 100,000 identifiers failed with
+     * "out of shared memory", and one of a few thousand could make other sessions' queries fail
+     * the same way at the same moment. A push of more locks its whole topic instead.
+     */
+    static final int MAX_IDENTIFIER_LOCKS = 256;
+
     private final DataSource dataSource;
     private final Duration networkTimeout;
     private final SchemaMode mode;
@@ -68,7 +80,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, releaseSuspended;
     private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
-    private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded;
+    private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded, topicLock, topicLockGuarded;
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
     private final Map<Ordering, NamedSql> polls = new EnumMap<>(Ordering.class);
@@ -168,16 +180,21 @@ public final class PostgresTaskStore implements TaskStore {
         // so concurrent APPEND pushes for one identifier may still commit out of id order.
         // These are single-bigint keys, a keyspace apart from the two-integer keys of claims;
         // topics share a hash only by chance, which merely serializes those pushes.
-        identifierLocks = sql("""
-            SELECT count(pg_advisory_xact_lock(key))
+        // A push of up to MAX_IDENTIFIER_LOCKS identifiers takes its topic's push lock shared, then
+        // each identifier's; a larger one takes the topic's exclusive, and no identifier's. The topic
+        // lock comes first (the one-time filter runs before the keys are locked), so the two kinds
+        // can't deadlock on each other, and a larger push waits for the topic's smaller ones in
+        // flight, and they for it.
+        String identifierKeys = """
             FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
-            """);
+            """;
+        String topicShared = "WHERE (SELECT count(*) FROM (SELECT pg_advisory_xact_lock_shared(" + PUSH_LOCK + ", :topic::integer)) AS topic) = 1\n";
+        identifierLocks = sql("SELECT count(pg_advisory_xact_lock(key))\n" + identifierKeys + topicShared);
+        topicLock = sql("SELECT pg_advisory_xact_lock(" + PUSH_LOCK + ", :topic::integer)");
         // In the store's own transactions only: an application's transaction is the application's.
-        identifierLocksGuarded = sql("""
-            SELECT count(pg_advisory_xact_lock(key)), max(guard)
-            FROM (SELECT DISTINCT hashtextextended(identifier, :topic::bigint) AS key FROM unnest(:identifiers::text[]) AS identifier ORDER BY 1) keys
-            CROSS JOIN (SELECT %s AS guard) AS guard
-            """.formatted(guard));
+        identifierLocksGuarded = sql("SELECT count(pg_advisory_xact_lock(key)), max(guard)\n" + identifierKeys
+            + "CROSS JOIN (SELECT " + guard + " AS guard) AS guard\n" + topicShared);
+        topicLockGuarded = sql("SELECT pg_advisory_xact_lock(" + PUSH_LOCK + ", :topic::integer), " + guard);
         for (Ordering ordering : Ordering.values()) {
             polls.put(ordering, sql(pollSql(ordering)));
         }
@@ -984,7 +1001,9 @@ public final class PostgresTaskStore implements TaskStore {
             .array("headers", "text", headers)
             .array("run_ats", "text", runAts);
         if (insertion != Insertion.APPEND) {
-            NamedSql locks = transaction instanceof PostgresTransaction own && own.owned() ? identifierLocksGuarded : identifierLocks;
+            boolean owned = transaction instanceof PostgresTransaction own && own.owned();
+            boolean whole = new HashSet<>(Arrays.asList(identifiers)).size() > MAX_IDENTIFIER_LOCKS;
+            NamedSql locks = whole ? (owned ? topicLockGuarded : topicLock) : owned ? identifierLocksGuarded : identifierLocks;
             try (PreparedStatement statement = locks.prepare(connection, NamedSql.parameters().set("topic", topicId).array("identifiers", "text", identifiers));
                  ResultSet resultSet = statement.executeQuery()) {
                 resultSet.next();

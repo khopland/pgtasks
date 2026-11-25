@@ -73,7 +73,10 @@ already claimed is never touched.
 | `SUPERSEDE` | become redundant | kept | kept |
 | `REPLACE` | become redundant | become redundant | marked redundant, outcome kept in `previous_outcome` |
 
-Insertion is a queue-management tool, not a uniqueness guarantee. Use a dedup key for that.
+Insertion is a queue-management tool, not a uniqueness guarantee. Use a dedup key for that. A
+push also leaves alone an earlier task another transaction holds at that moment, as one being
+claimed, promoted, revived or released, rather than wait for it: a claimed task runs, and the
+others, held for a few milliseconds, are only missed if they are held right then.
 
 Earlier and later mean task-id order. A push draws its ids before it commits, so two pushes for one
 identifier could commit out of id order, and the one that commits first couldn't see the other's
@@ -81,6 +84,10 @@ task. So every push but `APPEND` waits per identifier for another uncommitted no
 the same identifier to finish, and its ids follow commit order (in read committed transactions,
 the Postgres default). `APPEND` waits for nothing, since it is the common, cheapest push, so
 concurrent `APPEND` pushes for one identifier may commit out of id order.
+
+A push of more than 256 identifiers waits for its whole topic instead, so that it holds one lock
+rather than one per identifier (Postgres has room for only so many locks, shared by every
+session): it waits for the topic's other non-`APPEND` pushes in flight, and they for it.
 
 A transaction holds these waits until it commits, and only the identifiers of one call are taken
 in a fixed order. If one transaction pushes `a` and then `b` in separate calls while another
