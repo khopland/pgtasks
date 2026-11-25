@@ -56,7 +56,7 @@ class OrderingLocksTest {
         try (StoreTransaction transaction = fixture.store().begin()) {
             fixture.store().push(transaction, topic, insertion, List.of(task("x"), task("y"), task("x")));
 
-            assertThat(advisoryLocks(transaction)).isEqualTo(2);
+            assertThat(advisoryLocks(transaction)).as("x and y, and the topic's push lock, shared").isEqualTo(3);
         }
     }
 
