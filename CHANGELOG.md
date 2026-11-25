@@ -44,6 +44,10 @@ The first release: a rewrite of [Skatteetaten's task library](https://github.com
 - Java modules: the core jars have a `module-info`, so only the public API, SPI and extension
   packages are exported. They also run on the classpath, as the Spring starter and
   `pgtasks-test` do.
+- `pgtasks-rate-limit`: `RateLimit`, a token bucket per topic on each node, and
+  `ClusterRateLimit`, a sliding window shared by every node. `pgtasks-rate-limit-postgres` keeps
+  that window in its own table, applied with the store's schema mode through `ExtensionSchema`,
+  which lets any extension ship its own SQL files.
 - `pgtasks-bom` to import every module at one version.
 
 [Unreleased]: https://github.com/khopland/pgtasks/compare/v0.1.0...HEAD
