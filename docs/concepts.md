@@ -161,7 +161,10 @@ deciders that wait on a remote call per task.
 | `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
 An exception from a decider fails only that task. One from the handler fails the batch. A task
-the handler leaves without a decision fails too.
+the handler leaves without a decision fails too. A batch that runs past its deadline is cancelled:
+with `decide` or `decideConcurrently`, a task decided by then keeps its decision, one whose
+decider still runs fails, and one whose decider never started goes back without an attempt. A
+handler that runs out of time before any decider starts fails every task.
 
 Downstream work goes through `task.push(...)` on the task, not through `Tasks`. It is committed
 together with the task's completion, and only if the task succeeds. A handler that calls

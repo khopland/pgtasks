@@ -49,6 +49,11 @@ final class BatchScope implements AutoCloseable {
 
     /** Runs the work in the scope and waits at most until the deadline, cancelling it after that. */
     <V> V call(Callable<V> work, Duration deadline) throws Exception {
+        return call(work, deadline, () -> { });
+    }
+
+    /** Like {@link #call(Callable, Duration)}, running {@code atDeadline} once the deadline has passed, before the work is cancelled. */
+    <V> V call(Callable<V> work, Duration deadline, Runnable atDeadline) throws Exception {
         Future<V> future = executor.submit(work);
         this.work = future;
         try {
@@ -62,7 +67,14 @@ final class BatchScope implements AutoCloseable {
                 throw error;
             }
             throw e;
-        } catch (TimeoutException | InterruptedException e) {
+        } catch (TimeoutException e) {
+            try {
+                atDeadline.run();
+            } finally {
+                future.cancel(true);
+            }
+            throw e;
+        } catch (InterruptedException e) {
             future.cancel(true);
             throw e;
         }
