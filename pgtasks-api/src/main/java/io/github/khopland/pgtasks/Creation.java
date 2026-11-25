@@ -11,15 +11,16 @@ import org.jspecify.annotations.Nullable;
 /**
  * A task to push.
  *
- * @param identifier the application key
+ * @param identifier the application key, at most {@value #MAX_KEY_BYTES} bytes in UTF-8
  * @param payload    the payload, encoded with the topic's codec
- * @param reference  an optional correlation value
+ * @param reference  an optional correlation value, at most {@value #MAX_KEY_BYTES} bytes in UTF-8
  * @param delay      if set, the task waits this long before it becomes ready; at most a
  *                   thousand years
  * @param suspended  if set, the task waits until something releases it
  * @param priority   higher runs first; 0 by default, which keeps plain FIFO order
  * @param dedupKey   if set, at most one unfinished task per key and topic exists; a push with a
- *                   key that is already queued is reported as a duplicate and not stored
+ *                   key that is already queued is reported as a duplicate and not stored. At most
+ *                   {@value #MAX_KEY_BYTES} bytes in UTF-8
  * @param headers    names and values stored with the task, such as a correlation id. The
  *                   engine's observers add their own when the task is pushed, such as the
  *                   current trace's propagation headers; these win over theirs
@@ -40,14 +41,21 @@ public record Creation<T>(
     @Nullable Instant runAt
 ) {
 
+    /**
+     * The longest identifier, reference or dedup key, in bytes of UTF-8. The store indexes them,
+     * and Postgres can't index much more than 2.7 KB in one B-tree entry. To key a task by
+     * something longer, use a hash of it.
+     */
+    public static final int MAX_KEY_BYTES = 2048;
+
     public Creation {
         Objects.requireNonNull(identifier, "identifier");
         if (identifier.isEmpty()) {
             throw new IllegalArgumentException("identifier must not be empty");
         }
-        Headers.checkText("identifier", identifier);
-        Headers.checkText("reference", reference);
-        Headers.checkText("dedupKey", dedupKey);
+        Headers.checkKey("identifier", identifier);
+        Headers.checkKey("reference", reference);
+        Headers.checkKey("dedupKey", dedupKey);
         Waits.checkDelay("delay", delay);
         Waits.checkRunAt(runAt);
         if ((delay != null ? 1 : 0) + (runAt != null ? 1 : 0) + (suspended ? 1 : 0) > 1) {
