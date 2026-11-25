@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-test</artifactId>
+  <name>pgtasks test support</name>
   <description>Test support for pgtasks: the store TCK, and a real Postgres per test run without Docker.</description>
 
   <properties>

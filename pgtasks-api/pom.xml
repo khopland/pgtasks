@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-api</artifactId>
+  <name>pgtasks API</name>
   <description>pgtasks public API: topics, tasks, decisions, handlers, enqueue, and the operator views. Depends only on JSpecify's annotations.</description>
 
   <properties>

@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-memory</artifactId>
+  <name>pgtasks in-memory store</name>
 
   <properties>
     <module.name>io.github.khopland.pgtasks.memory</module.name>

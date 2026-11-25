@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-benchmark</artifactId>
+  <name>pgtasks benchmarks</name>
   <description>
     Phase 2: the queue-and-task schema against a single-table design, with realistic history.
     Only built with -Pbenchmark; it takes a while and needs a few GB of disk.

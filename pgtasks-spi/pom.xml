@@ -9,6 +9,7 @@
   </parent>
 
   <artifactId>pgtasks-spi</artifactId>
+  <name>pgtasks SPI</name>
   <description>pgtasks storage SPI: what a task store, a notifier and a transaction binding implement. Applications don't need it.</description>
 
   <properties>
