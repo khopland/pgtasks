@@ -32,6 +32,13 @@
   </modules>
 
   <profiles>
+    <!-- Test coverage: the JaCoCo agent in every module's tests, and one report from pgtasks-coverage. -->
+    <profile>
+      <id>coverage</id>
+      <modules>
+        <module>pgtasks-coverage</module>
+      </modules>
+    </profile>
     <!-- Schema and sustained-load benchmarks. Slow; run on purpose. -->
     <profile>
       <id>benchmark</id>
