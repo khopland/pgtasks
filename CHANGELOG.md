@@ -24,6 +24,8 @@ The first release: a rewrite of [Skatteetaten's task library](https://github.com
   `SUPERSEDE`, `REPLACE`).
 - Retries with backoff (10 s doubling to 30 minutes, for 7 days by default), dead letters, and
   operator actions to revive or discard them.
+- Releasing suspended tasks: `admin().release(...)` by id or `TaskQuery`, the endpoint's
+  `release` action and the dashboard make them ready again, keeping their attempts.
 - Housekeeping on one leader at a time: requeueing the tasks of dead nodes, queue snapshots and
   retention per outcome.
 - `pgtasks-postgres`: the schema as plain SQL with a built-in runner (or Flyway and Liquibase),
@@ -39,6 +41,9 @@ The first release: a rewrite of [Skatteetaten's task library](https://github.com
 - `pgtasks-test`: the store TCK, and a real Postgres per test run without Docker.
 - Extensions: housekeeping jobs, notification channels, typed topic settings, claim gates, batch
   listeners, handler decorators, observers and store capabilities.
+- Java modules: the core jars have a `module-info`, so only the public API, SPI and extension
+  packages are exported. They also run on the classpath, as the Spring starter and
+  `pgtasks-test` do.
 - `pgtasks-bom` to import every module at one version.
 
 [Unreleased]: https://github.com/khopland/pgtasks/compare/v0.1.0...HEAD
