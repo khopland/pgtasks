@@ -66,4 +66,24 @@ class DatabaseClockTest {
 
         assertThat(clock.instant()).isEqualTo(DATABASE.plusSeconds(2));
     }
+
+    /**
+     * Review 2026-11-25: the clock started at the node's own time and never went back, so on a node
+     * whose clock ran an hour ahead of the database's it stood still for that hour after the first
+     * sample. Heartbeat ages read zero, so health couldn't see a heartbeat stop, and a lost lease
+     * still looked held.
+     */
+    @Test
+    void the_first_sample_moves_it_back_to_the_database() {
+        DatabaseClock ahead = new DatabaseClock(() -> DATABASE.plus(Duration.ofHours(1)), nanos::get);
+        assertThat(ahead.instant()).isEqualTo(DATABASE.plus(Duration.ofHours(1)));
+
+        ahead.sample(DATABASE, nanos.get(), nanos.get());
+
+        assertThat(ahead.instant()).isEqualTo(DATABASE);
+        nanos.addAndGet(Duration.ofMinutes(30).toNanos());
+        assertThat(ahead.instant()).as("moves on at once, not after the hour").isEqualTo(DATABASE.plus(Duration.ofMinutes(30)));
+        ahead.sample(DATABASE.plus(Duration.ofMinutes(29)), nanos.get(), nanos.get());
+        assertThat(ahead.instant()).as("later samples still never move it back").isEqualTo(DATABASE.plus(Duration.ofMinutes(30)));
+    }
 }
