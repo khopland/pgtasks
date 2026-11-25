@@ -459,7 +459,7 @@ final class BatchRun<T> {
             if (e instanceof VirtualMachineError vm) {
                 fatal = vm;
             }
-            if (Transient.is(e) && core.stopping().getAsBoolean()) {
+            if ((Transient.is(e) || Transient.mayPass(e)) && core.stopping().getAsBoolean()) {
                 // The completion gave up on a transient error (a deadlock, the database restarting)
                 // only because this node is stopping. Nothing is wrong with the tasks: hand them
                 // back without an attempt, as stop does with a batch it cuts short.
@@ -468,6 +468,17 @@ final class BatchRun<T> {
                 release(claims, List.copyOf(claims.keySet()));
                 observation.released();
                 return;
+            }
+            if (fatal == null) {
+                Decisions isolated = withoutUnwritableDownstream(decisions, encoded);
+                if (isolated != decisions) {
+                    // One task's downstream work could fail the whole batch, and every task in it
+                    // was retried with that one until all of them were dead-lettered.
+                    LOGGER.warn("The completion of a batch in {} failed; the tasks whose downstream work can't be written fail on their "
+                        + "own, and the others complete again", topic.ref(), e);
+                    completeWithin(topic, claims, isolated, early, opened, observation, encoded);
+                    return;
+                }
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
@@ -493,6 +504,34 @@ final class BatchRun<T> {
         }
         targets.forEach(core.wake());
         core.tasks().committed(ready);
+    }
+
+    /**
+     * After the completion failed: the decisions with each continuing task whose downstream work
+     * can't be written on its own failed instead, or the same decisions if every task's can, so
+     * the failure lies elsewhere (the store, a resource). Each task's work is tried in a
+     * transaction of its own that is always rolled back. A failure that is or may be transient
+     * says nothing about the task, so it keeps its decision.
+     */
+    private Decisions withoutUnwritableDownstream(Decisions decisions, Map<Creation<?>, @Nullable String> encoded) {
+        Decisions checked = decisions;
+        for (Decisions.Verdict verdict : decisions.verdicts()) {
+            if (!verdict.decision().continues() || verdict.downstream().isEmpty()) {
+                continue;
+            }
+            Decisions alone = Decisions.builder().decide(verdict.task(), verdict.decision(), verdict.downstream()).build();
+            try (StoreTransaction probe = core.store().begin()) {
+                pushDownstream(probe, alone, new ArrayList<>(), new LinkedHashSet<>(), encoded);
+                // Never committed: closing rolls it back.
+            } catch (Exception | LinkageError | StackOverflowError e) {
+                if (Transient.is(e) || Transient.mayPass(e)) {
+                    continue;
+                }
+                observe(verdict.task()).error(e);
+                checked = checked.revise(verdict.task(), Decision.failed(e));
+            }
+        }
+        return checked;
     }
 
     /**

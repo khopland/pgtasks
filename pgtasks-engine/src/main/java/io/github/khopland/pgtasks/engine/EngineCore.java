@@ -47,6 +47,8 @@ record EngineCore(
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EngineCore.class);
     private static final Duration MAX_BACKOFF = Duration.ofSeconds(5);
+    /** Tries after the first for a failure that {@linkplain Transient#mayPass may pass}. */
+    static final int MAY_PASS_RETRIES = 3;
 
     @FunctionalInterface
     interface Work<T extends @Nullable Object> {
@@ -68,18 +70,21 @@ record EngineCore(
 
     /**
      * Like {@link #transact}, but retries transient failures (a cut connection, a restarted server)
-     * with backoff until the work succeeds, fails for another reason, or the engine stops. A
-     * stale claim is never retried.
+     * with backoff until the work succeeds, fails for another reason, or the engine stops, and
+     * failures that {@linkplain Transient#mayPass may pass} (a timeout, a read-only database) a
+     * few times. A stale claim is never retried.
      */
     <T extends @Nullable Object> T transactRetrying(String what, Work<T> work) throws Exception {
         Duration backoff = Duration.ofMillis(100);
+        int passing = 0;
         while (true) {
             try {
                 return transact(work);
             } catch (StaleClaimException e) {
                 throw e;
             } catch (Exception e) {
-                if (!Transient.is(e) || stopping.getAsBoolean()) {
+                boolean retry = Transient.is(e) || (Transient.mayPass(e) && passing++ < MAY_PASS_RETRIES);
+                if (!retry || stopping.getAsBoolean()) {
                     throw e;
                 }
                 LOGGER.warn("{} failed on a transient error, retrying in {}: {}", what, backoff, e.toString());
