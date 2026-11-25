@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.memory;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.Period;
 import java.util.Locale;
@@ -31,10 +32,10 @@ final class Rows {
         }
     }
 
-    record Node(int id, String name, @Nullable String version, Instant startedAt, Instant heartbeatAt) {
+    record Node(int id, String name, @Nullable String version, Instant startedAt, Instant heartbeatAt, @Nullable Duration expiry) {
 
         Node beat(Instant now) {
-            return new Node(id, name, version, startedAt, now);
+            return new Node(id, name, version, startedAt, now, expiry);
         }
     }
 

@@ -272,7 +272,8 @@ class EngineTest {
         // Node C runs the cluster-wide housekeeping. (HousekeepingTest covers a leader that hangs.)
         TaskEngine nodeC = engines.start("node-c", List.of());
         EngineFixture.await("node C to lead", Duration.ofSeconds(5), nodeC::leadsHousekeeping);
-        // Node A sends no heartbeat after starting, as if it were paused.
+        // Node A sends no heartbeat after starting, as if it were paused. It counts as dead once its
+        // own expiry has passed, whatever the leader's is.
         TaskEngine nodeA = engines.start("node-a", stuck, settings -> settings.withHeartbeat(Duration.ofHours(1), Duration.ofHours(2)));
         long id = nodeA.tasks().independently().push(TOPIC, "x", "payload").id();
         assertThat(stalled.await(5, TimeUnit.SECONDS)).isTrue();
@@ -282,7 +283,7 @@ class EngineTest {
             return Decision.success();
         })), succeeding(FIRST)));
         TaskTester tester = engines.tester();
-        engines.clock.advance(Duration.ofMinutes(11));
+        engines.clock.advance(Duration.ofHours(2).plusMinutes(1));
         // Expired: it waits out the expiry backoff before another node may run it.
         EngineFixture.await("the task to expire", Duration.ofSeconds(10), () -> "retrying".equals(tester.find(id).orElseThrow().state()));
         engines.clock.advance(Duration.ofMinutes(1));

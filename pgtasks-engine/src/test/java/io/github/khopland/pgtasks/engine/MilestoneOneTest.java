@@ -170,7 +170,8 @@ class MilestoneOneTest {
         assertThat(stalled.await(10, TimeUnit.SECONDS)).isTrue();
 
         // As if node A had been paused for an hour: its heartbeat is old and its housekeeping lease ran out.
-        database.execute("UPDATE pgtasks.node SET heartbeat_at = now() - interval '1 hour' WHERE id = " + nodeA.nodeId());
+        // Past node A's own two-hour expiry, which is what counts, not node B's.
+        database.execute("UPDATE pgtasks.node SET heartbeat_at = now() - interval '3 hours' WHERE id = " + nodeA.nodeId());
         database.execute("UPDATE pgtasks.lease SET expires_at = now() - interval '1 hour' WHERE node_id = " + nodeA.nodeId());
         fixture.start("node-b", slice(new AssessmentHandler(register, ledger), new FeedPublisher(), FAST),
             settings -> settings.withHeartbeat(Duration.ofMillis(100), Duration.ofMillis(500)));

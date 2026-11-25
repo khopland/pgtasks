@@ -117,7 +117,10 @@ public final class PostgresTaskStore implements TaskStore {
         findTopic = sql("SELECT id FROM pgtasks.topic WHERE name = :name");
         listTopics = sql("SELECT id, name FROM pgtasks.topic ORDER BY id");
         // Both also read the database's time, which sets this store's clock (DatabaseClock).
-        registerNode = sql("INSERT INTO pgtasks.node (name, version) VALUES (:name, :version) RETURNING id, clock_timestamp()");
+        registerNode = sql("""
+            INSERT INTO pgtasks.node (name, version, expiry) VALUES (:name, :version, :expiry::bigint * interval '1 millisecond')
+            RETURNING id, clock_timestamp()
+            """);
         heartbeat = sql("UPDATE pgtasks.node SET heartbeat_at = now() WHERE id = :node RETURNING clock_timestamp()");
         // An APPEND push only inserts, so its generic plan can't go wrong, and it is the statement run
         // most often: a producer may push one task per transaction. The others look up older tasks.
@@ -272,7 +275,9 @@ public final class PostgresTaskStore implements TaskStore {
                 FROM pgtasks.queue o
                 WHERE o.state = 'active'
                   AND o.node_id <> :node::integer
-                  AND o.node_id IN (SELECT id FROM pgtasks.node WHERE heartbeat_at < now() - :expiry::bigint * interval '1 millisecond')
+                  -- Each node by its own expiry, which it fences itself by; the leader's for one without.
+                  AND o.node_id IN (SELECT n.id FROM pgtasks.node n
+                                    WHERE n.heartbeat_at < now() - coalesce(n.expiry, :expiry::bigint * interval '1 millisecond'))
                 FOR UPDATE OF o SKIP LOCKED
             ),
             -- Each expiry backs off a little longer, and the deadLetterAt-th one dead-letters the task:
@@ -1302,9 +1307,13 @@ public final class PostgresTaskStore implements TaskStore {
     }
 
     @Override
-    public int registerNode(StoreTransaction transaction, String name, @Nullable String version) throws SQLException {
+    public int registerNode(StoreTransaction transaction, String name, @Nullable String version, @Nullable Duration expiry) throws SQLException {
+        if (expiry != null && !expiry.isPositive()) {
+            throw new IllegalArgumentException("A node's expiry must be positive, not " + expiry);
+        }
         Connection connection = transaction.connection();
-        try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version))) {
+        try (PreparedStatement statement = registerNode.prepare(connection, NamedSql.parameters().set("name", name).set("version", version)
+            .set("expiry", expiry == null ? null : expiry.toMillis()))) {
             long before = clock.nanos();
             try (ResultSet resultSet = statement.executeQuery()) {
                 resultSet.next();
