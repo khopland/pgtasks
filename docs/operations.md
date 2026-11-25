@@ -496,7 +496,12 @@ push with `tasks.push(...)` in a bound transaction instead.
 ## Deploys and shutdown
 
 - On shutdown the engine stops claiming, lets running batches finish for
-  `pgtasks.shutdown-timeout` (30 s), then hands back what is left without counting an attempt.
+  `pgtasks.shutdown-timeout` (20 s), then hands back what is left without counting an attempt.
+  Cancelled handlers get 5 s more, for every topic together. Keep the timeout about 10 s below
+  the time the platform waits before it kills the process (`terminationGracePeriodSeconds`, 30 s
+  by default in Kubernetes): a node killed before it hands its tasks back keeps them until it
+  counts as dead, 10 minutes by default, and under a `SINGULAR_*` ordering their identifiers wait
+  as long.
 - Rolling deploys are safe: nodes of old and new versions share the schema, which records the
   oldest library version it stays compatible with.
 - A deleted topic stops on every node

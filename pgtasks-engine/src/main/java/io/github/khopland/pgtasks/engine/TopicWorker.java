@@ -318,23 +318,45 @@ final class TopicWorker<T> {
      * thread have ended, or have ignored cancellation for {@link #PATIENCE} past the deadline.
      */
     void awaitBatches(long deadlineNanos) throws InterruptedException {
+        awaitUntil(deadlineNanos);
+        cancel();
+        awaitCancelled(System.nanoTime() + PATIENCE.toNanos());
+    }
+
+    /** Waits for the poller and the running batches until the deadline; whatever is left runs on. */
+    void awaitUntil(long deadlineNanos) throws InterruptedException {
         Thread current = poller;
         if (current != null) {
             current.join(Duration.ofNanos(Math.max(0, deadlineNanos - System.nanoTime())));
         }
-        if (!batches.awaitTermination(Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+        batches.awaitTermination(Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * Cancels the batches still running, whose tasks go back without counting the attempt, and
+     * interrupts a poller still waiting, for permits or the store. Doesn't wait: a node stopping
+     * cancels every topic's work at once, then gives them all one {@link #PATIENCE} together,
+     * rather than each in turn.
+     */
+    void cancel() {
+        if (!batches.isTerminated()) {
             stopping = true;
             batches.shutdownNow();
-            if (!batches.awaitTermination(PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
-                LOGGER.warn("Batches in {} ignored cancellation and are still running", topic.ref());
-            }
         }
-        // Past the deadline: a poller still waiting, for permits or the store, is interrupted.
+        Thread current = poller;
         if (current != null && current.isAlive()) {
             current.interrupt();
-            if (!current.join(PATIENCE)) {
-                LOGGER.warn("Polling {} ignored the stop and is still running", topic.ref());
-            }
+        }
+    }
+
+    /** Waits for cancelled work until the deadline, and logs what still runs. */
+    void awaitCancelled(long deadlineNanos) throws InterruptedException {
+        if (!batches.awaitTermination(Math.max(0, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+            LOGGER.warn("Batches in {} ignored cancellation and are still running", topic.ref());
+        }
+        Thread current = poller;
+        if (current != null && !current.join(Duration.ofNanos(Math.max(0, deadlineNanos - System.nanoTime())))) {
+            LOGGER.warn("Polling {} ignored the stop and is still running", topic.ref());
         }
     }
 }
