@@ -11,6 +11,7 @@ import java.time.InstantSource;
 import java.time.OffsetDateTime;
 import java.time.Period;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -44,6 +45,8 @@ import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The task store on the pgtasks schema, {@value TaskSchema#DEFAULT_SCHEMA} unless named otherwise
@@ -53,6 +56,8 @@ import org.jspecify.annotations.Nullable;
  * validates the schema according to its {@link SchemaMode}.
  */
 public final class PostgresTaskStore implements TaskStore {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PostgresTaskStore.class);
 
     /** The first key of the advisory lock SINGULAR_* claims take per topic; never a topic id, which is positive. */
     private static final int SINGULAR_CLAIM_LOCK = -0x7067_6c6b;
@@ -1251,8 +1256,17 @@ public final class PostgresTaskStore implements TaskStore {
                     .filter(candidate -> candidate.label().equals(label))
                     .findFirst();
                 if (outcome.isPresent()) {
+                    Period period;
+                    try {
+                        period = Period.parse(resultSet.getString(3));
+                    } catch (DateTimeParseException e) {
+                        // Only an edit by hand stores one; the topic's other outcomes and the other topics go on.
+                        LOGGER.warn("Topic {} keeps its {} tasks forever: its retention '{}' is not an ISO period", resultSet.getInt(1), label,
+                            resultSet.getString(3));
+                        continue;
+                    }
                     result.computeIfAbsent(resultSet.getInt(1), ignored -> new EnumMap<>(io.github.khopland.pgtasks.Outcome.class))
-                        .put(outcome.get(), Period.parse(resultSet.getString(3)));
+                        .put(outcome.get(), period);
                 }
             }
         }
