@@ -87,8 +87,12 @@ public final class PostgresSlidingWindowStore implements SlidingWindowStore {
      * clock. Null when the topic has no row yet.
      */
     private @Nullable Loaded lock(StoreTransaction transaction, String topic) throws SQLException {
+        // Guarded like the core store's claims: every node's claims on the topic wait for this row,
+        // so a node that goes silent holding it must not hold it for longer than this.
         String sql = "SELECT window_start, previous, current, "
-            + "(extract(epoch FROM clock_timestamp()) * 1000)::bigint FROM " + table + " WHERE topic = ? FOR UPDATE";
+            + "(extract(epoch FROM clock_timestamp()) * 1000)::bigint, "
+            + "set_config('idle_in_transaction_session_timeout', '" + PostgresTaskStore.STUCK_TRANSACTION_TIMEOUT.toMillis() + "', true) "
+            + "FROM " + table + " WHERE topic = ? FOR UPDATE";
         try (PreparedStatement statement = transaction.connection().prepareStatement(sql)) {
             statement.setString(1, topic);
             try (ResultSet resultSet = statement.executeQuery()) {
