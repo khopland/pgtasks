@@ -420,8 +420,10 @@ Finished tasks are deleted by the housekeeping leader, per topic and outcome, co
 completion: succeeded after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
-Each run deletes for at most 30 s and the next one goes on from where it stopped, so a large
-backlog after downtime can't hold up housekeeping.
+A retention is from zero to a thousand years; `retainForever` (or `forever`) keeps an outcome
+for good, and anything else fails the build. Each run deletes for at most 30 s and the next one
+goes on from where it stopped, so a large backlog after downtime can't hold up housekeeping. A
+topic whose retention fails is logged and passed over, and the run goes on with the next.
 
 If retention empties `pgtasks.task` and Postgres analyzes it before vacuum gives its pages back,
 the statistics say the table has pages but no rows. Until the next analyze, the planner can then

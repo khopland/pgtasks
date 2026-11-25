@@ -312,7 +312,8 @@ final class Housekeeper {
      * for at most {@link #PURGE_BUDGET}: after downtime, or after retention was shortened, the rest
      * waits for the next run rather than holding the job. A run that runs out of time leaves the
      * next run to start with the following topic, so a topic with a large backlog can't keep the
-     * others from ever being purged.
+     * others from ever being purged. A topic whose retention fails for another reason than the
+     * store being out of reach is logged and passed over, so it can't stop the topics after it.
      */
     private void purge() throws Exception {
         Instant now = store.clock().instant();
@@ -327,18 +328,33 @@ final class Housekeeper {
         purgeStoppedAt = null;
         for (int topic : order) {
             for (Map.Entry<Outcome, Period> kept : Objects.requireNonNull(retention.get(topic)).entrySet()) {
-                Instant cutoff = now.atZone(ZoneOffset.UTC).minus(kept.getValue()).toInstant();
-                int deleted;
-                do {
-                    deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic, kept.getKey(), cutoff, BATCH));
-                    if (System.nanoTime() > deadline) {
+                try {
+                    if (!purge(topic, kept.getKey(), kept.getValue(), now, deadline)) {
                         purgeStoppedAt = topic;
                         LOGGER.info("Retention used its {} for this run; it goes on in {}", purgeBudget, settings.purgeInterval());
                         return;
                     }
-                } while (deleted == BATCH && leading());
+                } catch (Exception e) {
+                    if (Transient.is(e)) {
+                        throw e;
+                    }
+                    LOGGER.warn("Could not apply the retention of {} ({}) to topic {}; the other topics go on", kept.getKey().label(), kept.getValue(), topic, e);
+                }
             }
         }
+    }
+
+    /** Deletes one outcome's expired tasks of a topic; false once the run's time is up. */
+    private boolean purge(int topic, Outcome outcome, Period period, Instant now, long deadline) throws Exception {
+        Instant cutoff = now.atZone(ZoneOffset.UTC).minus(period).toInstant();
+        int deleted;
+        do {
+            deleted = EngineCore.transact(store, transaction -> store.purge(transaction, topic, outcome, cutoff, BATCH));
+            if (System.nanoTime() > deadline) {
+                return false;
+            }
+        } while (deleted == BATCH && leading());
+        return true;
     }
 
     private void snapshot() throws Exception {

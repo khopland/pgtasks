@@ -243,6 +243,37 @@ class BuilderTest {
         assertThat(assessment.settings().retention()).containsEntry(Outcome.SUCCEEDED, Period.ofDays(90)).doesNotContainKey(Outcome.FAILED);
     }
 
+    /**
+     * Review 2026-11-25: a negative retention was accepted and deleted every finished task of the
+     * outcome at once, and one too long to subtract from the date stopped retention for every
+     * topic after it, on every run.
+     */
+    @Test
+    void a_retention_the_leader_cant_apply_fails_the_build() {
+        assertThatThrownBy(() -> TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure(notifyTasks())
+            .overrides(Map.of("topics.notify.retain.succeeded", "-P30D"))
+            .build())
+            .hasMessageContaining("topics.notify.retain.succeeded")
+            .hasMessageContaining("must not be negative");
+        assertThatThrownBy(() -> TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure(notifyTasks())
+            .overrides(Map.of("topics.notify.retain.filtered", "P1001Y"))
+            .build())
+            .hasMessageContaining("at most a thousand years");
+        assertThatThrownBy(() -> TaskEngine.builder()
+            .store(new InMemoryTaskStore())
+            .configure(tasks -> tasks.codec(Notice.class, NOTICES)
+                .topic(NOTIFY, batch -> batch.decide(task -> Decision.success()), options -> options.retain(Outcome.SUCCEEDED, Period.ofYears(Integer.MAX_VALUE))))
+            .build())
+            .hasMessageContaining("at most a thousand years")
+            .hasMessageContaining("retainForever");
+        assertThat(TopicSettings.checkRetention(Outcome.SUCCEEDED, Period.ofYears(1_000))).isEqualTo(Period.ofYears(1_000));
+        assertThat(TopicSettings.checkRetention(Outcome.SUCCEEDED, Period.ZERO)).isEqualTo(Period.ZERO);
+    }
+
     @Test
     void durations_parse_the_way_people_write_them() {
         assertThat(TaskEngineBuilder.duration("500ms")).isEqualTo(Duration.ofMillis(500));

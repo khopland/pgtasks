@@ -342,7 +342,7 @@ public final class TaskEngineBuilder {
 
         @Override
         public TopicOptions retain(Outcome outcome, Period period) {
-            return set("retain." + outcome.label(), period);
+            return set("retain." + outcome.label(), TopicSettings.checkRetention(outcome, period));
         }
 
         @Override
@@ -400,7 +400,7 @@ public final class TaskEngineBuilder {
 
         @Override
         public HousekeepingOptions retain(Outcome outcome, Period period) {
-            defaults.set("retain." + outcome.label(), period);
+            defaults.set("retain." + outcome.label(), TopicSettings.checkRetention(outcome, period));
             return this;
         }
 
@@ -801,8 +801,9 @@ public final class TaskEngineBuilder {
             case "retry.first-backoff" -> retry.withBackoff(duration(value), retry.max().compareTo(duration(value)) < 0 ? duration(value) : retry.max());
             case "retry.max-backoff" -> retry.withBackoff(retry.initial().compareTo(duration(value)) > 0 ? duration(value) : retry.initial(), duration(value));
             default -> {
-                if (key.startsWith("retain.") && outcome(key.substring("retain.".length())) != null) {
-                    yield value.trim().equalsIgnoreCase("forever") ? "forever" : period(value);
+                Outcome outcome = key.startsWith("retain.") ? outcome(key.substring("retain.".length())) : null;
+                if (outcome != null) {
+                    yield value.trim().equalsIgnoreCase("forever") ? "forever" : TopicSettings.checkRetention(outcome, period(value));
                 }
                 throw new IllegalArgumentException("unknown setting; known: batch-size, concurrency, ordering, batch-deadline, "
                     + "poll-interval, retry.max-attempts, retry.give-up-after, retry.first-backoff, retry.max-backoff, retain.<outcome>");

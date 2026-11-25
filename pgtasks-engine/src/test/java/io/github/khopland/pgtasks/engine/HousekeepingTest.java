@@ -1,5 +1,8 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Period;
 import java.util.List;
@@ -13,6 +16,8 @@ import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
+import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -128,6 +133,40 @@ class HousekeepingTest {
         tester.advance(Duration.ofSeconds(1));
         assertThat(tester.find(first)).as("the next run starts with the other topic").isEmpty();
         assertThat(tester.find(other)).isEmpty();
+    }
+
+    /** Review 2026-11-25: a topic whose retention failed stopped the retention of every topic after it, on every run. */
+    @Test
+    void a_topic_whose_retention_fails_doesnt_stop_the_others() throws Exception {
+        TopicRef<String> second = TopicRef.of("second", String.class);
+        engines.createTopics(TOPIC.name(), second.name());
+        int broken;
+        try (StoreTransaction transaction = engines.store.begin()) {
+            broken = engines.store.findTopic(transaction, TOPIC.name()).orElseThrow();
+        }
+        TaskStore failing = (TaskStore) Proxy.newProxyInstance(TaskStore.class.getClassLoader(), new Class<?>[] {TaskStore.class}, (proxy, method, args) -> {
+            if (method.getName().equals("purge") && args.length == 5 && args[1].equals(broken)) {
+                throw new SQLException("retention is broken for this topic", "XX000");
+            }
+            try {
+                return method.invoke(engines.store, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        });
+        TopicSettings kept = TopicSettings.defaults().withRetention(Map.of(Outcome.SUCCEEDED, Period.ofDays(1)));
+        TaskEngine engine = engines.add(new TaskEngine(failing, MemoryEngines.settings("node-a").withNotifier(engines.store.notifier()),
+            List.of(topic().getFirst().with(kept), Topic.of(second, batch -> batch.decide(task -> Decision.success())).with(kept))));
+        engine.start();
+        TaskTester tester = engines.tester();
+        long first = engine.tasks().independently().push(TOPIC, "a", "ok").id();
+        long other = engine.tasks().independently().push(second, "b", "ok").id();
+        tester.awaitIdle();
+
+        tester.advance(Duration.ofDays(2));
+
+        assertThat(tester.find(first)).as("its retention fails").isPresent();
+        assertThat(tester.find(other)).as("purged all the same").isEmpty();
     }
 
     @Test
