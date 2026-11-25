@@ -128,6 +128,8 @@ engine.close();                                // drains running batches, then s
 
 ## Further reading
 
+- [Quickstart](examples/quickstart/README.md): a runnable Spring Boot application and a five-minute tour.
+- [When to use pgtasks, and when not](docs/choosing.md): what it is good at, where another tool fits better, and how it compares with db-scheduler, JobRunr, Quartz and brokers.
 - [Concepts](docs/concepts.md): topics, pushing, handlers and decisions, ordering, insertion and retries.
 - [Patterns](docs/patterns.md): effects that must happen exactly once, fan-out and fan-in, producers and consumers in separate services.
 - [Testing](docs/testing.md): the JUnit extension, `TaskTester`, and Spring tests.
