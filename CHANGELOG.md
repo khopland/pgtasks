@@ -6,6 +6,46 @@ break the API; the schema only ever moves forward, with migrations the store app
 
 ## [Unreleased]
 
+### Changed
+
+- Identifiers, references and dedup keys take at most 2,048 bytes in UTF-8
+  (`Creation.MAX_KEY_BYTES`). A longer one is refused when it's pushed, with a message that
+  says why, instead of failing in Postgres's index (#38).
+- Retention must be between zero and 1,000 years; the builder and the `retain.*` overrides
+  refuse anything else (#39).
+- `pgtasks.shutdown-timeout` defaults to 20 s, down from 30 s, so a stop fits in Kubernetes'
+  default grace period. Keep it about 10 s below the platform's (#47).
+- SPI: `TaskStore.registerNode(transaction, name, version, expiry)`. The three-argument form
+  registers a node without an expiry of its own (#41).
+
+### Fixed
+
+- A retention that failed to purge for one topic stopped the purge for every topic after it. A
+  retention the store can't read is now skipped with a warning (#39).
+- A node whose clock ran ahead of the database's kept the store clock ahead until the database
+  caught up. The first sample from the database now sets it (#40).
+- The housekeeping leader requeued every node's tasks by its own `node-expiry`, so a node with a
+  longer one lost its running tasks while it was alive. Each node now records its expiry when it
+  registers (#41).
+- A node that went silent during a claim, a lease renewal or a non-`APPEND` push kept its locks
+  until TCP keepalive gave up, hours by default, which stalled `SINGULAR_*` topics and other
+  nodes' heartbeats. Those transactions now set `idle_in_transaction_session_timeout` to
+  1 minute, and the store's own transactions set a 5-minute network timeout (#42).
+- A completion that failed for a reason the engine doesn't retry failed every task in the batch.
+  The engine now fails only the tasks whose downstream work can't be written. Statement and lock
+  timeouts, insufficient resources and read-only errors get three retries (#43).
+- A `SUPERSEDE` or `REPLACE` push took one advisory lock per identifier, so a large one could
+  run the server out of lock table space. Past 256 distinct identifiers it takes one lock for
+  the topic (#45).
+- A batch past its `batchDeadline` failed every task, including those already decided. Decisions
+  made before the deadline now stand, tasks still being decided fail, and tasks whose decider
+  never started go back without counting an attempt (#46).
+- A stop waited for each topic's cancelled handlers in turn, so every slow topic added to the
+  time past the timeout. Now all topics share one wait (#47).
+- Outputs, filter reasons and failure messages were stored whole, on every retry. The engine
+  keeps the first 65,536 characters of an output or reason and 8,000 of a message, with a note
+  of how many more there were (#48).
+
 ## [0.1.0]
 
 The first release: a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)
