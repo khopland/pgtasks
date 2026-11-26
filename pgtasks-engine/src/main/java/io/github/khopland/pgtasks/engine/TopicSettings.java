@@ -19,7 +19,9 @@ import io.github.khopland.pgtasks.Outcome;
  * @param concurrency   batches in flight per topic on one node
  * @param ordering      per-identifier ordering
  * @param retry         what happens to failed attempts
- * @param batchDeadline a batch whose handler runs longer is cancelled and its tasks retried
+ * @param batchDeadline a batch whose handler runs longer is cancelled: what its deciders decided
+ *                      by then stands, the tasks still being decided fail, and those not started
+ *                      go back without an attempt
  * @param pollInterval  fallback poll when no notification arrives
  * @param retention     how long finished tasks are kept per outcome, counted from completion, from
  *                      zero to a thousand years; an outcome that isn't listed is kept forever

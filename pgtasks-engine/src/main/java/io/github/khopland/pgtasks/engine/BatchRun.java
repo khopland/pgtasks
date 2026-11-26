@@ -17,6 +17,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import io.github.khopland.pgtasks.BatchResource;
@@ -73,6 +74,8 @@ final class BatchRun<T> {
     private volatile boolean fenced;
     /** A VirtualMachineError from the handler: recorded as the batch's failure, then rethrown. */
     private @Nullable VirtualMachineError fatal;
+    /** Tasks whose decider never started before the deadline: handed back with the completion, without an attempt. */
+    private List<Long> unstarted = List.of();
     private TaskObserver.BatchObservation batchObservation = TaskObserver.BatchObservation.NONE;
     /** Each task's own observation, by task id, created the first time the engine needs it. */
     private final Map<Long, TaskObserver.TaskObservation> taskObservations = new ConcurrentHashMap<>();
@@ -307,22 +310,26 @@ final class BatchRun<T> {
                 opened.put(resource, resource.open(topic.ref(), tasks));
             }
             DefaultBatch<T> batch = new DefaultBatch<>(topic.ref(), runnable, opened, core.tasks()::checkTarget, this::observe);
-            Decisions handled = covering(scope.call(() -> {
-                try (TaskObserver.Scope ignored = observation.open()) {
-                    return HandlerThread.run(topic.ref().name(), () -> topic.handler().handle(batch));
+            AtomicReference<DefaultBatch.@Nullable Progress> atDeadline = new AtomicReference<>();
+            Decisions handled;
+            try {
+                handled = covering(scope.call(() -> {
+                    try (TaskObserver.Scope ignored = observation.open()) {
+                        return HandlerThread.run(topic.ref().name(), () -> topic.handler().handle(batch));
+                    }
+                }, topic.settings().batchDeadline(), () -> atDeadline.set(batch.seal())), runnable);
+            } catch (TimeoutException e) {
+                if (fenced) {
+                    return null;
                 }
-            }, topic.settings().batchDeadline()), runnable);
+                observation.error(e);
+                handled = pastDeadline(topic, runnable, Objects.requireNonNull(atDeadline.get()));
+            }
             Decisions merged = handled;
             for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                 merged = merged.merge(review(resource.getKey(), resource.getValue(), handled));
             }
             return merged;
-        } catch (TimeoutException e) {
-            if (fenced) {
-                return null;
-            }
-            observation.error(e);
-            return Decisions.all(runnable, Decision.failed("Batch deadline of " + topic.settings().batchDeadline() + " exceeded"));
         } catch (InterruptedException | CancellationException e) {
             if (worker.stopping() || fenced) {
                 Thread.interrupted();
@@ -352,6 +359,37 @@ final class BatchRun<T> {
             observation.error(e);
             return Decisions.all(runnable, Decision.failed(e));
         }
+    }
+
+    /**
+     * The decisions of a batch whose handler ran out of time. Before, every task failed, its
+     * attempt counted: with {@code decideConcurrently}, one remote call that hung failed the tasks
+     * already done, which then ran again. Now a task whose decider returned before the deadline
+     * keeps its decision, and one whose decider was still running fails. A task whose decider
+     * never started didn't run, so it goes back without counting an attempt (see
+     * {@link #unstarted}), unless no decider started at all: then the handler itself ran out of time
+     * before deciding, and every task fails as before, so a handler that always does can't hand
+     * its tasks back forever.
+     */
+    private Decisions pastDeadline(Topic<T> topic, List<Task<T>> runnable, DefaultBatch.Progress progress) {
+        Decision exceeded = Decision.failed("Batch deadline of " + topic.settings().batchDeadline() + " exceeded");
+        if (progress.started().isEmpty()) {
+            return Decisions.all(runnable, exceeded);
+        }
+        Decisions.Builder decisions = Decisions.builder();
+        List<Long> handedBack = new ArrayList<>();
+        for (Task<T> task : runnable) {
+            Decisions.Verdict verdict = progress.decided().get(task.id());
+            if (verdict != null) {
+                decisions.decide(task, verdict.decision(), verdict.downstream());
+            } else if (progress.started().contains(task.id())) {
+                decisions.decide(task, exceeded);
+            } else {
+                handedBack.add(task.id());
+            }
+        }
+        unstarted = List.copyOf(handedBack);
+        return decisions.build();
     }
 
     private BatchScope scope(Topic<T> topic) {
@@ -435,6 +473,10 @@ final class BatchRun<T> {
         List<Completion> completions = new ArrayList<>(claims.size());
         decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
         early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        unstarted.forEach(id -> {
+            ClaimedTask claim = claimOf(claims, id);
+            completions.add(new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE));
+        });
         Set<String> targets = new LinkedHashSet<>();
         Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();

@@ -1,8 +1,11 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -34,6 +37,19 @@ final class DefaultBatch<T> implements Batch<T> {
 
     /** Each task's own observation, opened around its decider; see {@link TaskObserver.BatchObservation#task}. */
     private final Function<Task<?>, TaskObserver.TaskObservation> observations;
+
+    /** What {@link #decide} and {@link #decideConcurrently} got to before the batch's deadline; see {@link #seal}. */
+    private final Object progress = new Object();
+    private final Set<Long> started = new HashSet<>();
+    private final Map<Long, Decisions.Verdict> decided = new LinkedHashMap<>();
+    private boolean sealed;
+
+    /**
+     * How far the deciders got when the batch ran out of time: the tasks they decided, and the
+     * tasks whose decider started. The rest never ran.
+     */
+    record Progress(Map<Long, Decisions.Verdict> decided, Set<Long> started) {
+    }
 
     DefaultBatch(TopicRef<T> topic, List<Task<T>> tasks, Map<BatchResource<?>, Object> resources,
                  Consumer<TopicRef<?>> targets,
@@ -72,9 +88,40 @@ final class DefaultBatch<T> implements Batch<T> {
                 throw new CancellationException("Batch cancelled");
             }
             StagedWork<T> work = new StagedWork<>(task, targets);
-            decisions.decide(task, decideOne(topic.name(), decider, work, observations.apply(task)), work.pushes);
+            starting(task);
+            Decision decision = decideOne(topic.name(), decider, work, observations.apply(task));
+            decided(task, decision, work.pushes);
+            decisions.decide(task, decision, work.pushes);
         }
         return decisions.build();
+    }
+
+    private void starting(Task<T> task) {
+        synchronized (progress) {
+            if (!sealed) {
+                started.add(task.id());
+            }
+        }
+    }
+
+    private void decided(Task<T> task, Decision decision, List<Push<?>> pushes) {
+        synchronized (progress) {
+            if (!sealed) {
+                decided.put(task.id(), new Decisions.Verdict(task, decision, pushes));
+            }
+        }
+    }
+
+    /**
+     * Stops recording and says how far the deciders got. Called at the batch's deadline, before
+     * the handler is cancelled, so that what a decider makes of its cancellation, such as a
+     * failure from an interrupted call, doesn't count as its decision.
+     */
+    Progress seal() {
+        synchronized (progress) {
+            sealed = true;
+            return new Progress(Map.copyOf(decided), Set.copyOf(started));
+        }
     }
 
     @Override
@@ -92,7 +139,10 @@ final class DefaultBatch<T> implements Batch<T> {
                 running.acquire();
                 futures.add(executor.submit(() -> {
                     try {
-                        return decideOne(topic.name(), decider, work, observations.apply(work.task));
+                        starting(work.task);
+                        Decision decision = decideOne(topic.name(), decider, work, observations.apply(work.task));
+                        decided(work.task, decision, work.pushes);
+                        return decision;
                     } finally {
                         running.release();
                     }
