@@ -160,6 +160,11 @@ deciders that wait on a remote call per task.
 | `suspended()` | Waits, out of the way of later tasks under most orderings, until it is released: by an operator (`admin().release(...)`, the endpoint or the dashboard), or by pushing it again with `REPLACE`. | no |
 | `failed(cause)` | Retried with backoff, or dead-lettered when the policy gives up. A cause the policy lists in `notCounting` doesn't count. | yes |
 
+A task keeps the first 65,536 characters of an output or filter reason, and the first 8,000 of a
+failure's message (and 4,000 of its stack trace). A task's payload is stored and read whole, a
+batch of them at a time, so keep payloads small: put a large document elsewhere and push a
+reference to it.
+
 An exception from a decider fails only that task. One from the handler fails the batch. A task
 the handler leaves without a decision fails too. A batch that runs past its deadline is cancelled:
 with `decide` or `decideConcurrently`, a task decided by then keeps its decision, one whose

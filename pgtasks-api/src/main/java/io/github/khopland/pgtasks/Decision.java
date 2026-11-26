@@ -21,7 +21,9 @@ public sealed interface Decision {
 
     /**
      * Done, with a result to keep on the task, such as a receipt or a reference in another
-     * system: stored in {@code pgtasks.task.output}, shown by {@code admin().find(id)}.
+     * system: stored in {@code pgtasks.task.output}, shown by {@code admin().find(id)}. The engine
+     * keeps the first 65,536 characters of a longer one, with a note of how many more there were;
+     * put a document elsewhere and keep a reference to it here.
      */
     static Decision success(String output) {
         return new Success(Objects.requireNonNull(output, "output"));

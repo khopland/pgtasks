@@ -649,8 +649,8 @@ final class BatchRun<T> {
     private Completion completion(ClaimedTask claim, Decision decision) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
-            case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, success.output());
-            case Decision.Filtered filtered -> new Resolution.Finished(Outcome.FILTERED, filtered.reason());
+            case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, capped(success.output()));
+            case Decision.Filtered filtered -> new Resolution.Finished(Outcome.FILTERED, capped(filtered.reason()));
             case Decision.Suspended ignored -> new Resolution.Waiting(WaitState.SUSPENDED, null, false, null);
             case Decision.Later later -> new Resolution.Waiting(WaitState.SCHEDULED, later.delay(), false, null);
             case Decision.Failed failed -> {
@@ -669,6 +669,17 @@ final class BatchRun<T> {
             }
         };
         return new Completion(claim.id(), claim.attempt(), claim.claimedAt(), resolution);
+    }
+
+    /**
+     * The most of a task's output or filter reason that is stored. It is kept with the task's
+     * history, and written in the completion of its whole batch: a handler that returned a whole
+     * document as its output stored it with every task, and a large enough one failed the batch.
+     */
+    static final int MAX_OUTPUT = 65_536;
+
+    private static @Nullable String capped(@Nullable String text) {
+        return text == null ? null : ErrorJson.cut(text, MAX_OUTPUT);
     }
 
     /** How many of the completions ended in each result. */
