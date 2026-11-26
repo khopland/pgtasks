@@ -176,12 +176,17 @@ final class Housekeeper {
         // Lets a job in progress finish: interrupting it would close its connection mid-statement.
         executors.forEach(ScheduledExecutorService::shutdown);
         try {
+            // One patience for all the jobs together, then one more after interrupting what is left.
+            long patience = System.nanoTime() + TopicWorker.PATIENCE.toNanos();
             for (ScheduledExecutorService executor : executors) {
-                if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
-                    executor.shutdownNow();
-                    if (!executor.awaitTermination(TopicWorker.PATIENCE.toNanos(), TimeUnit.NANOSECONDS)) {
-                        LOGGER.warn("A housekeeping job ignored the stop and is still running");
-                    }
+                executor.awaitTermination(Math.max(0, patience - System.nanoTime()), TimeUnit.NANOSECONDS);
+            }
+            List<ScheduledExecutorService> left = executors.stream().filter(executor -> !executor.isTerminated()).toList();
+            left.forEach(ScheduledExecutorService::shutdownNow);
+            long interrupted = System.nanoTime() + TopicWorker.PATIENCE.toNanos();
+            for (ScheduledExecutorService executor : left) {
+                if (!executor.awaitTermination(Math.max(0, interrupted - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+                    LOGGER.warn("A housekeeping job ignored the stop and is still running");
                 }
             }
         } catch (InterruptedException e) {

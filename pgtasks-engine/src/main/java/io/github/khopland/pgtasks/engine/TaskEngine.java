@@ -575,11 +575,19 @@ public final class TaskEngine implements AutoCloseable {
                 drains = List.copyOf(draining.values());
             }
             all.forEach(TopicWorker::stopPolling);
+            // One deadline and one patience for every topic together: in turn, each topic whose
+            // handlers ignore cancellation added its own, and a stop could run past the grace
+            // period a platform gives it (30 s in Kubernetes) before handing the tasks back.
             for (TopicWorker<?> worker : all) {
-                worker.awaitBatches(deadline);
+                worker.awaitUntil(deadline);
+            }
+            all.forEach(TopicWorker::cancel);
+            long patience = System.nanoTime() + TopicWorker.PATIENCE.toNanos();
+            for (TopicWorker<?> worker : all) {
+                worker.awaitCancelled(patience);
             }
             for (Thread drain : drains) {
-                drain.join(TopicWorker.PATIENCE);
+                drain.join(Duration.ofNanos(Math.max(0, patience - System.nanoTime())));
             }
             try {
                 releaseOrphans(Duration.ZERO);

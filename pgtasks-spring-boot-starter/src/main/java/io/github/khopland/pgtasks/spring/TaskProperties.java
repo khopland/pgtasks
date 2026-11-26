@@ -47,7 +47,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        slow database isn't taken for a dead node
  * @param notifications   wake workers through LISTEN/NOTIFY; off relies on polling alone
  * @param shutdownTimeout how long running batches may finish when the application stops; what is
- *                        left is handed back without counting the attempt
+ *                        left is handed back without counting the attempt. 20 s, so the stop,
+ *                        cancellation included, fits in Kubernetes' default grace period of 30 s;
+ *                        keep it about 10 s below the platform's
  * @param topics          per topic: concurrency, batch-size, ordering, poll-interval,
  *                        batch-deadline, retry.max-attempts (a number or forever),
  *                        retry.give-up-after (such as 7d, or never), retry.first-backoff,
@@ -72,7 +74,7 @@ public record TaskProperties(
     Duration heartbeat,
     Duration nodeExpiry,
     @DefaultValue("true") boolean notifications,
-    @DefaultValue("30s") Duration shutdownTimeout,
+    @DefaultValue("20s") Duration shutdownTimeout,
     Map<String, Map<String, String>> topics,
     @DefaultValue("false") boolean testing,
     String version,
