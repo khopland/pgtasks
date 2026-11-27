@@ -77,7 +77,7 @@ class CompletionIsolationTest {
         engine.start();
 
         EngineFixture.await("the batch settled", Duration.ofSeconds(20),
-            () -> database.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'work' AND q.state <> 'failed'") == 0);
+            () -> database.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'work' AND q.state <> 'dead_letter'") == 0);
 
         for (long id : ids.subList(0, 9)) {
             TaskView view = engine.admin().find(id).orElseThrow();
@@ -85,7 +85,7 @@ class CompletionIsolationTest {
             assertThat(runs.get(view.identifier())).as(view.identifier() + " ran once").hasValue(1);
         }
         TaskView bad = engine.admin().find(ids.get(9)).orElseThrow();
-        assertThat(bad.state()).as("dead-lettered once its attempts are used up").isEqualTo("failed");
+        assertThat(bad.state()).as("dead-lettered once its attempts are used up").isEqualTo("dead_letter");
         assertThat(bad.attempt()).isEqualTo(3);
         assertThat(bad.error()).contains("refused: poison");
         assertThat(database.count("SELECT count(*) FROM pgtasks.task t JOIN pgtasks.topic tp ON tp.id = t.topic_id WHERE tp.name = 'items'"))

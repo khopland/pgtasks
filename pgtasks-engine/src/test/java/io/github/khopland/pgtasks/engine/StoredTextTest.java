@@ -46,7 +46,7 @@ class StoredTextTest {
             .startsWith("xxx").endsWith("... (" + (1_000_000 - BatchRun.MAX_OUTPUT) + " more characters)");
         assertThat(tester.find(filter).orElseThrow().output()).hasSizeLessThan(BatchRun.MAX_OUTPUT + 100);
         TaskView failed = tester.find(failure).orElseThrow();
-        assertThat(failed.state()).isEqualTo("failed");
+        assertThat(failed.state()).isEqualTo("dead_letter");
         assertThat(failed.error()).hasSizeLessThan(ErrorJson.MAX_MESSAGE + 5_000).contains("response body: xxx").contains("more characters)");
     }
 

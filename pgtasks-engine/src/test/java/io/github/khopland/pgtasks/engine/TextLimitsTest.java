@@ -127,13 +127,13 @@ class TextLimitsTest {
         engine.start();
 
         EngineFixture.await("the batch settled", Duration.ofSeconds(10),
-            () -> database.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'work' AND q.state <> 'failed'") == 0);
+            () -> database.count("SELECT count(*) FROM pgtasks.queue q JOIN pgtasks.topic t ON t.id = q.topic_id WHERE t.name = 'work' AND q.state <> 'dead_letter'") == 0);
 
         assertThat(engine.admin().find(ids.get(0)).orElseThrow().state()).isEqualTo("succeeded");
         assertThat(engine.admin().find(ids.get(2)).orElseThrow().state()).isEqualTo("succeeded");
         assertThat(runs.get("fine-1")).as("not run again for the other task's key").hasValue(1);
         TaskView tooLong = engine.admin().find(ids.get(1)).orElseThrow();
-        assertThat(tooLong.state()).isEqualTo("failed");
+        assertThat(tooLong.state()).isEqualTo("dead_letter");
         assertThat(tooLong.error()).contains("identifier is 2049 bytes");
         assertThat(database.count("SELECT count(*) FROM pgtasks.task t JOIN pgtasks.topic tp ON tp.id = t.topic_id WHERE tp.name = 'items'"))
             .as("both pushes with keys at the limit stored").isEqualTo(2);
