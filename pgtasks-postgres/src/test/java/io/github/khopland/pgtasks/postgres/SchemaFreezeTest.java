@@ -22,7 +22,7 @@ class SchemaFreezeTest {
 
     /** SHA-256 of each released versioned file, line endings normalized, placeholder unfilled: what the runner records. */
     static final Map<String, String> RELEASED = Map.of(
-        // Nothing released yet: V001 may still change in place. Pin it here when 0.1.0 ships.
+        "V001__tasks_schema.sql", "d01335200fa74c7ee715dedefcb644c9aa8420ef834d6348b43684163c29677e" // 0.1.0
     );
 
     /** SHA-256 of each revision of each repeatable file, keyed {@code <name>@<revision>}. Add a line for every new revision. */
