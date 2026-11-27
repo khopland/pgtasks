@@ -56,8 +56,10 @@ next snapshot; the workflow takes the release version from the tag.
    *Publish*, or *Drop* it and tag again after a fix. Artifacts appear on Maven Central within
    about half an hour of publishing. The workflow also creates the GitHub release (a pre-release
    for 0.x).
-4. On `main`, raise the snapshot (`0.1.0-SNAPSHOT` → `0.2.0-SNAPSHOT`) and the version in the
-   README's BOM snippet:
+4. On `main`, raise the snapshot (`0.1.0-SNAPSHOT` → `0.2.0-SNAPSHOT`) and set the README's BOM
+   snippet to the version just released. After the first release, also drop the notes that say
+   pgtasks isn't on Maven Central yet, in the README (*Status* and *Modules*) and in
+   `examples/quickstart/README.md`:
 
    ```sh
    mvn org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.2.0-SNAPSHOT -DprocessAllModules -DgenerateBackupPoms=false
