@@ -2,7 +2,7 @@
 
 What a team would hit using pgtasks for an order service in production, found by building the
 app in this directory and running it on Postgres with three instances, load and chaos. The list
-is ranked by severity within each section. Library commits referred to are on branch `app/trial`.
+is ranked by severity within each section. Library commits referred to are in `main`'s history.
 
 > **A record of the run on 2026-11-22, before the core was trimmed.** Several features it used
 > were removed afterwards: cluster-wide rate limits, circuit breakers, pausing topics, recurring

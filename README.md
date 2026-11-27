@@ -24,6 +24,13 @@ The handler succeeds when it returns and fails when it throws. A failed task is 
 backoff, starting at 10 s and doubling up to 30 minutes, for 7 days. After that it goes to the
 dead letters, where an operator can revive or discard it. Nothing else needs configuring.
 
+## Status
+
+pgtasks is pre-1.0, and not on Maven Central yet: until 0.1.0 is, [install it from
+source](#modules). Before 1.0, a minor version may break the API; the
+[changelog](CHANGELOG.md) says what changed. The schema only ever moves forward, with
+migrations the store applies itself.
+
 ## Requirements
 
 - Java 25. The engine uses scoped values and virtual threads.
@@ -46,6 +53,14 @@ Import the BOM, then add modules without versions:
     </dependency>
   </dependencies>
 </dependencyManagement>
+```
+
+Until 0.1.0 is on Maven Central, install the snapshot from a checkout of this repository first,
+with Java 25 and Maven 3.9 or later:
+
+```sh
+git clone https://github.com/khopland/pgtasks.git && cd pgtasks
+mvn install -DskipTests
 ```
 
 | Module | What it is |
@@ -139,5 +154,15 @@ engine.close();                                // drains running batches, then s
 - [Changelog](CHANGELOG.md) and [how releases are made](RELEASING.md).
 - Benchmarks: [the schema](docs/benchmarks/2026-11-20-schema.md), and [wake-ups, throughput ceiling and latency](docs/benchmarks/2026-11-22-notify-and-throughput.md).
 
-pgtasks started as a rewrite of [Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task)
-(1.x), and keeps its Apache 2.0 license. 1.x stays in that repository.
+## Contributing
+
+Bug reports and questions go in the [issues](https://github.com/khopland/pgtasks/issues), and
+pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says how to build and test, and
+what a change needs. Report a security problem privately instead, as
+[SECURITY.md](SECURITY.md) describes.
+
+## License
+
+[Apache License 2.0](LICENSE). pgtasks started as a rewrite of
+[Skatteetaten's task library](https://github.com/Skatteetaten/skatteprosessen-task) (1.x) and
+keeps its license. 1.x stays in that repository.
