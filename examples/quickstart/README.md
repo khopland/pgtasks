@@ -7,12 +7,9 @@ module of the root build.
 
 You need Java 25, Maven and Docker.
 
-## 1. Build pgtasks and start Postgres
-
-Until 0.1.0 is on Maven Central, install it from this checkout first:
+## 1. Start Postgres
 
 ```bash
-(cd ../.. && mvn install -DskipTests)
 docker compose up -d --wait          # Postgres 17 on localhost:55433
 ```
 

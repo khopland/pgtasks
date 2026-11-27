@@ -56,19 +56,17 @@ next snapshot; the workflow takes the release version from the tag.
    *Publish*, or *Drop* it and tag again after a fix. Artifacts appear on Maven Central within
    about half an hour of publishing. The workflow also creates the GitHub release (a pre-release
    for 0.x).
-4. On `main`, raise the snapshot (`0.1.0-SNAPSHOT` → `0.2.0-SNAPSHOT`) and set the README's BOM
-   snippet to the version just released. After the first release, also drop the notes that say
-   pgtasks isn't on Maven Central yet, in the README (*Status* and *Modules*) and in
-   `examples/quickstart/README.md`:
+4. On `main`, raise the snapshot (`0.1.0-SNAPSHOT` → `0.2.0-SNAPSHOT`, and `pgtasks.version`
+   in `examples/order-service/pom.xml` with it), and set the README's BOM snippet and
+   `pgtasks.version` in `examples/quickstart/pom.xml` to the version just released:
 
    ```sh
    mvn org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.2.0-SNAPSHOT -DprocessAllModules -DgenerateBackupPoms=false
    ```
 
-5. In `pgtasks-parent/pom.xml`, set `pgtasks.api.baseline` to the version just published, set
-   `japicmp.skip` to `false` (only after the first release), and empty the japicmp plugin's
-   `<excludes>`. From then on, every build compares each jar with that release; see
-   [API compatibility](#api-compatibility).
+5. In `pgtasks-parent/pom.xml`, set `pgtasks.api.baseline` to the version just published and
+   empty the japicmp plugin's `<excludes>`. From then on, every build compares each jar with that
+   release; see [API compatibility](#api-compatibility).
 
 ## Checking the release build locally
 

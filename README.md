@@ -26,8 +26,7 @@ dead letters, where an operator can revive or discard it. Nothing else needs con
 
 ## Status
 
-pgtasks is pre-1.0, and not on Maven Central yet: until 0.1.0 is, [install it from
-source](#modules). Before 1.0, a minor version may break the API; the
+pgtasks is pre-1.0. Before 1.0, a minor version may break the API; the
 [changelog](CHANGELOG.md) says what changed. The schema only ever moves forward, with
 migrations the store applies itself.
 
@@ -47,20 +46,12 @@ Import the BOM, then add modules without versions:
     <dependency>
       <groupId>io.github.khopland.pgtasks</groupId>
       <artifactId>pgtasks-bom</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>0.1.0</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
   </dependencies>
 </dependencyManagement>
-```
-
-Until 0.1.0 is on Maven Central, install the snapshot from a checkout of this repository first,
-with Java 25 and Maven 3.9 or later:
-
-```sh
-git clone https://github.com/khopland/pgtasks.git && cd pgtasks
-mvn install -DskipTests
 ```
 
 | Module | What it is |
