@@ -90,7 +90,7 @@ class ConcurrentDecideTest {
             assertThat(mostAtOnce).hasValue(5);
             assertThat(millis).as("four rounds of 100 ms, not twenty").isLessThan(1_500);
             assertThat(next).hasSize(19).doesNotContain("after t7");
-            assertThat(engine.admin().find(8).orElseThrow().state()).as("only the bad one failed").isEqualTo("failed");
+            assertThat(engine.admin().find(8).orElseThrow().state()).as("only the bad one failed").isEqualTo("dead_letter");
         }
     }
 

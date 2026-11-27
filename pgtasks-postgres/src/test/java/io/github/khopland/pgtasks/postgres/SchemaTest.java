@@ -78,7 +78,7 @@ class SchemaTest {
     @Test
     void uses_enums_and_timestamptz(PostgresDatabase database) {
         assertThat(database.rows(sql("SELECT enum_range(NULL::pgtasks.queue_state)::text")).getFirst().getFirst())
-            .isEqualTo("{scheduled,retrying,ready,active,suspended,failed}");
+            .isEqualTo("{scheduled,retrying,ready,active,suspended,dead_letter}");
         assertThat(database.rows(sql("SELECT enum_range(NULL::pgtasks.task_outcome)::text")).getFirst().getFirst())
             .isEqualTo("{succeeded,filtered,failed,redundant,recreated}");
         assertThat(database.count(sql("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'pgtasks' AND data_type = 'timestamp without time zone'")))

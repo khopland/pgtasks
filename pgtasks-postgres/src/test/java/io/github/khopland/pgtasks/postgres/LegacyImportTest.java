@@ -74,7 +74,7 @@ class LegacyImportTest {
             """)).containsExactly(
             row("p1", "ready", "first", "ref-1", false),
             row("p2", "ready", "second", null, false),
-            row("p3", "failed", "broken", null, false),
+            row("p3", "dead_letter", "broken", null, false),
             row("p4", "suspended", "waiting", null, false),
             row("p6", "scheduled", "later", null, true),
             row("p7", "ready", "was running", null, false));

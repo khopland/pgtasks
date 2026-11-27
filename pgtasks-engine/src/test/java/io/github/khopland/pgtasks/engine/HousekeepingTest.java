@@ -179,7 +179,7 @@ class HousekeepingTest {
         long filtered = engine.tasks().independently().push(TOPIC, "b", "filter").id();
         long dead = engine.tasks().independently().push(TOPIC, "c", "fail").id();
         tester.awaitIdle();
-        assertThat(tester.find(dead).orElseThrow().state()).isEqualTo("failed");
+        assertThat(tester.find(dead).orElseThrow().state()).isEqualTo("dead_letter");
 
         tester.advance(Duration.ofDays(8));
         assertThat(tester.find(filtered)).as("filtered, past 7 days").isEmpty();

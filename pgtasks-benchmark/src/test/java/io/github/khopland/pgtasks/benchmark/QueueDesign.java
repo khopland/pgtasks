@@ -71,7 +71,7 @@ final class QueueDesign implements Design {
                 RETURNING id, identifier
             )
             INSERT INTO tasks.queue (task_id, topic_id, identifier, state, attempt)
-            SELECT id, :topic, identifier, 'failed', 5 FROM stored
+            SELECT id, :topic, identifier, 'dead_letter', 5 FROM stored
             """.formatted(rows));
     }
 

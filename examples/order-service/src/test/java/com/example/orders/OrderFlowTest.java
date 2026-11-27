@@ -129,7 +129,7 @@ class OrderFlowTest {
         tester.drain(PAYMENT);
 
         assertThat(PARTNERS.calls("/payments")).isEqualTo(6);
-        assertThat(tester.counts(PAYMENT).failed()).isZero();
+        assertThat(tester.counts(PAYMENT).deadLetters()).isZero();
     }
 
     /** The partners, answering from memory. */

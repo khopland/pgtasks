@@ -45,7 +45,7 @@ class TaskMetricsTest {
         metrics.bindTo(registry);
 
         assertThat(gauge(TaskMetrics.QUEUE, "orders", "state", "ready")).isEqualTo(3);
-        assertThat(gauge(TaskMetrics.QUEUE, "orders", "state", "failed")).isEqualTo(6);
+        assertThat(gauge(TaskMetrics.QUEUE, "orders", "state", "dead_letter")).isEqualTo(6);
         assertThat(gauge(TaskMetrics.QUEUE, "orders", "state", "due")).isEqualTo(7);
         assertThat(gauge(TaskMetrics.OLDEST_READY, "orders")).isEqualTo(90);
         assertThat(gauge(TaskMetrics.SNAPSHOT_AGE, "orders")).isEqualTo(20);

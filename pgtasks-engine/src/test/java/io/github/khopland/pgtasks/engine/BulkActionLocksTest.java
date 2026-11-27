@@ -95,11 +95,11 @@ class BulkActionLocksTest {
     @Test
     void a_revive_takes_a_dead_letter_that_was_locked_while_its_batch_ran() throws Exception {
         List<Long> ids = push(3);
-        database.execute("UPDATE pgtasks.queue SET state = 'failed', failures = 1, first_failed_at = now()");
+        database.execute("UPDATE pgtasks.queue SET state = 'dead_letter', failures = 1, first_failed_at = now()");
         lock(ids.getFirst());
 
         assertThat(engine.admin().revive(WORK.name(), DeadLetterQuery.ALL)).isEqualTo(3);
-        assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'failed'")).isZero();
+        assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'dead_letter'")).isZero();
     }
 
     @Test
@@ -115,7 +115,7 @@ class BulkActionLocksTest {
     @Test
     void a_task_still_locked_is_left_and_not_counted() throws Exception {
         List<Long> ids = push(3);
-        database.execute("UPDATE pgtasks.queue SET state = 'failed', failures = 1, first_failed_at = now()");
+        database.execute("UPDATE pgtasks.queue SET state = 'dead_letter', failures = 1, first_failed_at = now()");
         lock(ids.get(1));
         // Keep the lock through every rescan.
         Connection kept = holder.getAndSet(null);

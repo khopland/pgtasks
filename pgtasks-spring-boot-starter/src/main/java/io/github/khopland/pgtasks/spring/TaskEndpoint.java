@@ -314,7 +314,7 @@ public class TaskEndpoint {
             queue.put("ready", counts.ready());
             queue.put("active", counts.active());
             queue.put("suspended", counts.suspended());
-            queue.put("deadLetters", counts.failed());
+            queue.put("deadLetters", counts.deadLetters());
             queue.put("due", counts.due());
             queue.put("failing", counts.failing());
             queue.put("oldestFailingAt", text(counts.oldestFailingAt()));

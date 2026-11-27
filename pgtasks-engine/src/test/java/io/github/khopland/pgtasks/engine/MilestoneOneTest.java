@@ -247,7 +247,7 @@ class MilestoneOneTest {
             Creation.of("x", "poison"), Creation.of("x", "later-1"), Creation.of("x", "later-2"), Creation.of("y", "other")
         ));
 
-        await("the poison task to be dead-lettered", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE state = 'failed'") == 1);
+        await("the poison task to be dead-lettered", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.task_view WHERE state = 'dead_letter'") == 1);
         if (ordering == Ordering.SINGULAR_BY_IDENTIFIER) {
             await("the later tasks", Duration.ofSeconds(10), () -> fixture.count("SELECT count(*) FROM pgtasks.queue") == 1);
             assertThat(events.subList(0, events.indexOf("later-1#1")))
@@ -258,7 +258,7 @@ class MilestoneOneTest {
             Thread.sleep(500);
             assertThat(events).doesNotContain("later-1#1", "later-2#1");
             assertThat(database.rows("SELECT payload, state FROM pgtasks.task_view WHERE identifier = 'x' ORDER BY id"))
-                .containsExactly(List.of("poison", "failed"), List.of("later-1", "ready"), List.of("later-2", "ready"));
+                .containsExactly(List.of("poison", "dead_letter"), List.of("later-1", "ready"), List.of("later-2", "ready"));
         }
     }
 

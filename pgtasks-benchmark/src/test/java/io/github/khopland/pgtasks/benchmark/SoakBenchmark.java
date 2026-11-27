@@ -157,7 +157,7 @@ class SoakBenchmark {
         // Drain with every node healthy, then stop them as a deploy would.
         nodes.forEach(node -> node.pool.restore());
         long drainStarted = System.nanoTime();
-        while (count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'failed'") > 0 && System.nanoTime() - drainStarted < DRAIN.toNanos()) {
+        while (count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'dead_letter'") > 0 && System.nanoTime() - drainStarted < DRAIN.toNanos()) {
             Thread.sleep(1_000);
         }
         Duration drained = Duration.ofNanos(System.nanoTime() - drainStarted);
@@ -172,7 +172,7 @@ class SoakBenchmark {
         long children = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + topicId(CHILD));
         long parents = count("SELECT count(DISTINCT parent_id) FROM pgtasks.task WHERE topic_id = " + topicId(CHILD));
         long left = count("SELECT count(*) FROM pgtasks.queue");
-        long dead = count("SELECT count(*) FROM pgtasks.queue WHERE state = 'failed'");
+        long dead = count("SELECT count(*) FROM pgtasks.queue WHERE state = 'dead_letter'");
         long reruns = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + topicId(WORK) + " AND attempts > 1");
         long expired = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + topicId(WORK) + " AND error::text LIKE '%xpired%'");
         results.printf(Locale.ROOT, "%n## Result%n%n- Drained in %d s after the load stopped.%n"
@@ -309,7 +309,7 @@ class SoakBenchmark {
         long done = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + work + " AND outcome = 'succeeded'");
         long total = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + work);
         long backlog = count("SELECT count(*) FROM pgtasks.queue");
-        long dead = count("SELECT count(*) FROM pgtasks.queue WHERE state = 'failed'");
+        long dead = count("SELECT count(*) FROM pgtasks.queue WHERE state = 'dead_letter'");
         long reruns = count("SELECT count(*) FROM pgtasks.task WHERE topic_id = " + work + " AND attempts > 1");
         long taskBytes = count("SELECT pg_total_relation_size('pgtasks.task')");
         long queueBytes = count("SELECT pg_total_relation_size('pgtasks.queue')");

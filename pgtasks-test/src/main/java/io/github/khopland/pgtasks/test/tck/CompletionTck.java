@@ -316,11 +316,11 @@ public abstract class CompletionTck extends StoreTck {
         fixture.complete(topic, node, fixture.claim(topic, node).getFirst(), StoreFixture.deadLetter());
 
         TaskView view = fixture.view(id).orElseThrow();
-        assertThat(view.state()).isEqualTo("failed");
+        assertThat(view.state()).isEqualTo("dead_letter");
         assertThat(view.finished()).isFalse();
         assertThat(view.error()).contains("gave up");
         assertThat(view.attempt()).isEqualTo(1);
-        assertThat(fixture.counts(topic).failed()).isEqualTo(1);
+        assertThat(fixture.counts(topic).deadLetters()).isEqualTo(1);
         assertThat(fixture.claim(topic, node)).isEmpty();
     }
 
@@ -429,7 +429,7 @@ public abstract class CompletionTck extends StoreTck {
                 fixture.advance(backoff);
                 fixture.promoteDue();
             } else {
-                assertThat(view.state()).as("dead letter at the third expiry").isEqualTo("failed");
+                assertThat(view.state()).as("dead letter at the third expiry").isEqualTo("dead_letter");
                 assertThat(view.error()).contains("Expired 3 times");
             }
         }

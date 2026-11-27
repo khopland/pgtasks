@@ -33,20 +33,20 @@ public abstract class OperatorTck extends StoreTck {
     }
 
     /** One task in each unfinished state, by state. */
-    private record Tasks(long ready, long scheduled, long retrying, long active, long suspended, long failed) {
+    private record Tasks(long ready, long scheduled, long retrying, long active, long suspended, long deadLetter) {
     }
 
     private Tasks everyState(StoreFixture fixture) throws SQLException {
         long retrying = fixture.push(topic, "retrying");
         long active = fixture.push(topic, "active");
-        long failed = fixture.push(topic, "failed");
+        long deadLetter = fixture.push(topic, "dead");
         List<ClaimedTask> claimed = fixture.claim(topic, node);
         fixture.complete(topic, node, byId(claimed, retrying), StoreFixture.retrying(Duration.ofHours(1)));
-        fixture.complete(topic, node, byId(claimed, failed), StoreFixture.deadLetter());
+        fixture.complete(topic, node, byId(claimed, deadLetter), StoreFixture.deadLetter());
         long ready = fixture.push(topic, "ready");
         long scheduled = StoreFixture.id(fixture.push(topic, Insertion.APPEND, delayed("scheduled", Duration.ofHours(1))).getFirst());
         long suspended = StoreFixture.id(fixture.push(topic, Insertion.APPEND, suspended("suspended")).getFirst());
-        return new Tasks(ready, scheduled, retrying, active, suspended, failed);
+        return new Tasks(ready, scheduled, retrying, active, suspended, deadLetter);
     }
 
     private static ClaimedTask byId(List<ClaimedTask> claimed, long id) {
@@ -66,16 +66,16 @@ public abstract class OperatorTck extends StoreTck {
         Tasks tasks = everyState(fixture);
         fixture.push(other, "elsewhere");
 
-        List<Long> all = List.of(tasks.retrying(), tasks.active(), tasks.failed(), tasks.ready(), tasks.scheduled(), tasks.suspended());
+        List<Long> all = List.of(tasks.retrying(), tasks.active(), tasks.deadLetter(), tasks.ready(), tasks.scheduled(), tasks.suspended());
         assertThat(search(fixture, TaskQuery.ALL, 100)).as("finished tasks and other topics are left out").containsExactlyElementsOf(all)
             .doesNotContain(done);
         assertThat(search(fixture, TaskQuery.ALL, 2)).containsExactly(all.get(0), all.get(1));
         assertThat(search(fixture, TaskQuery.ALL.after(all.get(1)), 2)).containsExactly(all.get(2), all.get(3));
 
-        TaskView view = fixture.inTransaction(transaction -> fixture.store().tasks(transaction, topic, TaskQuery.ids(List.of(tasks.failed())), 10))
+        TaskView view = fixture.inTransaction(transaction -> fixture.store().tasks(transaction, topic, TaskQuery.ids(List.of(tasks.deadLetter())), 10))
             .getFirst();
         assertThat(view.topic()).isEqualTo("topic");
-        assertThat(view.state()).isEqualTo("failed");
+        assertThat(view.state()).isEqualTo("dead_letter");
         assertThat(view.finished()).isFalse();
         assertThat(view.error()).contains("gave up");
         assertThat(view.attempt()).isEqualTo(1);
@@ -93,7 +93,7 @@ public abstract class OperatorTck extends StoreTck {
         assertThat(search(fixture, TaskQuery.ALL.withReference("case-42"), 10)).containsExactly(tagged);
         assertThat(search(fixture, TaskQuery.ALL.withHeader("tenant", "north"), 10)).containsExactly(tagged);
         assertThat(search(fixture, TaskQuery.ALL.withHeader("tenant", "south"), 10)).isEmpty();
-        assertThat(search(fixture, TaskQuery.ALL.inStates(QueueState.FAILED), 10)).containsExactly(tasks.failed());
+        assertThat(search(fixture, TaskQuery.ALL.inStates(QueueState.DEAD_LETTER), 10)).containsExactly(tasks.deadLetter());
         assertThat(search(fixture, TaskQuery.ALL.inStates(QueueState.SCHEDULED, QueueState.RETRYING), 10))
             .containsExactly(tasks.retrying(), tasks.scheduled());
         assertThat(search(fixture, TaskQuery.ALL.inStates(QueueState.READY), 10)).containsExactly(tasks.ready(), tagged);
@@ -120,8 +120,8 @@ public abstract class OperatorTck extends StoreTck {
 
         assertThat(List.of(held, tasks.suspended())).extracting(fixture::state).containsOnly("ready");
         assertThat(fixture.attempt(held)).as("a suspension gave its attempt back, and a release keeps that").isZero();
-        assertThat(List.of(tasks.ready(), tasks.scheduled(), tasks.retrying(), tasks.active(), tasks.failed()))
-            .extracting(fixture::state).containsExactly("ready", "scheduled", "retrying", "active", "failed");
+        assertThat(List.of(tasks.ready(), tasks.scheduled(), tasks.retrying(), tasks.active(), tasks.deadLetter()))
+            .extracting(fixture::state).containsExactly("ready", "scheduled", "retrying", "active", "dead_letter");
         assertThat(release(fixture, TaskQuery.ALL, 100)).as("nothing is suspended any more").isEmpty();
         assertThat(StoreFixture.ids(fixture.claim(topic, node))).contains(held, tasks.suspended());
     }

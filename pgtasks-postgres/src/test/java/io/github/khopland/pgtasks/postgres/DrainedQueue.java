@@ -125,7 +125,7 @@ final class DrainedQueue implements AutoCloseable {
             )
             INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, run_at)
             SELECT id, topic_id, identifier,
-                   (ARRAY['ready', 'ready', 'suspended', 'failed', 'scheduled', 'retrying'])[1 + id %% 6]::pgtasks.queue_state,
+                   (ARRAY['ready', 'ready', 'suspended', 'dead_letter', 'scheduled', 'retrying'])[1 + id %% 6]::pgtasks.queue_state,
                    CASE WHEN id %% 6 >= 4 THEN now() + interval '100 years' END
             FROM t
             """.formatted(BALLAST));

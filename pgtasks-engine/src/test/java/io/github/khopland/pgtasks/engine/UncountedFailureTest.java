@@ -97,7 +97,7 @@ class UncountedFailureTest {
 
         TaskView dead = engine.admin().find(id).orElseThrow();
         assertThat(runs).as("five uncounted failures, then a dead letter at once").hasValue(6);
-        assertThat(dead.state()).isEqualTo("failed");
+        assertThat(dead.state()).isEqualTo("dead_letter");
         assertThat(dead.attempt()).isEqualTo(1);
         assertThat(dead.error()).contains("bad payload");
     }

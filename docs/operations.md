@@ -296,7 +296,7 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 | `pgtasks.push`, `pgtasks.batch`, `pgtasks.task` | `pgtasks_push_seconds_count`, `_sum`, `_max` (and `batch`, `task` alike) | Observations (timers, and spans with tracing) of pushes, batches, and each task a handler decides one by one |
 | `pgtasks.pushed{topic,status}` | `pgtasks_pushed_tasks_total` | Committed pushes |
 | `pgtasks.completed{topic,result}` | `pgtasks_completed_tasks_total` | Completed tasks: succeeded, filtered, suspended, delayed, unavailable (a failure the retry policy doesn't count), retrying, dead-lettered |
-| `pgtasks.queue{topic,state}` | `pgtasks_queue_tasks` | Unfinished tasks per state, from the last snapshot |
+| `pgtasks.queue{topic,state}` | `pgtasks_queue_tasks` | Unfinished tasks per state (`scheduled`, `retrying`, `ready`, `active`, `suspended`, `dead_letter`, and `due`), from the last snapshot |
 | `pgtasks.queue.oldest.ready{topic}` | `pgtasks_queue_oldest_ready_seconds` | Seconds since the oldest ready task was pushed |
 | `pgtasks.queue.failing{topic}` | `pgtasks_queue_failing_tasks` | Tasks whose last run failed |
 | `pgtasks.queue.oldest.failing{topic}` | `pgtasks_queue_oldest_failing_seconds` | Since when the longest-failing task has failed |
