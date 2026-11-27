@@ -43,7 +43,7 @@ fit. If it isn't, one of the tools below is likely a better one.
   period. Store files and large documents elsewhere and push a reference.
 - **Cron schedules, today.** Delays and run times are supported (`withDelay`, `withRunAt`,
   `later()`), and a task can push its own next run, but there is no built-in "every night at
-  02:00 on one node". It is planned for 0.2.0, as is cancelling a queued task by id.
+  02:00 on one node". It is planned for 0.2.0.
 - **Work that has nothing to do with the database's transactions.** If the work never needs to
   commit with a data change, an in-memory executor or a scheduler may be simpler.
 

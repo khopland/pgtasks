@@ -365,6 +365,19 @@ public interface TaskStore {
     List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
+     * Takes the matching unfinished tasks out of the queue, the lowest ids first: they finish as
+     * {@link io.github.khopland.pgtasks.Outcome#CANCELLED cancelled}, with the attempts they took,
+     * and never run. Ready, delayed, retrying, suspended and dead-lettered tasks are taken, in the
+     * states the query names if it names any; active ones never are, since a node runs them and its
+     * completion must still find them. Like {@link #revive}, it skips rows another transaction
+     * holds locked. Tasks they held back under an ordering run next: the store wakes the topic's
+     * workers once it commits.
+     *
+     * @return the cancelled ids
+     */
+    List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
      * are and come back with every claim; an empty map stores none. {@code runAt} is an absolute
      * time, compared with the store's clock: a time not after it makes the task ready at once.

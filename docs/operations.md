@@ -81,8 +81,8 @@ in. With another tool, pass the same name the engine uses:
 
 ### Changing the schema
 
-Nothing is released yet, so `V001__tasks_schema.sql` still changes in place. Once 0.1.0 ships,
-it is frozen. **Never edit a released versioned file**: databases
+A versioned file is frozen once a release ships it: `V001__tasks_schema.sql` since 0.1.0.
+**Never edit a released versioned file**: databases
 that applied it would no longer match it. The built-in runner refuses to start when an applied
 file's checksum changed, and Flyway and Liquibase do the same. Add the next file instead:
 
@@ -163,6 +163,7 @@ GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
+POST   /actuator/tasks/topics/{topic}/cancel             unfinished tasks but active ones: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
@@ -214,11 +215,13 @@ Then open `http://<host>/pgtasks/`. It shows:
   and where each came from, purge and delete.
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
-  one without an identifier or reference reads the topic's backlog. A suspended task in the
-  results has a Release button, and a topic with suspended tasks has "Release all suspended…".
-- **Task**: look one up by id in the header, with its error.
+  one without an identifier or reference reads the topic's backlog. A task in the results that
+  isn't running has a Cancel button, a suspended one a Release button too, and a topic with
+  suspended tasks has "Release all suspended…".
+- **Task**: look one up by id in the header, with its error, and cancel it if it hasn't finished
+  and isn't running.
 
-Discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
+Cancels, discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
 (discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
 "Live" refreshes the page every 10 seconds.
 
@@ -397,6 +400,27 @@ with `Creation.asSuspended()`. Nothing releases it on its own. Once what it wait
 
 The `pgtasks.queue{state="suspended"}` gauge shows how many wait in each topic.
 
+## Cancelling tasks
+
+A task that should never run, because what it was for has gone away, can be taken out of the
+queue: `admin().cancel(topic, ids)`, or `admin().cancel(topic, query)` for the tasks a `TaskQuery`
+matches, the endpoint's `cancel` action, or the Cancel button in the dashboard's task search and on
+a task's page.
+
+```java
+admin.cancel("reminders", TaskQuery.ALL.withIdentifier("order-7"));   // every reminder still queued for order 7
+```
+
+- Ready, delayed, retrying, suspended and dead-lettered tasks are cancelled. They finish as
+  `cancelled`, keep the attempts and the last error they had, and are kept for the topic's
+  retention of cancelled tasks (30 days by default). Tasks they held back under an ordering run next.
+- An active task is left to run to its end and isn't counted: its node can't be stopped from
+  here, and a cancelled record would disagree with what its handler did. Cancel it again once it is
+  back in the queue, or let it finish.
+- A cancel commits on its own, in batches of 1,000, like the other bulk actions. It doesn't join a
+  transaction the caller has open, so it can't be undone by a rollback.
+- Nothing cancels every task of a topic without `"all": "true"` (`TaskQuery.ALL` in code).
+
 ## Unfinished tasks
 
 What [concepts](concepts.md#searching-unfinished-tasks) describes, from the endpoint or
@@ -417,7 +441,7 @@ admin.tasks("assessment", stuck, 50);            // a page, lowest id first; nex
 ## Retention
 
 Finished tasks are deleted by the housekeeping leader, per topic and outcome, counted from
-completion: succeeded after 30 days, filtered, redundant and recreated after 7,
+completion: succeeded and cancelled after 30 days, filtered, redundant and recreated after 7,
 failed (discarded dead letters) never. Change it per topic with `options.retain(Outcome.SUCCEEDED, Period.ofDays(90))`,
 for every topic in `TaskGlobals`, or per environment with `pgtasks.topics.<t>.retain.succeeded: 90d`.
 A retention is from zero to a thousand years; `retainForever` (or `forever`) keeps an outcome

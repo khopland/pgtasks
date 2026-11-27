@@ -10,7 +10,7 @@ import org.jspecify.annotations.Nullable;
  *
  * @param state           the queue state if unfinished (scheduled, retrying, ready, active,
  *                        suspended, dead_letter), otherwise the outcome (succeeded, filtered,
- *                        failed, redundant, recreated)
+ *                        failed, redundant, recreated, cancelled)
  * @param attempt         the current attempt if unfinished, otherwise the attempts it took
  * @param error           the last recorded failure as JSON, kept from the first failure on
  * @param failures        failed runs in a row while unfinished, counted or not

@@ -36,9 +36,13 @@ record TopicSettings(
     Map<Outcome, Period> retention
 ) {
 
-    /** Succeeded 30 days, filtered, redundant and recreated 7 days, failed forever. */
+    /**
+     * Succeeded and cancelled 30 days, filtered, redundant and recreated 7 days, failed forever. A
+     * cancellation is an operator's decision, kept as long as a success so it can be looked up.
+     */
     public static final Map<Outcome, Period> DEFAULT_RETENTION = Map.of(
         Outcome.SUCCEEDED, Period.ofDays(30),
+        Outcome.CANCELLED, Period.ofDays(30),
         Outcome.FILTERED, Period.ofDays(7),
         Outcome.REDUNDANT, Period.ofDays(7),
         Outcome.RECREATED, Period.ofDays(7)

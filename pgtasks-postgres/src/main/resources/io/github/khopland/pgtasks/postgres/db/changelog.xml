@@ -27,6 +27,10 @@
         <sqlFile path="V001__tasks_schema.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>
 
+    <changeSet id="${pgtasks_schema}-V002" author="pgtasks">
+        <sqlFile path="V002__cancelled_outcome.sql" relativeToChangelogFile="true" splitStatements="false"/>
+    </changeSet>
+
     <changeSet id="${pgtasks_schema}-R__create_topic" author="pgtasks" runOnChange="true">
         <sqlFile path="R__create_topic.sql" relativeToChangelogFile="true" splitStatements="false"/>
     </changeSet>

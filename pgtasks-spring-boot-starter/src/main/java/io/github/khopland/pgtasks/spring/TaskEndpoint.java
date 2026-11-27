@@ -46,6 +46,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}; or {"error": "java.net.ConnectException",
  *                                                        "failedFrom": "...", "failedUntil": "..."}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}; or {"identifier": "order-7"}; or {"all": "true"}
+ * POST   /actuator/tasks/topics/{topic}/cancel             unfinished tasks but active ones: {"ids": "1,2"}; or {"identifier": "order-7"}; or {"all": "true"}
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
@@ -154,7 +155,7 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: revive, discard, release, purge. */
+    /** Topic actions: revive, discard, release, cancel, purge. */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
@@ -187,17 +188,18 @@ public class TaskEndpoint {
                 body.put(action.equals("revive") ? "revived" : "discarded",
                     action.equals("revive") ? engine.admin().revive(name, query) : engine.admin().discard(name, query));
             }
-            case "release" -> {
+            case "release", "cancel" -> {
+                boolean release = action.equals("release");
                 String only = blankToNull(identifier);
                 if (taskIds == null && only == null && !"true".equalsIgnoreCase(all)) {
-                    return badRequest("Name the suspended tasks: \"ids\", or \"identifier\", or \"all\": \"true\" for every one");
+                    return badRequest("Name the " + (release ? "suspended" : "unfinished") + " tasks: \"ids\", or \"identifier\", or \"all\": \"true\" for every one");
                 }
                 TaskQuery query = (taskIds == null ? TaskQuery.ALL : TaskQuery.ids(taskIds)).withIdentifier(only);
-                body.put("released", engine.admin().release(name, query));
+                body.put(release ? "released" : "cancelled", release ? engine.admin().release(name, query) : engine.admin().cancel(name, query));
             }
             case "purge" -> {
                 if (outcome == null || before == null) {
-                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant or recreated) and a time to purge before");
+                    return badRequest("purge needs an outcome (succeeded, filtered, failed, redundant, recreated or cancelled) and a time to purge before");
                 }
                 Outcome purged;
                 Instant until;
