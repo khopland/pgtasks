@@ -100,10 +100,10 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    restarted. Flyway and Liquibase re-apply an `R__` file whenever its content differs from the
    last one they applied, whatever the revision: run them once per release from the pipeline, not
    from every node at startup.
-4. `SchemaFreezeTest` holds the checksum of every released versioned file and fails if one changes.
-   Add the new file's checksum there when it is released. It also pins the checksum of every
-   revision of every `R__` file, so changing one without raising its revision fails the build; add
-   the new revision's checksum next to the old ones.
+4. `SchemaFreezeTest` fails if a released versioned file changes. It compares the files with
+   each release's snapshot under `released/<version>/`, which the release workflow adds. It also
+   pins the checksum of every revision of every `R__` file, so changing one without raising its
+   revision fails the build; add the new revision's checksum next to the old ones.
 5. `SchemaUpgradeTest` upgrades from every released schema: it applies that release's files, loads
    the rows its code left with tasks in every state (ready, scheduled, retrying, suspended, a dead
    letter, a claim held by a node that died, finished and superseded ones), applies the current

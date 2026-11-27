@@ -1,7 +1,9 @@
 # Builds and tests every module on Linux, including the store TCK and the engine's Postgres
 # tests on an embedded Postgres (no Docker needed). The build job runs on the default Postgres
 # (embedded-postgres-binaries.version in pgtasks-parent); the postgres job repeats the
-# Postgres-dependent modules on every other supported major version.
+# Postgres-dependent modules on every other supported major version. On main, once those pass, the
+# release-draft job keeps a draft GitHub release for the newest version in CHANGELOG.md; publishing
+# it starts the release workflow (RELEASING.md).
 name: build
 
 on:
@@ -96,6 +98,8 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Check the newest version in CHANGELOG.md
+        run: bash .github/scripts/release-version.sh
       - name: Build the release artifacts
         run: |
           mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.0.0 -DprocessAllModules -DgenerateBackupPoms=false
@@ -155,3 +159,24 @@ jobs:
             pgtasks-engine/target/surefire-reports/
             pgtasks-engine/target/fray/fray-report/
           retention-days: 7
+
+  release-draft:
+    # Publishing the draft creates the tag and starts the release workflow. Each green push to main
+    # moves the draft to its commit while the version is unreleased.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, release-check, postgres, fray]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-draft
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prepare-release-draft.sh
