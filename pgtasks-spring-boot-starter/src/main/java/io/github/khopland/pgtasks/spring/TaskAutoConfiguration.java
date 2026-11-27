@@ -2,10 +2,12 @@ package io.github.khopland.pgtasks.spring;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Tasks;
@@ -21,6 +23,7 @@ import io.github.khopland.pgtasks.jackson.JacksonPayloadCodecs;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanCreationException;
@@ -77,7 +80,8 @@ public class TaskAutoConfiguration {
             if (!ClassUtils.isPresent("io.github.khopland.pgtasks.memory.InMemoryTaskStore", TaskAutoConfiguration.class.getClassLoader())) {
                 throw new IllegalStateException(NO_MEMORY_STORE);
             }
-            builder.store(Memory.store()).transactions(new SpringTransactions(null));
+            // The tasks stay in memory; a DataSource, if there is one, takes batch resources' JDBC effects.
+            builder.store(Memory.store(dataSources.getIfAvailable())).transactions(new SpringTransactions(null));
         } else {
             DataSource dataSource = dataSources.getIfAvailable();
             if (dataSource == null) {
@@ -193,8 +197,8 @@ public class TaskAutoConfiguration {
 
     /** Loaded only when pgtasks.store=memory, so pgtasks-memory stays optional. */
     private static final class Memory {
-        static TaskStore store() {
-            return new InMemoryTaskStore();
+        static TaskStore store(@Nullable DataSource dataSource) {
+            return dataSource != null ? new InMemoryTaskStore(InstantSource.system(), dataSource) : new InMemoryTaskStore();
         }
     }
 }

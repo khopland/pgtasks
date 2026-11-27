@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Consumer;
 
+import javax.sql.DataSource;
+
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.engine.LocalTransactions;
 import io.github.khopland.pgtasks.engine.TaskAdmin;
@@ -41,17 +43,22 @@ import org.junit.jupiter.api.extension.ParameterResolver;
  * Test methods can take {@link TaskEngine}, {@link Tasks}, {@link TaskTester}, {@link TaskAdmin},
  * {@link ManualClock} and {@link LocalTransactions}, whose {@code inTransaction} gives
  * {@code tasks.push(...)} a transaction to join.
+ *
+ * <p>A batch resource's JDBC effects need a database: {@link #withDataSource} runs them on
+ * connections from a test database while the tasks stay in memory.
  */
 public final class TaskEngineExtension implements BeforeEachCallback, AfterEachCallback, ParameterResolver {
 
     private final Consumer<TaskEngineBuilder> setup;
+    private final @Nullable DataSource dataSource;
     private @Nullable ManualClock clock;
     private @Nullable LocalTransactions transactions;
     private @Nullable TaskEngine engine;
     private @Nullable TaskTester tester;
 
-    private TaskEngineExtension(Consumer<TaskEngineBuilder> setup) {
+    private TaskEngineExtension(Consumer<TaskEngineBuilder> setup, @Nullable DataSource dataSource) {
         this.setup = Objects.requireNonNull(setup, "setup");
+        this.dataSource = dataSource;
     }
 
     /** An engine with these configurers, and defaults for everything else. */
@@ -65,14 +72,23 @@ public final class TaskEngineExtension implements BeforeEachCallback, AfterEachC
 
     /** An engine set up on the builder, which already has the store and transactions. */
     public static TaskEngineExtension with(Consumer<TaskEngineBuilder> setup) {
-        return new TaskEngineExtension(setup);
+        return new TaskEngineExtension(setup, null);
+    }
+
+    /**
+     * The same engine, with batch resources' JDBC effects ({@code beforeCommit}) run on connections
+     * from this data source, so they can be checked in the database. Tasks stay in memory.
+     */
+    public TaskEngineExtension withDataSource(DataSource dataSource) {
+        return new TaskEngineExtension(setup, Objects.requireNonNull(dataSource, "dataSource"));
     }
 
     @Override
     public void beforeEach(ExtensionContext context) {
         ManualClock clock = ManualClock.startingNow();
         LocalTransactions transactions = new LocalTransactions();
-        TaskEngineBuilder builder = TaskEngine.builder().store(new InMemoryTaskStore(clock)).transactions(transactions).node("test");
+        TaskEngineBuilder builder = TaskEngine.builder()
+            .store(dataSource != null ? new InMemoryTaskStore(clock, dataSource) : new InMemoryTaskStore(clock)).transactions(transactions).node("test");
         setup.accept(builder);
         TaskEngine engine = builder.build().start();
         this.clock = clock;

@@ -72,7 +72,10 @@ The first release: a rewrite of [Skatteetaten's task library](https://github.com
   retention per outcome.
 - `pgtasks-postgres`: the schema as plain SQL with a built-in runner (or Flyway and Liquibase),
   a configurable schema name, a validate-only mode, and `LegacyImport` to move queued 1.x tasks.
-- `pgtasks-memory`: an in-memory store that passes the same TCK as Postgres.
+- `pgtasks-memory`: an in-memory store that passes the same TCK as Postgres. Given a
+  `DataSource`, it runs batch resources' JDBC effects on it, so handlers that write SQL in
+  `beforeCommit` can be tested with the tasks in memory (`TaskEngineExtension.withDataSource`,
+  and the starter's application `DataSource` under `pgtasks.store=memory`).
 - `pgtasks-spring-boot-starter`: one engine from every `TaskConfigurer` bean, `pgtasks.*`
   overrides that fail startup on unknown topics or settings, Spring transactions, an Actuator
   endpoint, a health indicator and an optional web dashboard.
