@@ -6,7 +6,7 @@
   <groupId>io.github.khopland.pgtasks</groupId>
   <artifactId>pgtasks-bom</artifactId>
   <name>pgtasks BOM</name>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.2.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <description>pgtasks bill of materials: import it, then add the modules without versions.</description>
   <url>https://github.com/khopland/pgtasks</url>

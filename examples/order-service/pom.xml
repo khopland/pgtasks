@@ -16,7 +16,7 @@
 
   <properties>
     <java.version>25</java.version>
-    <pgtasks.version>0.1.0-SNAPSHOT</pgtasks.version>
+    <pgtasks.version>0.2.0-SNAPSHOT</pgtasks.version>
   </properties>
 
   <dependencyManagement>

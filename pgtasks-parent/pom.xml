@@ -5,7 +5,7 @@
   <groupId>io.github.khopland.pgtasks</groupId>
   <artifactId>pgtasks-parent</artifactId>
   <name>pgtasks parent</name>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.2.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <description>A task queue in the Postgres database you already run.</description>
@@ -63,13 +63,13 @@
     <central.skipPublishing>false</central.skipPublishing>
     <!--
       API compatibility (japicmp): every jar is compared with the same artifact at this released
-      version, and any binary or source incompatible change fails the build. Empty until 0.1.0 is
-      on Maven Central; after each release, RELEASING.md sets it to that version and clears the
-      accepted breaks in the japicmp plugin below. A break made on purpose is added there as an
-      exclude, with a line in CHANGELOG.md, so it is a decision and not an accident.
+      version, and any binary or source incompatible change fails the build. After each release,
+      RELEASING.md sets it to that version and clears the accepted breaks in the japicmp plugin
+      below. A break made on purpose is added there as an exclude, with a line in CHANGELOG.md,
+      so it is a decision and not an accident.
     -->
-    <pgtasks.api.baseline></pgtasks.api.baseline>
-    <japicmp.skip>true</japicmp.skip>
+    <pgtasks.api.baseline>0.1.0</pgtasks.api.baseline>
+    <japicmp.skip>false</japicmp.skip>
   </properties>
 
   <dependencyManagement>
@@ -375,7 +375,7 @@
           </execution>
         </executions>
       </plugin>
-      <!-- See pgtasks.api.baseline: skipped until there is a release to compare with. -->
+      <!-- See pgtasks.api.baseline. -->
       <plugin>
         <groupId>com.github.siom79.japicmp</groupId>
         <artifactId>japicmp-maven-plugin</artifactId>
