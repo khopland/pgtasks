@@ -25,7 +25,9 @@ const ROUTES = {
 const HIDDEN = "******";
 const REFRESH_MS = 10000;
 const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated"];
-const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "failed"];
+const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "dead_letter"];
+/** States shown as bad: a dead letter, and a task that finished as failed. */
+const BAD = new Set(["dead_letter", "failed"]);
 
 const state = {
   config: null,
@@ -718,7 +720,7 @@ function tasksPanel(topic, search, suspended) {
   const rows = table([
     { label: "Task", value: task => taskLink(task.id) },
     { label: "Identifier", value: task => h("td", { class: "wrap mono" }, task.identifier) },
-    { label: "State", value: task => chip(task.state, task.state === "failed" ? "bad" : task.state === "retrying" ? "warn" : "info") },
+    { label: "State", value: task => chip(task.state, BAD.has(task.state) ? "bad" : task.state === "retrying" ? "warn" : "info") },
     { label: "Attempt", num: true, value: task => count(task.attempt) },
     { label: "Runs at", value: task => time(task.runAt) },
     { label: "Created", value: task => time(task.createdAt) },
@@ -973,7 +975,7 @@ async function taskView(idText) {
   const fields = [
     ["Topic", topicLink(task.topic)],
     ["Identifier", h("span", { class: "mono" }, task.identifier)],
-    ["State", chip(task.state, task.state === "failed" ? "bad" : task.finished ? "ok" : "info")],
+    ["State", chip(task.state, BAD.has(task.state) ? "bad" : task.finished ? "ok" : "info")],
     ["Attempt", number(task.attempt)],
     ["Failures", task.failures ? [number(task.failures), task.firstFailedAt ? [", first ", time(task.firstFailedAt)] : null] : "0"],
     ["Run at", time(task.runAt)],

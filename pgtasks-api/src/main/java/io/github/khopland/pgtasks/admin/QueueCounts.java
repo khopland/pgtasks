@@ -12,10 +12,10 @@ import org.jspecify.annotations.Nullable;
  * unfinished tasks whose last run failed, dead letters included, and {@code oldestFailingAt}
  * is when the longest-failing of them first failed: the number to alert on.
  */
-public record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long failed, long due,
+public record QueueCounts(long scheduled, long retrying, long ready, long active, long suspended, long deadLetters, long due,
                           @Nullable Instant nextRunAt, @Nullable Instant oldestReadyAt, long failing, @Nullable Instant oldestFailingAt) {
 
     public long total() {
-        return scheduled + retrying + ready + active + suspended + failed;
+        return scheduled + retrying + ready + active + suspended + deadLetters;
     }
 }

@@ -76,26 +76,26 @@ class TextLimitsTest {
         engine.start();
 
         EngineFixture.await("the dead letter", Duration.ofSeconds(10),
-            () -> database.count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'failed'") == 0
+            () -> database.count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'dead_letter'") == 0
                 && database.count("SELECT count(*) FROM pgtasks.queue") == 4);
 
         assertThat(runs.get("fine")).as("ran once: its completion wasn't lost to another task's text").hasValue(1);
         assertThat(engine.admin().find(ids.get(0)).orElseThrow().state()).isEqualTo("succeeded");
         TaskView failed = engine.admin().find(ids.get(1)).orElseThrow();
-        assertThat(failed.state()).isEqualTo("failed");
+        assertThat(failed.state()).isEqualTo("dead_letter");
         assertThat(failed.error()).contains("bad byte").contains("in input").contains("IllegalStateException");
         TaskView output = engine.admin().find(ids.get(2)).orElseThrow();
         assertThat(output.state()).isEqualTo("succeeded");
         assertThat(output.output()).startsWith("out").endsWith("put");
         assertThat(engine.admin().find(ids.get(3)).orElseThrow().state()).isEqualTo("filtered");
         TaskView push = engine.admin().find(ids.get(4)).orElseThrow();
-        assertThat(push.state()).as("the bad push fails the task that staged it").isEqualTo("failed");
+        assertThat(push.state()).as("the bad push fails the task that staged it").isEqualTo("dead_letter");
         assertThat(push.error()).contains("NUL");
         TaskView hostile = engine.admin().find(ids.get(5)).orElseThrow();
-        assertThat(hostile.state()).as("recorded and dead-lettered, not handed back uncounted").isEqualTo("failed");
+        assertThat(hostile.state()).as("recorded and dead-lettered, not handed back uncounted").isEqualTo("dead_letter");
         assertThat(hostile.error()).contains(Hostile.class.getName());
         TaskView forever = engine.admin().find(ids.get(6)).orElseThrow();
-        assertThat(forever.state()).as("a delay the store can't hold fails only its task").isEqualTo("failed");
+        assertThat(forever.state()).as("a delay the store can't hold fails only its task").isEqualTo("dead_letter");
         assertThat(forever.error()).contains("at most a thousand years");
     }
 
@@ -138,7 +138,7 @@ class TextLimitsTest {
         engine.start();
 
         EngineFixture.await("the dead letters", Duration.ofSeconds(10),
-            () -> database.count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'failed'") == 0
+            () -> database.count("SELECT count(*) FROM pgtasks.queue WHERE state <> 'dead_letter'") == 0
                 && database.count("SELECT count(*) FROM pgtasks.queue") == 3);
 
         assertThat(runs.get("fine")).as("ran once: its completion wasn't lost to another task's push").hasValue(1);
@@ -148,7 +148,7 @@ class TextLimitsTest {
         assertThat(engine.admin().find(ids.get(1)).orElseThrow().error()).contains("can't encode boom");
         assertThat(engine.admin().find(ids.get(2)).orElseThrow().error()).contains("NUL");
         assertThat(engine.admin().find(ids.get(3)).orElseThrow().error()).contains("nowhere");
-        List.of(1, 2, 3).forEach(index -> assertThat(engine.admin().find(ids.get(index)).orElseThrow().state()).isEqualTo("failed"));
+        List.of(1, 2, 3).forEach(index -> assertThat(engine.admin().find(ids.get(index)).orElseThrow().state()).isEqualTo("dead_letter"));
     }
 
     /**

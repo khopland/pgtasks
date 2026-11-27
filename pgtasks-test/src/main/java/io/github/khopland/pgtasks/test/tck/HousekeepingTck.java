@@ -97,7 +97,7 @@ public abstract class HousekeepingTck extends StoreTck {
         assertThat(fixture.state(old)).isNull();
         assertThat(fixture.state(recent)).as("completed after the cutoff in store time, then backdated").isNull();
         assertThat(fixture.state(filtered)).isEqualTo("filtered");
-        assertThat(fixture.state(dead)).as("dead letters are unfinished").isEqualTo("failed");
+        assertThat(fixture.state(dead)).as("dead letters are unfinished").isEqualTo("dead_letter");
         assertThat(fixture.state(waiting)).isNotNull();
     }
 

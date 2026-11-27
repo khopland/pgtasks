@@ -57,7 +57,7 @@ class HandlerShapesTest {
 
         assertThat(archived).containsExactly("sent hello");
         TaskView bad = engine.admin().find(2).orElseThrow();
-        assertThat(bad.state()).isEqualTo("failed");
+        assertThat(bad.state()).isEqualTo("dead_letter");
         assertThat(bad.error()).contains("can't send bad");
     }
 

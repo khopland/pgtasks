@@ -30,7 +30,7 @@ groups:
             Retries continue, and dead letters can take days to appear: look at the failing tasks now.
 
       - alert: PgtasksDeadLetters
-        expr: max by (topic) (pgtasks_queue_tasks{state="failed"}) > 0
+        expr: max by (topic) (pgtasks_queue_tasks{state="dead_letter"}) > 0
         for: 1m
         labels:
           severity: warning

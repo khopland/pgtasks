@@ -82,7 +82,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max by (topic) (pgtasks_queue_tasks{state=\"failed\",topic=~\"$topic\"}))",
+          "expr": "sum(max by (topic) (pgtasks_queue_tasks{state=\"dead_letter\",topic=~\"$topic\"}))",
           "legendFormat": "dead letters"
         }
       ],

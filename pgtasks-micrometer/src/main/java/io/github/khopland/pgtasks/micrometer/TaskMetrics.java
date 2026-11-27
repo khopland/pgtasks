@@ -66,7 +66,7 @@ public final class TaskMetrics implements MeterBinder {
         "ready", QueueCounts::ready,
         "active", QueueCounts::active,
         "suspended", QueueCounts::suspended,
-        "failed", QueueCounts::failed,
+        "dead_letter", QueueCounts::deadLetters,
         "due", QueueCounts::due);
 
     private final Callable<List<TopicSnapshot>> snapshots;

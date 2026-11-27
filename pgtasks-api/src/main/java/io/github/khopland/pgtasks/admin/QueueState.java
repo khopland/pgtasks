@@ -15,9 +15,9 @@ public enum QueueState {
     /** Waits until something releases it. */
     SUSPENDED,
     /** A dead letter: out of attempts, waits for an operator. */
-    FAILED;
+    DEAD_LETTER;
 
-    /** The name as stored and shown: {@code scheduled}, {@code ready}, ... */
+    /** The name as stored and shown: {@code scheduled}, {@code ready}, ..., {@code dead_letter}. */
     public String label() {
         return name().toLowerCase(Locale.ROOT);
     }
@@ -27,7 +27,7 @@ public enum QueueState {
         try {
             return valueOf(label.strip().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Unknown queue state '" + label + "': scheduled, retrying, ready, active, suspended or failed", e);
+            throw new IllegalArgumentException("Unknown queue state '" + label + "': scheduled, retrying, ready, active, suspended or dead_letter", e);
         }
     }
 }

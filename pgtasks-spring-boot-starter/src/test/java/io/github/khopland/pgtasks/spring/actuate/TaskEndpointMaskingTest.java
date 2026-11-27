@@ -60,7 +60,7 @@ class TaskEndpointMaskingTest {
         Map<String, Object> dead = first(hidden.readPart("topics", "work", "dead-letters", null, null, null, null, null, null, null, null, SecurityContext.NONE).getBody(), "deadLetters");
         assertThat(dead.get("payload")).isEqualTo("******");
         assertThat(dead.get("error")).as("an error keeps its type only").isEqualTo(Map.of("type", "java.lang.IllegalArgumentException", "message", "******"));
-        Map<String, Object> found = first(hidden.readPart("topics", "work", "tasks", null, null, "a", null, "failed", null, null, null, SecurityContext.NONE)
+        Map<String, Object> found = first(hidden.readPart("topics", "work", "tasks", null, null, "a", null, "dead_letter", null, null, null, SecurityContext.NONE)
             .getBody(), "tasks");
         assertThat(found.get("payload")).as("a search masks like the dead letters").isEqualTo("******");
         assertThat(found.get("headers")).isEqualTo(Map.of("korrelasjonsid", "******"));

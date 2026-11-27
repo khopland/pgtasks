@@ -62,7 +62,7 @@ public abstract class DeadLetterTck extends StoreTck {
 
         List<TaskView> page = deadLetters(fixture, topic, 0, 2);
         assertThat(page).extracting(TaskView::id).containsExactly(first, second);
-        assertThat(page.getFirst().state()).isEqualTo("failed");
+        assertThat(page.getFirst().state()).isEqualTo("dead_letter");
         assertThat(page.getFirst().finished()).isFalse();
         assertThat(page.getFirst().error()).contains("gave up");
         assertThat(page.getFirst().topic()).isEqualTo("topic");
@@ -80,7 +80,7 @@ public abstract class DeadLetterTck extends StoreTck {
         ClaimedTask again = fixture.claim(topic, node).getFirst();
         assertThat(again.id()).isEqualTo(id);
         assertThat(again.attempt()).isEqualTo(1);
-        assertThat(fixture.counts(topic).failed()).isZero();
+        assertThat(fixture.counts(topic).deadLetters()).isZero();
         assertThat(fixture.view(id).orElseThrow().failures()).as("a revived task starts afresh").isZero();
         assertThat(fixture.view(id).orElseThrow().firstFailedAt()).isNull();
     }
@@ -95,7 +95,7 @@ public abstract class DeadLetterTck extends StoreTck {
 
         assertThat(revive(fixture, List.of(dead, queued, elsewhere, 999_999L), 100)).containsExactly(dead);
 
-        assertThat(fixture.state(elsewhere)).isEqualTo("failed");
+        assertThat(fixture.state(elsewhere)).isEqualTo("dead_letter");
     }
 
     @Test
@@ -117,7 +117,7 @@ public abstract class DeadLetterTck extends StoreTck {
 
         List<Long> revived = fixture.inTransaction(transaction -> fixture.store().revive(transaction, topic, all.withError("gave up").after(gaveUp), 10));
         assertThat(revived).containsExactly(later);
-        assertThat(fixture.state(gaveUp)).isEqualTo("failed");
+        assertThat(fixture.state(gaveUp)).isEqualTo("dead_letter");
         List<Long> discarded = fixture.inTransaction(transaction -> fixture.store().discard(transaction, topic, all.withError("java.net.ConnectException"), 10));
         assertThat(discarded).containsExactly(refusedId);
     }
@@ -134,7 +134,7 @@ public abstract class DeadLetterTck extends StoreTck {
         long third = deadLetter(fixture, topic, "c");
 
         assertThat(revive(fixture, null, 2)).containsExactly(first, second);
-        assertThat(fixture.state(third)).isEqualTo("failed");
+        assertThat(fixture.state(third)).isEqualTo("dead_letter");
     }
 
     @Test

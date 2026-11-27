@@ -17,8 +17,8 @@ CREATE SCHEMA IF NOT EXISTS ${pgtasks_schema};
 
 -- scheduled: delayed (push delay or later()); doesn't hold back later tasks under SINGULAR.
 -- retrying:  backing off after a failure; holds its place in line.
--- failed:    dead letter, out of attempts.
-CREATE TYPE ${pgtasks_schema}.queue_state AS ENUM ('scheduled', 'retrying', 'ready', 'active', 'suspended', 'failed');
+-- dead_letter: out of attempts; waits for an operator to revive or discard it.
+CREATE TYPE ${pgtasks_schema}.queue_state AS ENUM ('scheduled', 'retrying', 'ready', 'active', 'suspended', 'dead_letter');
 CREATE TYPE ${pgtasks_schema}.task_outcome AS ENUM ('succeeded', 'filtered', 'failed', 'redundant', 'recreated');
 
 -- One row: the schema version, and the oldest library schema version that can still run
@@ -123,7 +123,7 @@ CREATE INDEX queue_active_idx ON ${pgtasks_schema}.queue (node_id) WHERE state =
 -- How many tasks are failing, and since when, for the count snapshots: few next to the backlog.
 CREATE INDEX queue_failing_idx ON ${pgtasks_schema}.queue (topic_id, first_failed_at) WHERE failures > 0;
 -- Listing, reviving and discarding a topic's dead letters, which are few next to its backlog.
-CREATE INDEX queue_failed_idx ON ${pgtasks_schema}.queue (topic_id, task_id) WHERE state = 'failed';
+CREATE INDEX queue_dead_letter_idx ON ${pgtasks_schema}.queue (topic_id, task_id) WHERE state = 'dead_letter';
 -- Idempotent push: at most one unfinished task per key. Finished tasks leave the queue. Partial,
 -- because most tasks have no key, and because a full index led by topic_id would compete with
 -- queue_identifier_idx in claims whenever the queue's statistics say it is empty.
@@ -139,7 +139,7 @@ CREATE TABLE ${pgtasks_schema}.topic_count (
     ready            bigint NOT NULL,
     active           bigint NOT NULL,
     suspended        bigint NOT NULL,
-    failed           bigint NOT NULL,
+    dead_letters     bigint NOT NULL,
     due              bigint NOT NULL,
     next_run_at      timestamptz,
     -- When the oldest ready task was pushed: how long the topic's work has been waiting.

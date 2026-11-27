@@ -279,7 +279,7 @@ public final class PostgresTaskStore implements TaskStore {
             -- a task that takes its node down can't move from node to node forever.
             requeued AS (
                 UPDATE pgtasks.queue q
-                SET state = CASE WHEN q.expiries + 1 >= :dead_at::integer THEN 'failed'
+                SET state = CASE WHEN q.expiries + 1 >= :dead_at::integer THEN 'dead_letter'
                                  WHEN :backoff::bigint = 0 THEN 'ready' ELSE 'retrying' END::pgtasks.queue_state,
                     run_at = CASE WHEN q.expiries + 1 >= :dead_at::integer OR :backoff::bigint = 0 THEN NULL
                                   ELSE now() + :backoff::bigint * power(2, least(q.expiries, 20)) * interval '1 millisecond' END,
@@ -292,7 +292,7 @@ public final class PostgresTaskStore implements TaskStore {
             ),
             last_error AS (
                 UPDATE pgtasks.task t
-                SET error = jsonb_build_object('message', CASE WHEN r.state = 'failed'
+                SET error = jsonb_build_object('message', CASE WHEN r.state = 'dead_letter'
                         THEN 'Expired ' || r.expiries || ' times: the node running it stopped every time'
                         ELSE 'Expired: the node running it stopped' END, 'type', 'expired'),
                     attempts = r.attempt
@@ -313,7 +313,7 @@ public final class PostgresTaskStore implements TaskStore {
             LEFT JOIN pgtasks.queue q ON q.task_id = t.id
             WHERE t.id = :id::bigint
             """);
-        // Dead letters are few, so queue_failed_idx keeps these to the topic's dead letters.
+        // Dead letters are few, so queue_dead_letter_idx keeps these to the topic's dead letters.
         deadLetters = sql("""
             SELECT tp.name AS topic, t.id, t.identifier, q.state::text AS state, false AS finished,
                    q.attempt, q.run_at, q.priority, q.node_id, q.failures, q.first_failed_at,
@@ -322,7 +322,7 @@ public final class PostgresTaskStore implements TaskStore {
             FROM pgtasks.queue q
             JOIN pgtasks.task t ON t.id = q.task_id
             JOIN pgtasks.topic tp ON tp.id = q.topic_id
-            WHERE q.topic_id = :topic::integer AND q.state = 'failed' AND q.task_id > :after::bigint
+            WHERE q.topic_id = :topic::integer AND q.state = 'dead_letter' AND q.task_id > :after::bigint
               AND (:all::boolean OR q.task_id = ANY (:ids::bigint[]))
               AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
               AND (:from::timestamptz IS NULL OR q.first_failed_at >= :from::timestamptz)
@@ -334,7 +334,7 @@ public final class PostgresTaskStore implements TaskStore {
             WITH picked AS MATERIALIZED (
                 SELECT o.ctid AS row FROM pgtasks.queue o
                 JOIN pgtasks.task t ON t.id = o.task_id
-                WHERE o.topic_id = :topic::integer AND o.state = 'failed' AND o.task_id > :after::bigint
+                WHERE o.topic_id = :topic::integer AND o.state = 'dead_letter' AND o.task_id > :after::bigint
                   AND (:all::boolean OR o.task_id = ANY (:ids::bigint[]))
                   AND (:error::text IS NULL OR coalesce(t.error->>'type', t.error->>'message', 'unknown') = :error::text)
                   AND (:from::timestamptz IS NULL OR o.first_failed_at >= :from::timestamptz)
@@ -461,7 +461,7 @@ public final class PostgresTaskStore implements TaskStore {
                    count(*) FILTER (WHERE state = 'ready'),
                    count(*) FILTER (WHERE state = 'active'),
                    count(*) FILTER (WHERE state = 'suspended'),
-                   count(*) FILTER (WHERE state = 'failed'),
+                   count(*) FILTER (WHERE state = 'dead_letter'),
                    count(*) FILTER (WHERE state IN ('scheduled', 'retrying') AND run_at <= clock_timestamp()),
                    min(run_at),
                    (SELECT created_at FROM pgtasks.task WHERE id = min(task_id) FILTER (WHERE state = 'ready')) AS oldest_ready_at,
@@ -518,7 +518,7 @@ public final class PostgresTaskStore implements TaskStore {
             ORDER BY t.id
             """);
         snapshot = sql("""
-            INSERT INTO pgtasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, failed, due, next_run_at,
+            INSERT INTO pgtasks.topic_count (topic_id, taken_at, scheduled, retrying, ready, active, suspended, dead_letters, due, next_run_at,
                                            oldest_ready_at, failing, oldest_failing_at)
             SELECT t.id, now(),
                    count(q.task_id) FILTER (WHERE q.state = 'scheduled'),
@@ -526,7 +526,7 @@ public final class PostgresTaskStore implements TaskStore {
                    count(q.task_id) FILTER (WHERE q.state = 'ready'),
                    count(q.task_id) FILTER (WHERE q.state = 'active'),
                    count(q.task_id) FILTER (WHERE q.state = 'suspended'),
-                   count(q.task_id) FILTER (WHERE q.state = 'failed'),
+                   count(q.task_id) FILTER (WHERE q.state = 'dead_letter'),
                    count(q.task_id) FILTER (WHERE q.state IN ('scheduled', 'retrying') AND q.run_at <= now()),
                    min(q.run_at),
                    (SELECT created_at FROM pgtasks.task WHERE id = min(q.task_id) FILTER (WHERE q.state = 'ready')),
@@ -536,7 +536,7 @@ public final class PostgresTaskStore implements TaskStore {
             LEFT JOIN pgtasks.queue q ON q.topic_id = t.id
             GROUP BY t.id
             ON CONFLICT (topic_id) DO UPDATE SET taken_at = excluded.taken_at, scheduled = excluded.scheduled, retrying = excluded.retrying,
-                ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, failed = excluded.failed,
+                ready = excluded.ready, active = excluded.active, suspended = excluded.suspended, dead_letters = excluded.dead_letters,
                 due = excluded.due, next_run_at = excluded.next_run_at, oldest_ready_at = excluded.oldest_ready_at,
                 failing = excluded.failing, oldest_failing_at = excluded.oldest_failing_at
             """);
@@ -554,7 +554,7 @@ public final class PostgresTaskStore implements TaskStore {
             """);
         resign = sql("DELETE FROM pgtasks.lease WHERE name = :name AND node_id = :node::integer");
         snapshots = sql("""
-            SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.failed, c.due, c.next_run_at, c.taken_at,
+            SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.dead_letters, c.due, c.next_run_at, c.taken_at,
                    c.oldest_ready_at, c.failing, c.oldest_failing_at
             FROM pgtasks.topic_count c
             JOIN pgtasks.topic tp ON tp.id = c.topic_id
@@ -802,8 +802,8 @@ public final class PostgresTaskStore implements TaskStore {
         String blocking = switch (ordering) {
             case FIFO -> null;
             case SINGULAR_BY_IDENTIFIER -> "'ready', 'retrying'";
-            case SINGULAR_BY_IDENTIFIER_ON_FAILURE -> "'ready', 'retrying', 'failed'";
-            case SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS -> "'ready', 'retrying', 'failed', 'suspended', 'scheduled'";
+            case SINGULAR_BY_IDENTIFIER_ON_FAILURE -> "'ready', 'retrying', 'dead_letter'";
+            case SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS -> "'ready', 'retrying', 'dead_letter', 'suspended', 'scheduled'";
         };
         // Only tasks in the same topic count (finding #6), and only earlier ones (finding #7),
         // except that an active task blocks its identifier in both directions.
@@ -1097,7 +1097,7 @@ public final class PostgresTaskStore implements TaskStore {
                     case SCHEDULED -> "scheduled";
                     case RETRYING -> "retrying";
                     case SUSPENDED -> "suspended";
-                    case DEAD_LETTER -> "failed";
+                    case DEAD_LETTER -> "dead_letter";
                 };
                 delays[index] = resolution.delay() == null ? null : resolution.delay().toMillis();
                 uncounted[index] = resolution.counted() ? 0 : 1;

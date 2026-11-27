@@ -76,7 +76,7 @@ class FailureHandlingTest {
 
         assertThat(nexts).containsExactlyInAnyOrder("fine", "fine too");
         TaskView typo = engine.admin().find(2).orElseThrow();
-        assertThat(typo.state()).isEqualTo("failed");
+        assertThat(typo.state()).isEqualTo("dead_letter");
         assertThat(typo.error()).contains("Unknown topic 'nxet'");
     }
 
@@ -103,7 +103,7 @@ class FailureHandlingTest {
         assertThat(handled).containsExactly(1);
         assertThat(engine.admin().find(good).orElseThrow().finished()).isTrue();
         TaskView view = engine.admin().find(bad).orElseThrow();
-        assertThat(view.state()).as("no retries: the stored text won't change").isEqualTo("failed");
+        assertThat(view.state()).as("no retries: the stored text won't change").isEqualTo("dead_letter");
         assertThat(view.attempt()).isEqualTo(1);
         assertThat(view.error()).contains("Could not decode the payload").contains("NumberFormatException");
     }
@@ -116,7 +116,7 @@ class FailureHandlingTest {
             throw new NoClassDefFoundError("com/example/Missing");
         });
 
-        assertThat(view.state()).as("dead letter under Retry.none()").isEqualTo("failed");
+        assertThat(view.state()).as("dead letter under Retry.none()").isEqualTo("dead_letter");
         assertThat(view.finished()).isFalse();
         assertThat(view.attempt()).isEqualTo(1);
         assertThat(view.error()).contains("NoClassDefFoundError").contains("com/example/Missing");
@@ -129,7 +129,7 @@ class FailureHandlingTest {
             throw new ExceptionInInitializerError("static setup failed");
         }));
 
-        assertThat(view.state()).isEqualTo("failed");
+        assertThat(view.state()).isEqualTo("dead_letter");
         assertThat(view.error()).contains("ExceptionInInitializerError");
     }
 

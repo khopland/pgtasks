@@ -96,9 +96,9 @@ class EngineTest {
         // The standard policy: a week of retries, ramping to every half hour, jumped through on the
         // clock. Jitter shortens backoffs, so a few more runs than the nominal count fit in the week.
         assertThat(runs.get()).isBetween(Retry.standard().nominalAttempts(), Retry.standard().nominalAttempts() * 5 / 4);
-        assertThat(counts.failed()).isEqualTo(1);
+        assertThat(counts.deadLetters()).isEqualTo(1);
         TaskView dead = view(tester, id);
-        assertThat(dead.state()).isEqualTo("failed");
+        assertThat(dead.state()).isEqualTo("dead_letter");
         assertThat(dead.attempt()).isEqualTo(runs.get());
         assertThat(Duration.between(dead.firstFailedAt(), engines.clock.instant())).as("the last run was in the week's last half hour")
             .isBetween(Duration.ofDays(7).minusMinutes(30), Duration.ofDays(7));

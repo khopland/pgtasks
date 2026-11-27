@@ -16,7 +16,7 @@ final class Rows {
     }
 
     enum State {
-        SCHEDULED, RETRYING, READY, ACTIVE, SUSPENDED, FAILED;
+        SCHEDULED, RETRYING, READY, ACTIVE, SUSPENDED, DEAD_LETTER;
 
         String label() {
             return name().toLowerCase(Locale.ROOT);

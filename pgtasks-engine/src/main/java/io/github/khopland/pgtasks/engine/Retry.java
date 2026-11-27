@@ -57,7 +57,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
     static final Duration MAX_BACKOFF = Duration.ofDays(365_250);
 
     /** What a failure means for its task. */
-    public enum Kind {
+    enum Kind {
         /** Uses up an attempt. */
         COUNTED,
         /** Retried without using up an attempt. */
@@ -165,7 +165,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      * What a failure with this cause means, by the types anywhere in its cause chain. A payload
      * the codec can't decode is always dead-lettered at once: retrying won't change it.
      */
-    public Kind classify(@Nullable Throwable cause) {
+    Kind classify(@Nullable Throwable cause) {
         if (cause instanceof UndecodablePayload || matches(cause, deadLetterAt)) {
             return Kind.DEAD_LETTER;
         }
@@ -176,7 +176,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      * The backoff after an uncounted failure. A policy without a backoff, such as {@link #none()},
      * would retry at once, again and again, so those back off as the standard policy does.
      */
-    public Duration uncountedBackoff(int failures, RandomGenerator random) {
+    Duration uncountedBackoff(int failures, RandomGenerator random) {
         return initial.isZero() ? standard().backoff(failures, random) : backoff(failures, random);
     }
 
@@ -211,7 +211,7 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      *
      * @param firstFailedAt when the task first failed, or null if this is its first failure
      */
-    public boolean allowsAnotherAfter(int attempt, @Nullable Instant firstFailedAt, Instant now, Duration backoff) {
+    boolean allowsAnotherAfter(int attempt, @Nullable Instant firstFailedAt, Instant now, Duration backoff) {
         if (attempt >= maxAttempts) {
             return false;
         }
@@ -226,12 +226,12 @@ public record Retry(int maxAttempts, Duration initial, double multiplier, Durati
      * About how many attempts a time budget allows when every run fails at once at the nominal
      * backoff; {@link #maxAttempts} otherwise.
      */
-    public int nominalAttempts() {
+    int nominalAttempts() {
         return budget == null ? maxAttempts : attemptsWithin(budget, initial, multiplier, max);
     }
 
     /** The backoff after the given failed attempt, starting at 1. */
-    public Duration backoff(int attempt, RandomGenerator random) {
+    Duration backoff(int attempt, RandomGenerator random) {
         double nanos = nominal(attempt, initial, multiplier, max);
         if (jitter > 0) {
             nanos = nanos * (1 - jitter) + nanos * jitter * random.nextDouble();

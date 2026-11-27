@@ -78,7 +78,7 @@ class SchemaUpgradeTest {
         assertThat(state(fixture, topic, "filtered")).isEqualTo("filtered");
         assertThat(states(fixture, topic, "superseding")).containsExactly("redundant", "ready");
         assertThat(state(fixture, topic, "scheduled")).isEqualTo("scheduled");
-        assertThat(state(fixture, topic, "dead")).isEqualTo("failed");
+        assertThat(state(fixture, topic, "dead")).isEqualTo("dead_letter");
         assertThat(state(fixture, topic, "suspended")).isEqualTo("suspended");
         assertThat(fixture.inTransaction(transaction -> fixture.store().retention(transaction)).get(topic)).isNotEmpty();
 

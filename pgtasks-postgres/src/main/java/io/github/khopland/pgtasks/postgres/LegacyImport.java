@@ -69,7 +69,7 @@ public final class LegacyImport {
         queued AS (
             INSERT INTO pgtasks.queue (task_id, topic_id, identifier, state, run_at, failures, first_failed_at)
             SELECT id, :topic::integer, identifier,
-                   (CASE WHEN state = 3 THEN 'failed'
+                   (CASE WHEN state = 3 THEN 'dead_letter'
                          WHEN state = 4 THEN 'suspended'
                          WHEN scheduled AT TIME ZONE 'UTC' > now() THEN 'scheduled'
                          ELSE 'ready' END)::pgtasks.queue_state,

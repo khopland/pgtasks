@@ -56,12 +56,6 @@ public record Creation<T>(
         headers = Headers.copy(headers);
     }
 
-    /** A creation without a run time, as before {@link #withRunAt} existed. */
-    public Creation(String identifier, @Nullable T payload, @Nullable String reference, @Nullable Duration delay, boolean suspended, int priority,
-                    @Nullable String dedupKey, Map<String, String> headers) {
-        this(identifier, payload, reference, delay, suspended, priority, dedupKey, headers, null);
-    }
-
     public static <T> Creation<T> of(String identifier, T payload) {
         return new Creation<>(identifier, payload, null, null, false, 0, null, Map.of(), null);
     }

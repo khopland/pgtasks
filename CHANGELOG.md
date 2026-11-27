@@ -23,7 +23,9 @@ The first release: a rewrite of [Skatteetaten's task library](https://github.com
 - Orderings (`FIFO` and three `SINGULAR_BY_IDENTIFIER` variants) and insertions (`APPEND`,
   `SUPERSEDE`, `REPLACE`).
 - Retries with backoff (10 s doubling to 30 minutes, for 7 days by default), dead letters, and
-  operator actions to revive or discard them.
+  operator actions to revive or discard them. A dead letter is in the queue state `dead_letter`
+  (`QueueState.DEAD_LETTER`, `QueueCounts.deadLetters()`, the `deadLetters` count in the endpoint
+  and `state="dead_letter"` in metrics); `failed` is only ever an outcome, of a finished task.
 - Releasing suspended tasks: `admin().release(...)` by id or `TaskQuery`, the endpoint's
   `release` action and the dashboard make them ready again, keeping their attempts.
 - Housekeeping on one leader at a time: requeueing the tasks of dead nodes, queue snapshots and

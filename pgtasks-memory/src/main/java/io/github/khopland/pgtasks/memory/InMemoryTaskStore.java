@@ -283,8 +283,8 @@ public final class InMemoryTaskStore implements TaskStore {
         return switch (ordering) {
             case FIFO -> null;
             case SINGULAR_BY_IDENTIFIER -> EnumSet.of(State.READY, State.RETRYING);
-            case SINGULAR_BY_IDENTIFIER_ON_FAILURE -> EnumSet.of(State.READY, State.RETRYING, State.FAILED);
-            case SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS -> EnumSet.of(State.READY, State.RETRYING, State.FAILED, State.SUSPENDED, State.SCHEDULED);
+            case SINGULAR_BY_IDENTIFIER_ON_FAILURE -> EnumSet.of(State.READY, State.RETRYING, State.DEAD_LETTER);
+            case SINGULAR_BY_IDENTIFIER_UNTIL_SUCCESS -> EnumSet.of(State.READY, State.RETRYING, State.DEAD_LETTER, State.SUSPENDED, State.SCHEDULED);
         };
     }
 
@@ -365,7 +365,7 @@ public final class InMemoryTaskStore implements TaskStore {
                             case SCHEDULED -> State.SCHEDULED;
                             case RETRYING -> State.RETRYING;
                             case SUSPENDED -> State.SUSPENDED;
-                            case DEAD_LETTER -> State.FAILED;
+                            case DEAD_LETTER -> State.DEAD_LETTER;
                         };
                         int attempt = row.attempt() - (waiting.counted() ? 0 : 1);
                         Rows.Queued waited = row.with(state, waiting.delay() == null ? null : now.plus(waiting.delay()), attempt, null, null);
@@ -417,7 +417,7 @@ public final class InMemoryTaskStore implements TaskStore {
                 boolean dead = row.expiries() + 1 >= expiries.deadLetterAt();
                 boolean ready = !dead && expiries.backoff().isZero();
                 Instant runAt = dead || ready ? null : now.plus(expiries.backoff().multipliedBy(1L << Math.min(row.expiries(), 20)));
-                putQueued(memory, row.with(dead ? State.FAILED : ready ? State.READY : State.RETRYING, runAt, row.attempt(), null, null).expiredAt(now));
+                putQueued(memory, row.with(dead ? State.DEAD_LETTER : ready ? State.READY : State.RETRYING, runAt, row.attempt(), null, null).expiredAt(now));
                 Rows.Task task = task(row.taskId());
                 memory.put(tasks, task.id(), task.failed("{\"message\":\"" + (dead ? "Expired " + (row.expiries() + 1)
                     + " times: the node running it stopped every time" : "Expired: the node running it stopped") + "\",\"type\":\"expired\"}", row.attempt()));
@@ -631,7 +631,7 @@ public final class InMemoryTaskStore implements TaskStore {
     private List<Rows.Queued> failed(int topicId, DeadLetterQuery query, int limit) {
         Set<Long> wanted = query.taskIds() == null ? null : Set.copyOf(query.taskIds());
         return queue.values().stream()
-            .filter(row -> row.topicId() == topicId && row.state() == State.FAILED && row.taskId() > query.afterId())
+            .filter(row -> row.topicId() == topicId && row.state() == State.DEAD_LETTER && row.taskId() > query.afterId())
             .filter(row -> wanted == null || wanted.contains(row.taskId()))
             .filter(row -> query.error() == null || query.error().equals(errorKey(task(row.taskId()).error())))
             .filter(row -> query.failedFrom() == null || (row.firstFailedAt() != null && !row.firstFailedAt().isBefore(query.failedFrom())))
@@ -705,7 +705,7 @@ public final class InMemoryTaskStore implements TaskStore {
         }
         return new QueueCounts(counts.getOrDefault(State.SCHEDULED, 0L), counts.getOrDefault(State.RETRYING, 0L),
             counts.getOrDefault(State.READY, 0L), counts.getOrDefault(State.ACTIVE, 0L), counts.getOrDefault(State.SUSPENDED, 0L),
-            counts.getOrDefault(State.FAILED, 0L), due, next, oldestReady == null ? null : task(oldestReady).createdAt(), failing, oldestFailing);
+            counts.getOrDefault(State.DEAD_LETTER, 0L), due, next, oldestReady == null ? null : task(oldestReady).createdAt(), failing, oldestFailing);
     }
 
     @Override
