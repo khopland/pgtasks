@@ -19,7 +19,7 @@ is ranked by severity within each section. Library commits referred to are on br
 > | 9, 14, 18, 19 | Documented in testing.md and operations.md |
 > | 13 | The endpoint returns an error as an object |
 > | 17 | patterns.md's fan-in example was rewritten around `later()` |
-> | 10 | Open |
+> | 10 | Given a `DataSource`, the in-memory store runs batch resources' JDBC effects on it (`TaskEngineExtension.withDataSource`) |
 > | 12 | The dead-letter state is `dead_letter` everywhere: `QueueState.DEAD_LETTER`, `QueueCounts.deadLetters()`, the schema and the metrics |
 
 ## The runs

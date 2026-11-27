@@ -25,6 +25,8 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.sql.DataSource;
+
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Pushed;
@@ -60,10 +62,17 @@ import org.jspecify.annotations.Nullable;
  * for pushes other than APPEND, and per topic for SINGULAR claims. Concurrent APPEND pushes for
  * one identifier, which Postgres may commit out of id order, are never reordered here. Time comes from the given clock; pass a
  * {@code ManualClock} to jump past backoffs, delays and expiry in tests.
+ *
+ * <p>A batch resource's JDBC effects ({@code BatchResource.beforeCommit}) need a connection. Given
+ * a {@link DataSource}, each store transaction whose connection is used opens a JDBC transaction on
+ * it, committed just before the store's own changes and rolled back with them; a failed JDBC commit
+ * rolls the store's changes back too. Without one, using the connection fails with a clear
+ * message. The two commits are not atomic, which only matters if the database fails in between.
  */
 public final class InMemoryTaskStore implements TaskStore {
 
     private final InstantSource clock;
+    private final @Nullable DataSource dataSource;
     private final ReentrantLock lock = new ReentrantLock(true);
     /** Each engine's listener, with the channels it listens to. */
     private final Map<Notifier.Listener, Set<String>> listeners = new ConcurrentHashMap<>();
@@ -83,6 +92,13 @@ public final class InMemoryTaskStore implements TaskStore {
 
     public InMemoryTaskStore(InstantSource clock) {
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.dataSource = null;
+    }
+
+    /** A store whose transactions run batch resources' JDBC effects on connections from this data source. */
+    public InMemoryTaskStore(InstantSource clock, DataSource dataSource) {
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
     }
 
     @Override
@@ -114,7 +130,7 @@ public final class InMemoryTaskStore implements TaskStore {
     @Override
     public StoreTransaction begin() {
         lock.lock();
-        return new MemoryTransaction(this);
+        return new MemoryTransaction(this, dataSource);
     }
 
     void unlock() {

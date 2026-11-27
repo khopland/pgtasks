@@ -32,6 +32,22 @@ Test methods can take `TaskEngine`, `Tasks`, `TaskTester`, `TaskAdmin`, `ManualC
 `LocalTransactions`. `TaskEngineExtension.with(builder -> ...)` sets up anything else, such as
 globals or codecs.
 
+### Batch resources that write SQL
+
+A `BatchResource`'s `beforeCommit` writes to the database on the completion's connection. The
+in-memory store has no database of its own, so give it one for those writes; the tasks stay in
+memory:
+
+```java
+@RegisterExtension
+static TaskEngineExtension engine = TaskEngineExtension.of(new LedgerTasks()).withDataSource(testDatabase);
+```
+
+Each completion that uses the connection opens a JDBC transaction on the data source. It commits
+just before the store's own changes and rolls back with them, so a test can check the rows the
+handler wrote. Without a data source, using the connection fails with a message saying so.
+Outside the extension, `new InMemoryTaskStore(clock, dataSource)` does the same.
+
 ## TaskTester
 
 - `awaitIdle()`: waits until nothing is left to do now, without moving the clock.
@@ -46,8 +62,9 @@ globals or codecs.
 
 ## Spring
 
-`pgtasks.store=memory` runs the application without a database. `pgtasks.testing=true` adds a
-`TaskTester` bean:
+`pgtasks.store=memory` keeps the tasks in memory. If the application has a `DataSource`, batch
+resources' `beforeCommit` writes go to it, as above; without one the application runs with no
+database at all. `pgtasks.testing=true` adds a `TaskTester` bean:
 
 ```java
 @SpringBootTest(properties = {"pgtasks.store=memory", "pgtasks.testing=true"})
