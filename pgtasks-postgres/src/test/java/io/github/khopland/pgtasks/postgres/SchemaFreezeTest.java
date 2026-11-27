@@ -10,8 +10,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Released versioned files never change: a database that applied one would no longer match it, and
  * the runner, Flyway and Liquibase all refuse to start then. Change the schema with the next
- * versioned file instead (docs/operations.md, "Changing the schema"), and add its checksum here
- * when it is released.
+ * versioned file instead (docs/operations.md, "Changing the schema"). What each release shipped is
+ * its snapshot in {@code src/test/resources/.../released/<version>/} ({@link SchemaReleases}), which
+ * the release workflow adds after every release.
  *
  * <p>Repeatable files may change, but each change must raise the {@code -- revision: <n>} in the
  * file's header, so the runner can tell a newer definition from an older one and an older node
@@ -19,11 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * changing a file without raising its revision fails, and a new revision needs its checksum added.
  */
 class SchemaFreezeTest {
-
-    /** SHA-256 of each released versioned file, line endings normalized, placeholder unfilled: what the runner records. */
-    static final Map<String, String> RELEASED = Map.of(
-        "V001__tasks_schema.sql", "d01335200fa74c7ee715dedefcb644c9aa8420ef834d6348b43684163c29677e" // 0.1.0
-    );
 
     /** SHA-256 of each revision of each repeatable file, keyed {@code <name>@<revision>}. Add a line for every new revision. */
     static final Map<String, String> REVISIONS = Map.of(
@@ -56,9 +52,12 @@ class SchemaFreezeTest {
         Map<String, String> shipped = new TreeMap<>();
         TaskSchema.scripts().stream().filter(script -> !script.repeatable()).forEach(script -> shipped.put(script.name(), script.checksum()));
 
-        RELEASED.forEach((name, checksum) -> assertThat(shipped)
-            .as(name + " was released, so it must never change or go away; put the change in a new versioned file")
-            .containsEntry(name, checksum));
+        assertThat(SchemaReleases.versions()).as("the snapshots of released schemas").isNotEmpty();
+        for (String release : SchemaReleases.versions()) {
+            SchemaReleases.scripts(release).stream().filter(script -> !script.repeatable()).forEach(script -> assertThat(shipped)
+                .as(script.name() + " was released in " + release + ", so it must never change or go away; put the change in a new versioned file")
+                .containsEntry(script.name(), script.checksum()));
+        }
     }
 
 }

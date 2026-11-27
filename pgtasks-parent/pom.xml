@@ -510,9 +510,14 @@
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
-              <!-- Uploads and validates; publishing is a click in the Central Portal, so a bad bundle can still be dropped. -->
-              <autoPublish>false</autoPublish>
-              <waitUntil>validated</waitUntil>
+              <!--
+                Publishes as soon as Central validates the bundle, and waits for that: publishing the
+                draft GitHub release is the approval (RELEASING.md). A bundle that fails validation is
+                never published.
+              -->
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+              <waitMaxTime>3600</waitMaxTime>
               <skipPublishing>${central.skipPublishing}</skipPublishing>
               <excludeArtifacts>
                 <artifact>pgtasks-benchmark</artifact>

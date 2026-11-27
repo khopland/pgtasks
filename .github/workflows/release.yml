@@ -1,70 +1,88 @@
-# Publishes a release to Maven Central when a tag like v0.1.0 is pushed. The version comes from
-# the tag; the poms on main stay at the next snapshot. The build runs every test, signs every
-# artifact and uploads one bundle to the Central Portal, where it is validated and then waits for
-# "Publish" (autoPublish is off in pgtasks-parent). Then it creates the GitHub release from the
-# tag's section of CHANGELOG.md. One-time setup and the steps: RELEASING.md.
+# Publishing the draft GitHub release that the build workflow keeps for the newest version in
+# CHANGELOG.md releases that version; RELEASING.md has the steps and the one-time setup.
+#
+# The release job checks the tag against the changelog and sets the poms to its version. It runs
+# every test, signs every artifact and uploads one bundle to the Central Portal, which publishes it
+# once it validates, so publishing the draft is the only approval. The after-release job waits until
+# Maven Central serves the release. Then it opens the pull request that snapshots the released
+# schemas and moves main past the release.
 name: release
 
 on:
-  push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of a published GitHub release, to finish a release that failed
+        required: true
+        type: string
+      publish:
+        description: Upload to Maven Central (turn off if this version is already there)
+        default: true
+        type: boolean
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: release
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
-      contents: write   # the GitHub release
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Resolve the published GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          release=$(gh release view "$RELEASE_TAG" --json tagName,isDraft)
+          if [[ $(jq -r .isDraft <<< "$release") != false ]]; then
+            echo '::error::Publish the GitHub release before running the release workflow.'
+            exit 1
+          fi
+          echo "tag=$(jq -r .tagName <<< "$release")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          persist-credentials: false
+      - name: Check the tag against CHANGELOG.md
+        id: version
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: echo "version=$(bash .github/scripts/release-version.sh "$RELEASE_TAG")" >> "$GITHUB_OUTPUT"
+      # Release builds never read the Maven cache that other workflows write to.
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
           server-id: central
           server-username: CENTRAL_USERNAME
           server-password: CENTRAL_TOKEN
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
-      - name: Read the version from the tag
-        id: version
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          case "$version" in *SNAPSHOT*) echo "::error::A release tag can't be a snapshot: $GITHUB_REF_NAME"; exit 1;; esac
-          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section '## [$version]'"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Set the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: >-
           mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.19.1:set
-          -DnewVersion=${{ steps.version.outputs.version }}
-          -DprocessAllModules -DgenerateBackupPoms=false
-      - name: Build, test, sign and upload
+          -DnewVersion="$VERSION" -DprocessAllModules -DgenerateBackupPoms=false
+      - name: Build, test, sign and publish
+        if: github.event_name == 'release' || inputs.publish
         run: mvn -B -ntp -Prelease deploy
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      - name: Create the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          awk -v v="$VERSION" '
-            index($0, "## [" v "]") == 1 { on = 1; next }
-            on && /^(## \[|\[[^]]+\]: )/ { exit }
-            on { print }
-          ' CHANGELOG.md > release-notes.md
-          prerelease=""
-          case "$VERSION" in 0.*|*-*) prerelease="--prerelease";; esac
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "pgtasks $VERSION" --notes-file release-notes.md $prerelease
       - name: Keep test reports
         if: failure()
         uses: actions/upload-artifact@v7
@@ -72,3 +90,100 @@ jobs:
           name: test-reports
           path: '**/target/surefire-reports/'
           retention-days: 7
+
+  after-release:
+    needs: release
+    # A version such as 1.2.0-rc.1 leaves main as it is.
+    if: ${{ !contains(needs.release.outputs.version, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: write        # starts the build on the pull request's branch
+      contents: write       # pushes that branch
+      pull-requests: write  # opens the pull request
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.release.outputs.tag }}
+          path: released
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          path: main
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      # The Central Portal reports a release published a little before Maven Central serves it, and
+      # the pull request's API check downloads it.
+      - name: Wait for Maven Central
+        run: |
+          artifacts=$(grep -o '<artifactId>pgtasks-[a-z-]*</artifactId>' released/pgtasks-bom/pom.xml | sed 's/<[^>]*>//g' | sort -u)
+          for attempt in $(seq 1 60); do
+            missing=""
+            for artifact in pgtasks-parent $artifacts; do
+              curl -fsI -o /dev/null "https://repo1.maven.org/maven2/io/github/khopland/pgtasks/$artifact/$VERSION/$artifact-$VERSION.pom" \
+                || missing="$missing $artifact"
+            done
+            if [[ -z "$missing" ]]; then
+              echo "Maven Central serves pgtasks $VERSION (check $attempt)."
+              exit 0
+            fi
+            sleep 60
+          done
+          echo "::error::Maven Central doesn't serve these after an hour:$missing"
+          exit 1
+      - name: Snapshot the released schemas
+        working-directory: released
+        run: >-
+          mvn -B -ntp test -pl pgtasks-postgres,pgtasks-rate-limit-postgres -am
+          -Dpgtasks.schema.snapshot="$VERSION" -Dtest='SchemaSnapshot,RateLimitSchemaSnapshot'
+          -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Copy the snapshots to main
+        run: |
+          cd released
+          files=$(git ls-files --others --exclude-standard | grep "/released/$VERSION/")
+          if [[ -z "$files" ]]; then
+            echo "::error::The snapshot wrote no files under released/$VERSION."
+            exit 1
+          fi
+          while read -r file; do
+            mkdir -p "../main/$(dirname "$file")"
+            cp "$file" "../main/$file"
+          done <<< "$files"
+      - name: Move main past the release
+        id: main
+        working-directory: main
+        run: echo "next=$(bash .github/scripts/after-release.sh "$VERSION")" >> "$GITHUB_OUTPUT"
+      - name: Open the pull request
+        working-directory: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.main.outputs.next }}
+        run: |
+          branch="release/after-$VERSION"
+          git switch -c "$branch"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "main is already past $VERSION."
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Move main past the $VERSION release" -m "Snapshot the schemas $VERSION shipped, compare the API with $VERSION and start $NEXT."
+          git push --force origin "HEAD:refs/heads/$branch"
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          pgtasks $VERSION is on Maven Central. The release workflow opens this pull request after every release ([RELEASING.md](https://github.com/$GITHUB_REPOSITORY/blob/main/RELEASING.md)).
+
+          - The schemas $VERSION shipped are snapshotted under \`released/$VERSION\`. \`SchemaFreezeTest\` keeps their versioned files from changing, and the upgrade tests start from them.
+          - main is on \`$NEXT\`. The README's BOM snippet and the quickstart use $VERSION.
+          - japicmp compares every jar with $VERSION, and the list of accepted breaks starts empty again.
+          - CHANGELOG.md gets the release's date, its links and an empty \`[Unreleased]\` section.
+          EOF
+          if [[ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]]; then
+            gh pr create --base main --head "$branch" --title "Move main past the $VERSION release" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          # A push with this job's token starts no workflow, so start the build on the branch.
+          gh workflow run build.yml --ref "$branch"

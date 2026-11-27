@@ -1,8 +1,9 @@
 # Releasing
 
-Releases go to Maven Central through the [Central Portal](https://central.sonatype.com), from
-`.github/workflows/release.yml`, when a version tag is pushed. The poms on `main` always carry the
-next snapshot; the workflow takes the release version from the tag.
+Releases go to Maven Central through the [Central Portal](https://central.sonatype.com). A release
+starts when a new version appears in `CHANGELOG.md`: the build workflow drafts a GitHub release for
+it, and publishing the draft starts `.github/workflows/release.yml`. The poms on `main` always carry
+the next snapshot; the release workflow takes the version from the tag the draft creates.
 
 ## One-time setup
 
@@ -28,45 +29,58 @@ next snapshot; the workflow takes the release version from the tag.
    | `GPG_PRIVATE_KEY` | The armored secret key |
    | `GPG_PASSPHRASE` | Its passphrase |
 
+5. **Pull requests from Actions.** Under *Settings → Actions → General*, allow GitHub Actions to
+   create pull requests, for the one the release workflow opens after each release.
+
 ## A release
 
-1. In `CHANGELOG.md`, move what is under `[Unreleased]` to a new `## [x.y.z]` section and update
-   the links at the bottom. The workflow refuses a tag without a section, and uses that section
-   as the GitHub release notes.
-   In the same commit, snapshot the schemas the release ships, so every later build tests an
-   upgrade from them (`SchemaUpgradeTest`, `RateLimitSchemaUpgradeTest`):
+1. **Bump the version in the changelog.** In a pull request, move what is under `[Unreleased]` in
+   `CHANGELOG.md` to a new section for the version, above the last release, and leave
+   `[Unreleased]` empty:
 
-   ```sh
-   mvn test -pl pgtasks-postgres,pgtasks-rate-limit-postgres -am -Dpgtasks.schema.snapshot=0.1.0 \
-     -Dtest='SchemaSnapshot,RateLimitSchemaSnapshot' -Dsurefire.failIfNoSpecifiedTests=false
+   ```markdown
+   ## [Unreleased]
+
+   ## [0.2.0]
+
+   ### Added
+   ...
    ```
 
-   It copies the schema files and the rows the release leaves in every state into each
-   module's `src/test/resources/.../released/0.1.0/`; commit them as they are. Pin each new
-   versioned file's checksum in `SchemaFreezeTest.RELEASED` too.
-2. Commit, merge to `main`, then tag that commit and push the tag:
+   The newest `## [x.y.z]` heading is the version to release, and its section becomes the release
+   notes. Before 1.0, a break or a new feature raises the minor version and a fix the patch
+   version. `release-check` fails the build on a heading that isn't a release version, such as
+   `0.2.0-SNAPSHOT`, or on an empty section. The date and the links at the bottom can be left out;
+   the pull request after the release adds them.
+2. **Merge it.** Once the build passes on `main`, its `release-draft` job keeps a draft release
+   "pgtasks 0.2.0" on that commit, with the section as its notes, under *Releases*. Every green
+   push to `main` refreshes it and moves it to the new commit until the version is released, so
+   anything merged in the meantime is part of the release.
+3. **Publish the draft.** That creates the tag `v0.2.0` and starts the release workflow. It checks
+   the tag against the changelog and sets the version. It runs every test, signs every artifact
+   and uploads one bundle, which the Central Portal publishes once it validates. No second step in
+   the portal is needed. A bundle that fails validation is never published: delete the release
+   and its tag, fix the problem, and the next green build drafts it again. Before 1.0, every
+   release is a GitHub pre-release.
+4. **Merge the pull request after the release.** Once Maven Central serves the release, usually
+   within half an hour, the workflow opens "Move main past the 0.2.0 release" and starts its build.
+   It:
+   - snapshots the schemas the release shipped into each module's
+     `src/test/resources/.../released/0.2.0/`, with the rows the release leaves in every state.
+     `SchemaFreezeTest` then keeps those versioned files from changing, and `SchemaUpgradeTest` and
+     `RateLimitSchemaUpgradeTest` upgrade from them;
+   - moves `main` to the next minor snapshot, unless `main` is already past the release. It points
+     the README's BOM snippet and the quickstart at the release;
+   - sets `pgtasks.api.baseline` to the release and empties the japicmp plugin's `<excludes>`, so
+     every build compares each jar with it; see [API compatibility](#api-compatibility);
+   - adds the release's date and links to `CHANGELOG.md`.
 
-   ```sh
-   git tag -a v0.1.0 -m 'pgtasks 0.1.0'
-   git push origin v0.1.0
-   ```
+A version such as `0.2.0-rc.1` is released the same way, as a GitHub pre-release, and leaves `main`
+as it is.
 
-3. The workflow sets the version, runs every test, signs the artifacts and uploads one bundle.
-   Central validates it, then it waits under *Deployments* in the portal. Check it and press
-   *Publish*, or *Drop* it and tag again after a fix. Artifacts appear on Maven Central within
-   about half an hour of publishing. The workflow also creates the GitHub release (a pre-release
-   for 0.x).
-4. On `main`, raise the snapshot (`0.1.0-SNAPSHOT` → `0.2.0-SNAPSHOT`, and `pgtasks.version`
-   in `examples/order-service/pom.xml` with it), and set the README's BOM snippet and
-   `pgtasks.version` in `examples/quickstart/pom.xml` to the version just released:
-
-   ```sh
-   mvn org.codehaus.mojo:versions-maven-plugin:2.19.1:set -DnewVersion=0.2.0-SNAPSHOT -DprocessAllModules -DgenerateBackupPoms=false
-   ```
-
-5. In `pgtasks-parent/pom.xml`, set `pgtasks.api.baseline` to the version just published and
-   empty the japicmp plugin's `<excludes>`. From then on, every build compares each jar with that
-   release; see [API compatibility](#api-compatibility).
+**If the release workflow fails** after the draft is published, fix the cause. Then run *Actions →
+release → Run workflow* with the tag. If the version already reached Maven Central, turn
+*publish* off: the workflow then skips the upload and only opens the pull request after the release.
 
 ## Checking the release build locally
 
