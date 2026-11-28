@@ -30,12 +30,14 @@ import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.extension.BatchListener;
 import io.github.khopland.pgtasks.engine.extension.ClaimGate;
+import io.github.khopland.pgtasks.engine.extension.CompletionHook;
 import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
 import io.github.khopland.pgtasks.engine.extension.ExtensionData;
 import io.github.khopland.pgtasks.engine.extension.HandlerDecorator;
 import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
 import io.github.khopland.pgtasks.engine.extension.OperatorView;
+import io.github.khopland.pgtasks.engine.extension.PushHook;
 import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StoreCapability;
@@ -94,6 +96,7 @@ public final class TaskEngine implements AutoCloseable {
     private final List<Housekeeper.ExtensionJob> extensionJobs = new ArrayList<>();
     private final List<ClaimGate> gates = new ArrayList<>();
     private final List<BatchListener> batchListeners = new ArrayList<>();
+    private final List<CompletionHook> completionHooks = new ArrayList<>();
     private final List<HandlerDecorator> decorators = new ArrayList<>();
     /** Each installed extension's start and stop actions, in the order they were installed. */
     private final List<Lifecycle> lifecycles = new ArrayList<>();
@@ -257,7 +260,7 @@ public final class TaskEngine implements AutoCloseable {
         HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
         nodeId = EngineCore.transact(store, transaction -> store.registerNode(transaction, settings.nodeName(), version, settings.expiry()));
         core = new EngineCore(store, tasks, () -> nodeId, new Semaphore(settings.maxInFlightBatches()), RandomGenerator.getDefault(), this::wake,
-            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), fence::fenced,
+            held, () -> !started, observer, List.copyOf(gates), List.copyOf(batchListeners), List.copyOf(completionHooks), fence::fenced,
             Thread::ofVirtual);
         Notifier wakeUps = settings.notifier();
         notifier = wakeUps;
@@ -1038,6 +1041,18 @@ public final class TaskEngine implements AutoCloseable {
         public void batchListener(BatchListener listener) {
             hook("a batch listener");
             batchListeners.add(Objects.requireNonNull(listener, "listener"));
+        }
+
+        @Override
+        public void pushHook(PushHook hook) {
+            hook("a push hook");
+            tasks.pushHook(Objects.requireNonNull(hook, "hook"));
+        }
+
+        @Override
+        public void completionHook(CompletionHook hook) {
+            hook("a completion hook");
+            completionHooks.add(Objects.requireNonNull(hook, "hook"));
         }
 
         @Override

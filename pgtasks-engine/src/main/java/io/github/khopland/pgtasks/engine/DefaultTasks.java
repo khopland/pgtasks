@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 import java.util.function.IntConsumer;
 
@@ -25,6 +26,7 @@ import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TaskWriter;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
+import io.github.khopland.pgtasks.engine.extension.PushHook;
 import io.github.khopland.pgtasks.spi.AppTransaction;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -89,6 +91,13 @@ final class DefaultTasks implements Tasks {
     /** The observer of every push from now on: the builder's and the extensions'. */
     void taskObserver(TaskObserver taskObserver) {
         this.taskObserver = Objects.requireNonNull(taskObserver);
+    }
+
+    /** The extensions' push hooks, asked in every push's transaction; added while the extensions install. */
+    private final List<PushHook> pushHooks = new CopyOnWriteArrayList<>();
+
+    void pushHook(PushHook hook) {
+        pushHooks.add(Objects.requireNonNull(hook, "hook"));
     }
 
     void fallbackCodecs(@Nullable PayloadCodecs codecs) {
@@ -269,6 +278,7 @@ final class DefaultTasks implements Tasks {
             return List.of();
         }
         PayloadCodec<T> codec = codec(topic);
+        hooks(transaction, topic, insertion, creations);
         int topicId = topics.id(transaction, topic.name());
         List<TaskObserver.PushObservation> observations = new ArrayList<>();
         try {
@@ -288,6 +298,29 @@ final class DefaultTasks implements Tasks {
         } finally {
             observations.reversed().forEach(TaskObserver.PushObservation::close);
         }
+    }
+
+    /** Asks every push hook, in the push's transaction, before anything is written; one that throws stops the push. */
+    private void hooks(StoreTransaction transaction, TopicRef<?> topic, Insertion insertion, List<? extends Creation<?>> creations) throws SQLException {
+        if (pushHooks.isEmpty()) {
+            return;
+        }
+        PushHook.Pushing push = new Pushing(topic, insertion, List.copyOf(creations), transaction);
+        for (PushHook hook : pushHooks) {
+            try {
+                hook.pushing(push);
+            } catch (RuntimeException | SQLException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TaskStorageException("A push hook was interrupted while pushing to " + topic, e);
+            } catch (Exception e) {
+                throw new TaskStorageException("A push hook failed for a push to " + topic + ": " + e.getMessage(), e);
+            }
+        }
+    }
+
+    private record Pushing(TopicRef<?> topic, Insertion insertion, List<Creation<?>> tasks, StoreTransaction transaction) implements PushHook.Pushing {
     }
 
     /**

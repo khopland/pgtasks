@@ -34,6 +34,7 @@ import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TaskStorageException;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.extension.BatchListener;
+import io.github.khopland.pgtasks.engine.extension.CompletionHook;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
@@ -496,6 +497,17 @@ final class BatchRun<T> {
             ClaimedTask claim = claimOf(claims, id);
             completions.add(new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE));
         });
+        Map<Long, Throwable> errors = new LinkedHashMap<>();
+        for (Decisions each : List.of(decisions, early)) {
+            each.verdicts().forEach(verdict -> {
+                if (verdict.decision() instanceof Decision.Failed failed && failed.cause() != null) {
+                    errors.put(verdict.task().id(), failed.cause());
+                }
+            });
+        }
+        // What the completion hooks are given in its transaction, and the listeners once it commits.
+        List<BatchListener.Completed> results = core.listeners().isEmpty() && core.completionHooks().isEmpty()
+            ? List.of() : completed(completions, claims, errors::get);
         Set<String> targets = new LinkedHashSet<>();
         Set<Integer> ready = new LinkedHashSet<>();
         List<Runnable> observations = new ArrayList<>();
@@ -508,6 +520,12 @@ final class BatchRun<T> {
                 targets.addAll(pushDownstream(transaction, decisions, observations, ready, encoded));
                 for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
                     beforeCommit(resource.getKey(), resource.getValue(), decisions, transaction.connection());
+                }
+                if (!results.isEmpty()) {
+                    CompletionHook.Completing completing = new Completing(topic.ref(), results, transaction);
+                    for (CompletionHook hook : core.completionHooks()) {
+                        hook.completing(completing);
+                    }
                 }
                 return null;
             });
@@ -549,22 +567,16 @@ final class BatchRun<T> {
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
-                tell(topic, failures, claims, id -> e);
+                if (!core.listeners().isEmpty()) {
+                    tell(topic, completed(failures, claims, id -> e));
+                }
             } catch (Exception recording) {
                 LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
             }
             return;
         }
         observation.completed(results(completions));
-        Map<Long, Throwable> errors = new LinkedHashMap<>();
-        for (Decisions each : List.of(decisions, early)) {
-            each.verdicts().forEach(verdict -> {
-                if (verdict.decision() instanceof Decision.Failed failed && failed.cause() != null) {
-                    errors.put(verdict.task().id(), failed.cause());
-                }
-            });
-        }
-        tell(topic, completions, claims, errors::get);
+        tell(topic, results);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -749,16 +761,14 @@ final class BatchRun<T> {
     }
 
     /**
-     * Tells the extensions' batch listeners what became of each task it ran: those handed back
-     * without running, as on a stop, aren't reported.
+     * What became of each task the batch ran, for the completion hooks and the batch listeners:
+     * those handed back without running, as on a stop, aren't in it.
      */
     @SuppressWarnings("ReferenceEquality") // RELEASE is the one resolution of a task handed back unrun
-    private void tell(Topic<T> topic, List<Completion> completions, Map<Long, ClaimedTask> claims, Function<Long, @Nullable Throwable> errors) {
-        if (core.listeners().isEmpty()) {
-            return;
-        }
+    private List<BatchListener.Completed> completed(List<Completion> completions, Map<Long, ClaimedTask> claims,
+                                                    Function<Long, @Nullable Throwable> errors) {
         Instant now = core.clock().instant();
-        List<BatchListener.Completed> results = completions.stream()
+        return completions.stream()
             .filter(completion -> completion.resolution() != RELEASE)
             .map(completion -> {
                 ClaimedTask claim = claimOf(claims, completion.taskId());
@@ -767,6 +777,15 @@ final class BatchRun<T> {
                     .withFailure(failure(completion), errors.apply(completion.taskId())).withDuration(took);
             })
             .toList();
+    }
+
+    /** A batch's completion, as the completion hooks see it in its transaction. */
+    private record Completing(TopicRef<?> topic, List<BatchListener.Completed> tasks, StoreTransaction transaction)
+        implements CompletionHook.Completing {
+    }
+
+    /** Tells the extensions' batch listeners what became of each task the batch ran, once its completion committed. */
+    private void tell(Topic<T> topic, List<BatchListener.Completed> results) {
         if (results.isEmpty()) {
             return;
         }

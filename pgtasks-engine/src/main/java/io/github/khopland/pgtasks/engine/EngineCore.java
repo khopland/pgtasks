@@ -13,6 +13,7 @@ import java.util.random.RandomGenerator;
 
 import io.github.khopland.pgtasks.engine.extension.BatchListener;
 import io.github.khopland.pgtasks.engine.extension.ClaimGate;
+import io.github.khopland.pgtasks.engine.extension.CompletionHook;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
@@ -41,6 +42,7 @@ record EngineCore(
     TaskObserver observer,
     List<ClaimGate> gates,
     List<BatchListener> listeners,
+    List<CompletionHook> completionHooks,
     BooleanSupplier fenced,
     Supplier<Thread.Builder> threads
 ) {

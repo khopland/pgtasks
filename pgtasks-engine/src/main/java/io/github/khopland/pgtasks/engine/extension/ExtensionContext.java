@@ -113,6 +113,18 @@ public interface ExtensionContext {
     /** Told each batch's results on this node; see {@link BatchListener}. */
     void batchListener(BatchListener listener);
 
+    /**
+     * Asked in every push's transaction on this node, before its tasks are written: it can refuse
+     * the push, or write in the same transaction; see {@link PushHook}.
+     */
+    void pushHook(PushHook hook);
+
+    /**
+     * Told of every batch completion on this node, in its transaction, before it commits, to write
+     * what must commit with it; see {@link CompletionHook}.
+     */
+    void completionHook(CompletionHook hook);
+
     /** Wraps every topic's handler on this node; see {@link HandlerDecorator}. */
     void handlerDecorator(HandlerDecorator decorator);
 

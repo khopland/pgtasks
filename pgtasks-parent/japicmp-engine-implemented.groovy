@@ -11,6 +11,8 @@ def engineImplemented = [
     'io.github.khopland.pgtasks.engine.extension.ExtensionContext$Job',
     'io.github.khopland.pgtasks.engine.extension.ExtensionContext$Channel',
     'io.github.khopland.pgtasks.engine.extension.ExtensionData',
+    'io.github.khopland.pgtasks.engine.extension.PushHook$Pushing',
+    'io.github.khopland.pgtasks.engine.extension.CompletionHook$Completing',
 ] as Set
 
 jApiClasses.findAll { engineImplemented.contains(it.fullyQualifiedName) }.each { jApiClass ->

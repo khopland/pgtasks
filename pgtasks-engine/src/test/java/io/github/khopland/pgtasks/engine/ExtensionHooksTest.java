@@ -774,6 +774,99 @@ class ExtensionHooksTest {
             .hasMessageContaining("other than ready, topic, job, data");
     }
 
+    private static final TopicRef<String> NEXT = TopicRef.of("next", String.class);
+
+    private static String value(Kept kept, String key) {
+        Optional<ExtensionEntry> entry = kept.context.transact("Reading", transaction -> kept.context.data().get(transaction, key));
+        return entry.map(ExtensionEntry::value).orElse("none");
+    }
+
+    @Test
+    @DisplayName("A push hook runs in every push's transaction: it can refuse the push, and what it writes commits with it")
+    void a_push_hook_refuses_and_writes_with_the_push() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        Kept quota = new Kept("quota");
+        Extension quotas = Extension.of("quota", context -> {
+            quota.install(context);
+            context.pushHook(push -> {
+                seen.add(push.topic().name() + " " + push.tasks().size() + " " + push.insertion());
+                if (push.tasks().stream().anyMatch(task -> task.identifier().equals("refused"))) {
+                    throw new IllegalArgumentException("over the quota");
+                }
+                context.data().update(push.transaction(), "pushes/" + push.topic().name(),
+                    count -> String.valueOf((count == null ? 0 : Integer.parseInt(count)) + push.tasks().size()));
+            });
+        });
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore()).extension(quotas)
+            .configure("work", tasks -> {
+                tasks.eachTask(WORK, task -> task.push(NEXT, task.identifier(), "the next step"));
+                tasks.eachTask(NEXT, task -> { });
+            })
+            .build().prepare()) {
+            engine.tasks().independently().push(WORK, "a", "x");
+            assertThatThrownBy(() -> engine.tasks().independently().push(WORK, "refused", "x"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("over the quota");
+            TaskTester tester = TaskTester.of(engine);
+            assertThat(tester.counts(WORK).total()).as("the refused push wrote nothing").isEqualTo(1);
+            assertThat(value(quota, "pushes/work")).isEqualTo("1");
+
+            engine.start();
+            tester.awaitIdle();
+            assertThat(value(quota, "pushes/next")).as("a handler's downstream push, in its completion's transaction").isEqualTo("1");
+            assertThat(seen).contains("work 1 APPEND", "next 1 APPEND");
+        }
+
+        Extension unavailable = Extension.of("unavailable", context -> context.pushHook(push -> {
+            throw new java.io.IOException("the quota service is down");
+        }));
+        try (TaskEngine engine = builder(new InMemoryTaskStore()).extension(unavailable).build().prepare()) {
+            assertThatThrownBy(() -> engine.tasks().independently().push(WORK, "a", "x"))
+                .isInstanceOf(io.github.khopland.pgtasks.TaskStorageException.class).hasMessageContaining("the quota service is down");
+        }
+    }
+
+    @Test
+    @DisplayName("A completion hook writes with the completion and can push the next step; one that throws fails the completion")
+    void a_completion_hook_commits_with_the_completion() throws Exception {
+        AtomicBoolean refuseOnce = new AtomicBoolean(true);
+        List<String> heard = new CopyOnWriteArrayList<>();
+        Kept audit = new Kept("audit");
+        Extension auditing = Extension.of("audit", context -> {
+            audit.install(context);
+            context.completionHook(batch -> {
+                for (BatchListener.Completed task : batch.tasks()) {
+                    context.data().put(batch.transaction(), "done/" + batch.topic().name() + "/" + task.identifier(),
+                        task.result() + " on attempt " + task.attempt());
+                    if (batch.topic().equals(WORK) && task.succeeded()) {
+                        context.tasks(batch.transaction()).push(NEXT, task.identifier(), "the next step");
+                    }
+                }
+                if (batch.topic().equals(WORK) && refuseOnce.getAndSet(false)) {
+                    throw new IllegalStateException("the audit is full");
+                }
+            });
+            context.batchListener((topic, tasks) -> tasks.forEach(task -> heard.add(topic.name() + " " + task.identifier() + " " + task.failure())));
+        });
+        ManualClock clock = ManualClock.startingNow();
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore(clock)).extension(auditing)
+            .configure("work", tasks -> {
+                tasks.eachTask(WORK, task -> { });
+                tasks.eachTask(NEXT, task -> { });
+            })
+            .build().start()) {
+            TaskTester tester = TaskTester.of(engine);
+            long id = engine.tasks().independently().push(WORK, "a", "x").id();
+            tester.drain(WORK);
+            tester.drain(NEXT);
+
+            assertThat(value(audit, "done/work/a")).as("the failed completion's write rolled back with it").isEqualTo("SUCCEEDED on attempt 2");
+            assertThat(tester.task(id).state()).isEqualTo("succeeded");
+            assertThat(value(audit, "done/next/a")).as("the next step, pushed with the completion, ran").isEqualTo("SUCCEEDED on attempt 1");
+            assertThat(heard).containsSubsequence("work a FAILED", "work a NONE", "next a NONE");
+            assertThat(heard).as("one next step: the failed completion's push rolled back").filteredOn(each -> each.startsWith("next")).hasSize(1);
+        }
+    }
+
     @Test
     void operator_views_are_listed_and_each_name_is_taken_once() {
         OperatorView schedules = new OperatorView() {

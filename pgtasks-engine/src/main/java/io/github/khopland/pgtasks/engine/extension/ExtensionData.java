@@ -18,8 +18,9 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Entries are kept under the extension's {@linkplain Extension#name() name}: every engine on the
  * store, every node and every application on the same database shares them. Each call runs in a
- * transaction the extension holds, such as one from {@link ExtensionContext#transact}, so the
- * writes commit or roll back with everything else in it.
+ * transaction the extension holds, such as one from {@link ExtensionContext#transact} or the one
+ * a {@link PushHook} or {@link CompletionHook} is given, so the writes commit or roll back with
+ * everything else in it.
  *
  * <p>A key is up to {@value ExtensionEntry#MAX_KEY} characters, a value up to
  * {@value ExtensionEntry#MAX_VALUE} characters of text the extension encodes as it likes: a

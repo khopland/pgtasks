@@ -48,6 +48,8 @@ lambda with a name: `Extension.of("audit", context -> context.batchListener(audi
 | Hook | What it does |
 |---|---|
 | `claimGate(ClaimGate)` | Asked before every claim on this node: claim at most `n` tasks (`Permit.atMost`), a probe of `n` (`Permit.probe`), or none for a while (`Permit.waitFor`). The strictest gate wins. `claimed(topic, taskIds)` tells it which tasks the claim got. Return `Permit.ANY` when nothing limits the claim. |
+| `pushHook(PushHook)` | Asked in every push's transaction, before its tasks are written: refuses the push by throwing, or writes what must commit with it. |
+| `completionHook(CompletionHook)` | Told of every batch completion in its transaction, before it commits: writes what must commit with it, such as an audit row or a workflow's next step. |
 | `batchListener(BatchListener)` | Told what became of each task of a batch once its completion committed: its result, whether it failed and whose fault that was, the error, and how long the batch took. |
 | `handlerDecorator(HandlerDecorator)` | Wraps the handler of every topic this node runs; the first registered is outermost. |
 | `observer(TaskObserver)` | Sees this node's pushes and batches, for tracing, metrics, or headers that follow the work, next to the observers given to the builder. For a header name both give, the builder's value is stored. One that throws is logged and ignored. |
@@ -106,6 +108,37 @@ says whether it failed and whose fault that was: `FAILED` for a failure that say
 what the handler talks to, `TASK_FAULT` for the task's own (a failure the retry policy
 dead-letters at once, an undecodable payload, a task out of attempts). A breaker counts the first
 and leaves the second out. Tasks handed back without running, as on a stop, aren't reported.
+
+## Push and completion hooks
+
+The other hooks run before a claim or after a commit. These two run inside the engine's own
+transactions, for what must commit or roll back with the engine's writes.
+
+A `PushHook` is asked in every push's transaction before its tasks are written: a producer's push,
+a handler's downstream work, and an extension's own. `push.tasks()` are the tasks as given, and
+`push.transaction()` the transaction to write in. Throwing refuses the push: nothing is written,
+and the caller gets the exception. A per-tenant quota counts in the extension's data and refuses
+what goes over:
+
+```java
+context.pushHook(push -> {
+    for (Creation<?> task : push.tasks()) {
+        String tenant = task.headers().getOrDefault("tenant", "none");
+        ExtensionEntry count = context.data().update(push.transaction(), "today/" + tenant,
+            now -> String.valueOf(now == null ? 1 : Long.parseLong(now) + 1)).orElseThrow();
+        if (Long.parseLong(count.value()) > limit) {
+            throw new QuotaExceededException(tenant);
+        }
+    }
+});
+```
+
+A `CompletionHook` is told of every batch completion in the transaction that records it, after its
+results and downstream pushes are written and before it commits: `batch.tasks()` are the results,
+as a batch listener gets them afterwards. Write an audit row there, or push a workflow's next step
+with `context.tasks(batch.transaction())`, and it commits with the completion or not at all. One
+that throws fails the completion, and the batch's tasks are retried, so keep it to what must be
+in the same transaction and do the rest in a batch listener.
 
 ## Jobs
 

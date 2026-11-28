@@ -30,6 +30,11 @@ break the API; the schema only ever moves forward, with migrations the store app
   extension's own transaction, `admin()`, `topics()`, `wake(topic)`, probe permits
   (`Permit.probe`, whose counted failures don't use up an attempt), `Extension.of(name, install)`
   and `engine.extension(Type.class)`.
+- Push and completion hooks run inside the engine's transactions: a `PushHook` is asked before every
+  push's tasks are written and can refuse the push or write with it (a quota, validation); a
+  `CompletionHook` is told of every batch completion before it commits and writes with it (an
+  audit row, a workflow's next step). Each gets a context object, which can grow without
+  breaking the hook.
 - `context.job(...)` returns the `Job`: `runsHere()` says whether this node runs it now, and
   `runSoon()` runs it now besides its schedule, on the node that holds a leader job's lease even
   when asked on another, told through the store's notifications. `context.channel(...)` returns

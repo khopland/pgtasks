@@ -70,7 +70,7 @@ class TopicWorkerFrayTest {
         Semaphore inFlight = new Semaphore(nodeCap);
         Map<Long, Integer> held = new ConcurrentHashMap<>();
         TopicWorker<String> worker = new TopicWorker<>(topic, topicId, new EngineCore(store, (DefaultTasks) engine.tasks(), () -> nodeId, inFlight,
-            RandomGenerator.getDefault(), name -> { }, held, () -> false, TaskObserver.NONE, List.of(), List.of(), () -> false, Thread::ofPlatform));
+            RandomGenerator.getDefault(), name -> { }, held, () -> false, TaskObserver.NONE, List.of(), List.of(), List.of(), () -> false, Thread::ofPlatform));
 
         worker.start();
         Thread waker = Thread.ofPlatform().start(() -> {
