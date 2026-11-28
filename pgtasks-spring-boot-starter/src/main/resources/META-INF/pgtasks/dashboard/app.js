@@ -16,6 +16,7 @@ const ROUTES = {
   discard: ["POST", "/topics/{topic}/discard"],
   tasks: ["GET", "/topics/{topic}/tasks"],
   release: ["POST", "/topics/{topic}/release"],
+  cancel: ["POST", "/topics/{topic}/cancel"],
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
@@ -24,7 +25,7 @@ const ROUTES = {
 
 const HIDDEN = "******";
 const REFRESH_MS = 10000;
-const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated"];
+const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated", "cancelled"];
 const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "dead_letter"];
 /** States shown as bad: a dead letter, and a task that finished as failed. */
 const BAD = new Set(["dead_letter", "failed"]);
@@ -725,9 +726,10 @@ function tasksPanel(topic, search, suspended) {
     { label: "Runs at", value: task => time(task.runAt) },
     { label: "Created", value: task => time(task.createdAt) },
     { label: "Reference", value: task => h("td", { class: "wrap mono" }, task.reference || "—") },
-    { label: h("span", { class: "sr-only" }, "Actions"), value: task => task.state === "suspended"
-      ? h("button", { type: "button", class: "small", onclick: () => releaseOne(topic, task.id) }, "Release")
-      : h("td", null) },
+    { label: h("span", { class: "sr-only" }, "Actions"), value: task => task.state === "active" ? h("td", null)
+      : h("div", { class: "actions" },
+        task.state === "suspended" ? h("button", { type: "button", class: "small", onclick: () => releaseOne(topic, task.id) }, "Release") : null,
+        h("button", { type: "button", class: "small danger", onclick: () => cancelOne(topic, task.id) }, "Cancel…")) },
   ], tasks, search.cursors.length > 1 ? "No more tasks." : "No unfinished task matches.");
   const page = search.page || {};
   const go = cursors => {
@@ -760,6 +762,25 @@ async function releaseOne(topic, id) {
   toast(result.released ? "Released task #" + id + "." : "Task #" + id + " is no longer suspended.");
   searchState(topic).stale = true;
   refresh();
+}
+
+/**
+ * Cancels one unfinished task after asking: it leaves the queue and never runs. A task a node
+ * claimed meanwhile is left to finish, and the toast says so.
+ */
+async function cancelOne(topic, id) {
+  const result = await ask({
+    title: "Cancel task #" + id,
+    message: ["Take task #" + id + " of ", h("strong", null, topic), " out of the queue. It finishes as cancelled and never runs; this can't be undone."],
+    action: "Cancel task",
+    danger: true,
+    run: () => api("cancel", { topic }, { body: { ids: String(id) } }),
+  });
+  if (result) {
+    toast(result.cancelled ? "Cancelled task #" + id + "." : "Task #" + id + " is running or finished, so it wasn't cancelled.", !result.cancelled);
+    searchState(topic).stale = true;
+    refresh();
+  }
 }
 
 async function releaseEvery(topic) {
@@ -991,7 +1012,9 @@ async function taskView(idText) {
   const headers = Object.entries(task.headers || {});
   return [
     h("div", { class: "crumbs" }, link("#/", "Overview"), " / ", topicLink(task.topic)),
-    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id)),
+    h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id),
+      !task.finished && task.state !== "active" ? h("div", { class: "actions" },
+        h("button", { type: "button", class: "small danger", onclick: () => cancelOne(task.topic, task.id) }, "Cancel…")) : null),
     hidden ? h("div", { class: "notice" }, "Payloads, outputs and error messages are hidden by ",
       h("code", null, "management.endpoint.tasks.show-values"), ". Error types are still shown.") : null,
     h("div", { class: "grid" },

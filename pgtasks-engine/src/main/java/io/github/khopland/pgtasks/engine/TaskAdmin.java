@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -31,12 +32,12 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
- * released when suspended), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
+ * released when suspended, cancelled), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
  * only pushes, and acts on the whole cluster.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  *
- * <p>A bulk action (revive, discard, release) works in batches and takes each row it can
+ * <p>A bulk action (revive, discard, release, cancel) works in batches and takes each row it can
  * lock. A row that stays locked by another transaction, such as a claim or a push, through the
  * action's few re-reads is left as it is; the count it returns says how many it took.
  */
@@ -247,6 +248,49 @@ public final class TaskAdmin {
                 engine.wake(topic);
             }
             return released;
+        });
+    }
+
+    /**
+     * Cancels these unfinished tasks: see {@link #cancel(String, TaskQuery)}. Ids that aren't
+     * unfinished tasks of the topic, or are active, are skipped.
+     *
+     * @return how many were cancelled
+     */
+    public int cancel(String topic, Collection<Long> taskIds) {
+        return cancel(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
+    }
+
+    /**
+     * Takes the matching unfinished tasks out of the queue, so they never run: they finish as
+     * {@link Outcome#CANCELLED}, with the attempts they took, and are kept as long as the topic's
+     * retention for cancelled tasks says. Ready, delayed, retrying, suspended and dead-lettered
+     * tasks are cancelled, and tasks they held back under an ordering run next. An active task is
+     * skipped and runs to its end: its node can't be stopped, so marking it cancelled would only
+     * make the record disagree with what its handler did. {@link TaskQuery#ALL} cancels every
+     * task of the topic that isn't running.
+     *
+     * <p>It commits on its own, in batches, like the other bulk actions: it doesn't join a
+     * transaction the caller has open.
+     *
+     * @return how many were cancelled
+     */
+    public int cancel(String topic, TaskQuery query) {
+        Objects.requireNonNull(query, "query");
+        Set<QueueState> states = query.states().isEmpty() ? EnumSet.allOf(QueueState.class) : EnumSet.copyOf(query.states());
+        states.remove(QueueState.ACTIVE);
+        if (states.isEmpty()) {
+            return 0; // it asks only for active tasks, which a cancel doesn't take
+        }
+        TaskQuery cancellable = query.inStates(states);
+        return Unchecked.call("Cancelling tasks of " + topic, () -> {
+            int id = topicId(topic);
+            int cancelled = inBatches(cancellable, (transaction, batch, limit) -> store.cancel(transaction, id, batch, limit), taskPaging(id));
+            if (cancelled > 0) {
+                LOGGER.info("Cancelled {} task(s) of {}", cancelled, topic);
+                engine.wake(topic);
+            }
+            return cancelled;
         });
     }
 

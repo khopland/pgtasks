@@ -115,6 +115,11 @@ class SchemaUpgradeTest {
         // New tasks get new ids after the seed's.
         long newest = fixture.push(topic, "after-upgrade");
         assertThat(newest).isGreaterThan(id(fixture, topic, "scheduled"));
+
+        // A task finishes as cancelled, an outcome newer than some releases.
+        List<Long> cancelled = fixture.inTransaction(transaction -> fixture.store().cancel(transaction, topic, TaskQuery.ids(List.of(newest)), 10));
+        assertThat(cancelled).containsExactly(newest);
+        assertThat(fixture.view(newest).orElseThrow().state()).isEqualTo("cancelled");
     }
 
     /** Before the first release: the rows the current code writes, dumped from a scratch schema. */

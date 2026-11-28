@@ -632,6 +632,22 @@ public final class InMemoryTaskStore implements TaskStore {
         return released.stream().map(Rows.Queued::taskId).toList();
     }
 
+    @Override
+    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) {
+        MemoryTransaction memory = memory(transaction);
+        List<Rows.Queued> cancelled = unfinished(topicId, query, EnumSet.complementOf(EnumSet.of(State.ACTIVE)), limit);
+        Instant now = now();
+        for (Rows.Queued row : cancelled) {
+            memory.remove(queue, row.taskId());
+            Rows.Task task = task(row.taskId());
+            memory.put(tasks, task.id(), task.finish("cancelled", task.output(), row.attempt(), now));
+        }
+        if (!cancelled.isEmpty()) {
+            memory.ready(topicId);
+        }
+        return cancelled.stream().map(Rows.Queued::taskId).toList();
+    }
+
     /** The topic's unfinished tasks in these states that match, lowest id first. */
     private List<Rows.Queued> unfinished(int topicId, TaskQuery query, Set<State> states, int limit) {
         return queue.values().stream()

@@ -82,7 +82,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, noteError, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
-    private final NamedSql searchTasks, releaseSuspended;
+    private final NamedSql searchTasks, releaseSuspended, cancel;
     private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded, topicLock, topicLockGuarded;
@@ -496,6 +496,30 @@ public final class PostgresTaskStore implements TaskStore {
             SET state = 'ready'
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
+            """);
+        // Active tasks are never picked, whatever states the query names: a node runs them, and its
+        // completion must still find them. The state is compared as text, as in the candidates.
+        cancel = sql("""
+            WITH picked AS MATERIALIZED (
+                SELECT o.ctid AS row FROM pgtasks.queue o
+                WHERE
+            """ + candidates + """
+                  AND o.state::text <> 'active'
+                ORDER BY o.task_id + 0
+                LIMIT :limit::integer
+                FOR UPDATE OF o SKIP LOCKED
+            ),
+            gone AS (
+                DELETE FROM pgtasks.queue q
+                WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
+                RETURNING q.task_id, q.attempt
+            )
+            UPDATE pgtasks.task t
+            SET outcome = 'cancelled', attempts = gone.attempt, completed_at = now()
+            FROM gone
+            WHERE t.id = ANY (ARRAY(SELECT task_id FROM gone))
+              AND t.id = gone.task_id
+            RETURNING t.id
             """);
         // A node's lease goes with it (ON DELETE CASCADE); one that still holds claims stays.
         deleteDeadNodes = sql("""
@@ -1462,6 +1486,16 @@ public final class PostgresTaskStore implements TaskStore {
     @Override
     public List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
         return ids(releaseSuspended, transaction, query(query.inStates(QueueState.SUSPENDED), topicId, limit));
+    }
+
+    /** Cancelled tasks may have held back later ones under an ordering; no trigger sees a delete. */
+    @Override
+    public List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        List<Long> cancelled = ids(cancel, transaction, query(query, topicId, limit));
+        if (!cancelled.isEmpty()) {
+            notifyReady(transaction, List.of(topicId));
+        }
+        return cancelled;
     }
 
     @Override

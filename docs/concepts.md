@@ -207,7 +207,9 @@ policy says, so a task that crashes the JVM can't take down node after node.
 
 Operators can search a topic's unfinished tasks by identifier, reference, state, one header's
 value and when they were pushed, a page at a time, lowest id first (`engine.admin().tasks(...)`,
-the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)).
+the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)). A task that
+should never run can be cancelled: it finishes as `cancelled`, unless a node is running it
+([operations](operations.md#cancelling-tasks)).
 
 ## Where settings come from
 
@@ -215,7 +217,7 @@ Each layer overrides the one before it:
 
 1. Built-in defaults: 100 tasks per batch, 2 batches per topic per node, FIFO, the standard
    retry, a 30 minute batch deadline, a 30 s poll as a fallback for notifications. Succeeded
-   tasks are kept for 30 days; filtered, redundant and recreated for 7; failed forever.
+   and cancelled tasks are kept for 30 days; filtered, redundant and recreated for 7; failed forever.
 2. `TaskGlobals.defaults(...)`, for every topic.
 3. A configurer's `defaults(...)`, for its own topics.
 4. The topic's own options.

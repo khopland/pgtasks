@@ -175,6 +175,22 @@ class TaskEndpointTest {
     }
 
     @Test
+    void unfinished_tasks_are_cancelled() throws Exception {
+        long first = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("cancel-a", "first").withDelay(Duration.ofHours(1))).id();
+        long second = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("cancel-b", "second").asSuspended()).id();
+
+        assertThat(send("POST", "/tasks/topics/work/cancel", "{}").status()).as("all of them only when asked for").isEqualTo(400);
+        Response cancelled = send("POST", "/tasks/topics/work/cancel", "{\"identifier\": \"cancel-a\"}");
+        assertThat(cancelled.status()).isEqualTo(200);
+        assertThat(cancelled.body().path("cancelled").asInt()).isEqualTo(1);
+        assertThat(get("/tasks/tasks/" + first).body().path("state").asString()).isEqualTo("cancelled");
+        assertThat(get("/tasks/tasks/" + second).body().path("state").asString()).isEqualTo("suspended");
+        assertThat(send("POST", "/tasks/topics/work/cancel", "{\"ids\": \"" + second + "\"}").body().path("cancelled").asInt()).isEqualTo(1);
+        assertThat(send("POST", "/tasks/topics/work/cancel", "{\"ids\": \"" + second + "\"}").body().path("cancelled").asInt())
+            .as("already finished").isZero();
+    }
+
+    @Test
     void unfinished_tasks_are_searched() throws Exception {
         long later = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("search-a", "later").withDelay(Duration.ofHours(1))
             .withHeader("tenant", "north")).id();
@@ -192,7 +208,7 @@ class TaskEndpointTest {
         assertThat(get("/tasks/topics/work/tasks?createdFrom=yesterday").status()).isEqualTo(400);
         assertThat(get("/tasks/topics/missing/tasks").status()).isEqualTo(404);
 
-        assertThat(send("POST", "/tasks/topics/work/cancel", "{\"all\": \"true\"}").status()).as("no longer an action").isEqualTo(404);
+        assertThat(send("POST", "/tasks/topics/work/run-now", "{\"all\": \"true\"}").status()).as("not an action").isEqualTo(404);
     }
 
     @Test

@@ -6,12 +6,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import io.github.khopland.pgtasks.Creation;
 import io.github.khopland.pgtasks.Decision;
 import io.github.khopland.pgtasks.Insertion;
+import io.github.khopland.pgtasks.Ordering;
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
@@ -120,6 +122,44 @@ class AdminTest {
         assertThat(engine.admin().find(first).orElseThrow().attempt()).as("a suspension uses up no attempt").isEqualTo(1);
         assertThat(engine.admin().find(second).orElseThrow().state()).isEqualTo("suspended");
         assertThatThrownBy(() -> engine.admin().release("missing", TaskQuery.ALL)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("A cancelled task never runs, and the task it held back under an ordering runs next")
+    void cancelled_tasks_never_run() throws Exception {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore(ManualClock.startingNow()))
+            .configure("work-module", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                ran.add(task.payload());
+                return task.payload().equals("failing") ? Decision.failed("not yet") : Decision.success();
+            }), topic -> topic.ordering(Ordering.SINGULAR_BY_IDENTIFIER)))
+            .build()
+            .start();
+        TaskTester tester = TaskTester.of(engine);
+        long failing = engine.tasks().independently().push(WORK, "order-1", "failing").id();
+        tester.awaitIdle();
+        long held = engine.tasks().independently().push(WORK, "order-1", "after").id();
+        long delayed = engine.tasks().independently().push(WORK, Insertion.APPEND, Creation.of("order-2", "delayed").withDelay(Duration.ofHours(1))).id();
+        tester.awaitIdle();
+        assertThat(ran).as("the retrying task holds back the next one for its identifier").containsExactly("failing");
+
+        assertThat(engine.admin().cancel("work", TaskQuery.ALL.inStates(QueueState.ACTIVE))).as("asks only for running tasks").isZero();
+        assertThat(engine.admin().cancel("work", List.of(failing, delayed, 999_999L))).isEqualTo(2);
+        tester.awaitIdle();
+
+        assertThat(ran).as("the held-back task ran once the one before it was cancelled").containsExactly("failing", "after");
+        assertThat(engine.admin().find(held).orElseThrow().state()).isEqualTo("succeeded");
+        TaskView cancelled = engine.admin().find(failing).orElseThrow();
+        assertThat(cancelled.state()).isEqualTo("cancelled");
+        assertThat(cancelled.finished()).isTrue();
+        assertThat(cancelled.attempt()).as("the attempt it took").isEqualTo(1);
+        assertThat(engine.admin().find(delayed).orElseThrow().state()).isEqualTo("cancelled");
+        Instant later = tester.advance(Duration.ofHours(2));
+        tester.awaitIdle();
+        assertThat(ran).as("neither the retry nor the delayed task ran").containsExactly("failing", "after");
+        assertThat(engine.admin().purge("work", Outcome.CANCELLED, later)).as("kept until purged, like any finished task").isEqualTo(2);
+        assertThatThrownBy(() -> engine.admin().cancel("missing", TaskQuery.ALL)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

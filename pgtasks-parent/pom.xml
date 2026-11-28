@@ -403,6 +403,8 @@
               (<exclude>io.github.khopland.pgtasks.Foo#bar(java.lang.String)</exclude>).
             -->
             <excludes>
+              <!-- 0.2.0: stores take unfinished tasks out of the queue for admin().cancel(...). -->
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#cancel(io.github.khopland.pgtasks.spi.StoreTransaction,int,io.github.khopland.pgtasks.admin.TaskQuery,int)</exclude>
             </excludes>
           </parameter>
         </configuration>
