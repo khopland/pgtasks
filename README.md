@@ -62,6 +62,8 @@ Import the BOM, then add modules without versions:
 | `pgtasks-memory` | An in-memory store for local runs and fast tests. It passes the same TCK as Postgres. |
 | `pgtasks-rate-limit` | Per-topic claim limits built on the extension hooks: per node, or across nodes with a shared sliding window. |
 | `pgtasks-rate-limit-postgres` | The shared counter behind the cluster-wide rate limit on Postgres, with its own schema files and history table. |
+| `pgtasks-pause` | Pausing and resuming topics on every node, built on the extension hooks. |
+| `pgtasks-pause-postgres` | The paused topics on Postgres, in their own table with its own schema files. |
 | `pgtasks-micrometer` | Metrics and tracing through Micrometer Observation. |
 | `pgtasks-jackson` | JSON payloads with Jackson 3, for payload types without a codec of their own. |
 | `pgtasks-junit` | A JUnit 5 extension: an engine per test on the in-memory store, with a manual clock. |

@@ -2,7 +2,7 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a pause, a circuit breaker
-or recurring tasks, belong in extensions. An extension uses the same hooks the engine's own
+or recurring tasks, belong in extensions; [some ship](#shipped-extensions). An extension uses the same hooks the engine's own
 housekeeping uses, so it needs no change to the engine. Everything an extension implements or
 receives is in the package `io.github.khopland.pgtasks.engine.extension`.
 
@@ -338,3 +338,28 @@ it reserved costs one short transaction on the topic's counter row; one that use
 
 The counter is shared through the store, not through the notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
 message from the other nodes.
+
+### Pausing topics
+
+`pgtasks-pause` is a claim gate, a channel, a leader job and an operator view. `Pause` keeps the
+paused topics in a `PauseStore` (in memory for the in-memory store; `pgtasks-pause-postgres` adds
+the `topic_pause` table on Postgres), and each node holds them in memory: a paused topic's permit
+is a wait, any other topic's `Permit.ANY`, so a claim costs nothing more. `pause(topic)` and
+`resume(topic)` write the row and send the topic's name on the `pause` channel in one
+transaction; every node reloads on the message, on a reconnect and on every heartbeat, and wakes
+the topics that were resumed. Each node reads the pauses as it starts, before its topics claim
+anything.
+
+```java
+Pause pause = new Pause();
+TaskEngine engine = TaskEngine.builder()
+    .dataSource(dataSource)
+    .extension(pause)
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task)))
+    .build();
+
+pause.pause("work");
+```
+
+With Spring, declare a `Pause` bean; its `pause` view lets the tasks endpoint and the dashboard
+pause and resume topics. See [operations](operations.md#pausing-a-topic).

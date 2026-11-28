@@ -13,6 +13,12 @@ break the API; the schema only ever moves forward, with migrations the store app
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
   (`Outcome.CANCELLED`), kept 30 days by default (`retain.cancelled`); an active task is left to
   finish. Tasks a cancelled one held back under an ordering run next.
+- Pausing topics: `pgtasks-pause` adds `Pause`, an extension whose `pause(topic)` and
+  `resume(topic)` act on every node, and `pgtasks-pause-postgres` keeps the paused topics on
+  Postgres in their own `topic_pause` table. A paused topic takes pushes but no node claims from
+  it; running batches finish. The pause is stored, so it outlasts restarts, and is announced on
+  the `pause` channel; a resume wakes the topic on every node at once. Its `pause` view shows the
+  paused topics in the endpoint and dashboard, marks each "paused", and pauses and resumes them.
 - Extensions can show operators what they know and let them act on it: an `OperatorView` (a
   table with actions on its rows, and a status and actions per topic) shows in the endpoint
   (`GET /actuator/tasks/extensions/{view}`, `POST .../{view}/{action}`, and on each topic) and the
