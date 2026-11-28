@@ -13,6 +13,15 @@ break the API; the schema only ever moves forward, with migrations the store app
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
   (`Outcome.CANCELLED`), kept 30 days by default (`retain.cancelled`); an active task is left to
   finish. Tasks a cancelled one held back under an ordering run next.
+- Recurring tasks: `pgtasks-recurring` pushes tasks on cron schedules (`Recurring`, `Schedule`,
+  `Cron`), and `pgtasks-recurring-postgres` keeps the schedules on Postgres in their own
+  `recurring_schedule` table. Every node fires the schedules it declares, each run once across the
+  cluster: a due run is locked, and its push commits with the move to the next run. Missed runs are
+  made up once, a run whose push fails is retried a minute later, and runs that wait supersede each
+  other unless the schedule appends. How often a node looks for due runs is the engine-wide
+  setting `recurring.interval` (1 s; `pgtasks.extensions.recurring.interval`). Its `schedules` view
+  shows every stored schedule in the endpoint and dashboard, with Run now, which pushes the run at
+  once. On the in-memory store, `TaskTester.advance` fires the runs that came due.
 - Extensions can show operators what they know and let them act on it: an `OperatorView` (a
   table with actions on its rows, and a status and actions per topic) shows in the endpoint
   (`GET /actuator/tasks/extensions/{view}`, `POST .../{view}/{action}`, and on each topic) and the

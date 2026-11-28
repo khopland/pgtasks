@@ -108,7 +108,8 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    the rows its code left with tasks in every state (ready, scheduled, retrying, suspended, a dead
    letter, a claim held by a node that died, finished and superseded ones), applies the current
    files, and runs them with the current store. A release adds its snapshot (RELEASING.md); the
-   cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`.
+   cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`, and recurring tasks'
+   in `RecurringSchemaUpgradeTest`.
 
 ### Tables an extension owns
 
@@ -118,7 +119,10 @@ name; the built-in runner applies them under a lock on `<schema>.<name>_schema_h
 lock and a different history table from the engine's and from every other extension's. That is
 where the cluster rate limit's `rate_limit_window` lives: in
 `io/github/khopland/pgtasks/ratelimit/postgres/db/V001__rate_limit_window.sql` in
-`pgtasks-rate-limit-postgres`, applied with the schema mode of its store.
+`pgtasks-rate-limit-postgres`, applied with the schema mode of its store. Recurring tasks keep
+`recurring_schedule` the same way, from
+`io/github/khopland/pgtasks/recurring/postgres/db/V001__recurring_schedule.sql` in
+`pgtasks-recurring-postgres`.
 
 The extension's files use the same `${pgtasks_schema}` placeholder and the same freeze rules as the
 engine's. With `migrate`, the module's runner applies them for you. With `validate`, point Flyway

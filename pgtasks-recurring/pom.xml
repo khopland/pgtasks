@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.github.khopland.pgtasks</groupId>
+    <artifactId>pgtasks-parent</artifactId>
+    <version>0.2.0-SNAPSHOT</version>
+    <relativePath>../pgtasks-parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>pgtasks-recurring</artifactId>
+  <name>pgtasks recurring tasks</name>
+  <description>Recurring tasks for pgtasks, built on the engine's extension hooks: cron schedules that push a task once per run across the cluster.</description>
+
+  <properties>
+    <module.name>io.github.khopland.pgtasks.recurring</module.name>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.khopland.pgtasks</groupId>
+      <artifactId>pgtasks-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.khopland.pgtasks</groupId>
+      <artifactId>pgtasks-memory</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- ScheduleStoreContract is reused by pgtasks-recurring-postgres's tests. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>io/github/khopland/pgtasks/recurring/contract/**</include>
+              </includes>
+              <!-- Named apart from the main jar, or the module path drops it as a second copy of that module. -->
+              <archive>
+                <manifestEntries>
+                  <Automatic-Module-Name>io.github.khopland.pgtasks.recurring.contract</Automatic-Module-Name>
+                </manifestEntries>
+              </archive>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

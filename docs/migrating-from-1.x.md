@@ -29,7 +29,8 @@ Behaviour that changes:
   keep that with `Retry.standard().forever()`.
 - Retention counts from completion, not from creation.
 - A scheduling delay on a successful or filtered task never makes it run again. Work that
-  repeats pushes its next run itself, with a delay and `SUPERSEDE`.
+  repeats runs on a cron schedule with `pgtasks-recurring`, or pushes its next run itself, with a
+  delay and `SUPERSEDE`.
 - Identifier conditions look only at the same topic. In 1.x, a task in another topic with the same
   identifier could block one (finding #6 of the plan).
 - Children are never committed for a parent that didn't continue, whichever context or resource

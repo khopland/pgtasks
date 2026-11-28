@@ -142,6 +142,22 @@
       </dependency>
       <dependency>
         <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-recurring</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-recurring</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
+        <artifactId>pgtasks-recurring-postgres</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.khopland.pgtasks</groupId>
         <artifactId>pgtasks-micrometer</artifactId>
         <version>${project.version}</version>
       </dependency>
