@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -82,7 +83,7 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, noteError, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
-    private final NamedSql searchTasks, releaseSuspended, cancel;
+    private final NamedSql searchTasks, makeReady, cancel;
     private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
     private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded, topicLock, topicLockGuarded;
@@ -481,9 +482,11 @@ public final class PostgresTaskStore implements TaskStore {
             JOIN pgtasks.task t ON t.id = o.task_id
             ORDER BY o.task_id
             """);
-        // The query's states are set to suspended alone (see releaseSuspended), so the candidates
-        // and their recheck as locked take nothing else. The update trigger on pgtasks.queue wakes the workers.
-        releaseSuspended = sql("""
+        // Releasing suspended tasks and running delayed or retrying ones now. The query's states are
+        // narrowed to the ones the action takes (see releaseSuspended and runNow), so the candidates
+        // and their recheck as locked take nothing else; a suspended task has no run time to clear.
+        // The update trigger on pgtasks.queue wakes the workers.
+        makeReady = sql("""
             WITH picked AS MATERIALIZED (
                 SELECT o.ctid AS row FROM pgtasks.queue o
                 WHERE
@@ -493,7 +496,7 @@ public final class PostgresTaskStore implements TaskStore {
                 FOR UPDATE OF o SKIP LOCKED
             )
             UPDATE pgtasks.queue q
-            SET state = 'ready'
+            SET state = 'ready', run_at = NULL
             WHERE q.ctid = ANY (ARRAY(SELECT row FROM picked))
             RETURNING q.task_id
             """);
@@ -1485,7 +1488,19 @@ public final class PostgresTaskStore implements TaskStore {
 
     @Override
     public List<Long> releaseSuspended(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
-        return ids(releaseSuspended, transaction, query(query.inStates(QueueState.SUSPENDED), topicId, limit));
+        return ids(makeReady, transaction, query(query.inStates(QueueState.SUSPENDED), topicId, limit));
+    }
+
+    @Override
+    public List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException {
+        Set<QueueState> waiting = EnumSet.of(QueueState.SCHEDULED, QueueState.RETRYING);
+        if (!query.states().isEmpty()) {
+            waiting.retainAll(query.states());
+        }
+        if (waiting.isEmpty()) {
+            return List.of();
+        }
+        return ids(makeReady, transaction, query(query.inStates(waiting), topicId, limit));
     }
 
     /** Cancelled tasks may have held back later ones under an ordering; no trigger sees a delete. */

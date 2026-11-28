@@ -16,6 +16,7 @@ const ROUTES = {
   discard: ["POST", "/topics/{topic}/discard"],
   tasks: ["GET", "/topics/{topic}/tasks"],
   release: ["POST", "/topics/{topic}/release"],
+  runNow: ["POST", "/topics/{topic}/run-now"],
   cancel: ["POST", "/topics/{topic}/cancel"],
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
@@ -29,6 +30,8 @@ const OUTCOMES = ["succeeded", "filtered", "failed", "redundant", "recreated", "
 const STATES = ["scheduled", "retrying", "ready", "active", "suspended", "dead_letter"];
 /** States shown as bad: a dead letter, and a task that finished as failed. */
 const BAD = new Set(["dead_letter", "failed"]);
+/** States that wait for a time, which "Run now" ends: delayed and backing off. */
+const WAITING = new Set(["scheduled", "retrying"]);
 
 const state = {
   config: null,
@@ -729,6 +732,7 @@ function tasksPanel(topic, search, suspended) {
     { label: h("span", { class: "sr-only" }, "Actions"), value: task => task.state === "active" ? h("td", null)
       : h("div", { class: "actions" },
         task.state === "suspended" ? h("button", { type: "button", class: "small", onclick: () => releaseOne(topic, task.id) }, "Release") : null,
+        WAITING.has(task.state) ? h("button", { type: "button", class: "small", onclick: () => runNowOne(topic, task.id) }, "Run now") : null,
         h("button", { type: "button", class: "small danger", onclick: () => cancelOne(topic, task.id) }, "Cancel…")) },
   ], tasks, search.cursors.length > 1 ? "No more tasks." : "No unfinished task matches.");
   const page = search.page || {};
@@ -760,6 +764,23 @@ async function releaseOne(topic, id) {
     return;
   }
   toast(result.released ? "Released task #" + id + "." : "Task #" + id + " is no longer suspended.");
+  searchState(topic).stale = true;
+  refresh();
+}
+
+/**
+ * Makes one delayed or retrying task ready now. It keeps its attempts, so a further failure backs
+ * off from where it was.
+ */
+async function runNowOne(topic, id) {
+  let result;
+  try {
+    result = await api("runNow", { topic }, { body: { ids: String(id) } });
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  toast(result.madeReady ? "Task #" + id + " is ready to run." : "Task #" + id + " no longer waits for a time.");
   searchState(topic).stale = true;
   refresh();
 }
@@ -1014,6 +1035,7 @@ async function taskView(idText) {
     h("div", { class: "crumbs" }, link("#/", "Overview"), " / ", topicLink(task.topic)),
     h("div", { class: "page-head" }, h("h1", null, "Task #" + task.id),
       !task.finished && task.state !== "active" ? h("div", { class: "actions" },
+        WAITING.has(task.state) ? h("button", { type: "button", class: "small", onclick: () => runNowOne(task.topic, task.id) }, "Run now") : null,
         h("button", { type: "button", class: "small danger", onclick: () => cancelOne(task.topic, task.id) }, "Cancel…")) : null),
     hidden ? h("div", { class: "notice" }, "Payloads, outputs and error messages are hidden by ",
       h("code", null, "management.endpoint.tasks.show-values"), ". Error types are still shown.") : null,

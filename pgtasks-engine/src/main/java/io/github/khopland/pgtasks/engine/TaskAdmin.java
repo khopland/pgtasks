@@ -32,12 +32,12 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The operator's side of an engine, from {@link TaskEngine#admin()}: topics, tasks (searched,
- * released when suspended, cancelled), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
+ * released when suspended, run now, cancelled), dead letters and retention. Everything here reads or changes the store directly, so it works on a node that
  * only pushes, and acts on the whole cluster.
  * Failures are unchecked: {@link TaskStorageException} when the store fails,
  * {@link IllegalArgumentException} for a topic that doesn't exist.
  *
- * <p>A bulk action (revive, discard, release, cancel) works in batches and takes each row it can
+ * <p>A bulk action (revive, discard, release, run now, cancel) works in batches and takes each row it can
  * lock. A row that stays locked by another transaction, such as a claim or a push, through the
  * action's few re-reads is left as it is; the count it returns says how many it took.
  */
@@ -291,6 +291,51 @@ public final class TaskAdmin {
                 engine.wake(topic);
             }
             return cancelled;
+        });
+    }
+
+    /**
+     * Runs these delayed or retrying tasks now: see {@link #runNow(String, TaskQuery)}. Ids that
+     * aren't delayed or retrying tasks of the topic are skipped.
+     *
+     * @return how many were made ready
+     */
+    public int runNow(String topic, Collection<Long> taskIds) {
+        return runNow(topic, TaskQuery.ids(Objects.requireNonNull(taskIds, "taskIds")));
+    }
+
+    /**
+     * Makes the matching delayed and retrying tasks ready at once, as if their time had come: a
+     * task pushed with a delay or a run time, one its handler put off with
+     * {@link io.github.khopland.pgtasks.Decision#later(Duration) later}, or one
+     * backing off after a failure. They keep their attempts and failures, so a further failure
+     * backs off from where it was, and take their place in line by id under the topic's ordering.
+     * Tasks in other states are skipped; {@link TaskQuery#ALL} runs every delayed and retrying task
+     * of the topic now.
+     *
+     * <p>It commits on its own, in batches, like the other bulk actions: it doesn't join a
+     * transaction the caller has open.
+     *
+     * @return how many were made ready
+     */
+    public int runNow(String topic, TaskQuery query) {
+        Objects.requireNonNull(query, "query");
+        Set<QueueState> states = EnumSet.of(QueueState.SCHEDULED, QueueState.RETRYING);
+        if (!query.states().isEmpty()) {
+            states.retainAll(query.states());
+        }
+        if (states.isEmpty()) {
+            return 0; // it asks only for states that don't wait for a time
+        }
+        TaskQuery waiting = query.inStates(states);
+        return Unchecked.call("Running tasks of " + topic + " now", () -> {
+            int id = topicId(topic);
+            int ready = inBatches(waiting, (transaction, batch, limit) -> store.runNow(transaction, id, batch, limit), taskPaging(id));
+            if (ready > 0) {
+                LOGGER.info("Made {} delayed or retrying task(s) of {} ready", ready, topic);
+                engine.wake(topic);
+            }
+            return ready;
         });
     }
 

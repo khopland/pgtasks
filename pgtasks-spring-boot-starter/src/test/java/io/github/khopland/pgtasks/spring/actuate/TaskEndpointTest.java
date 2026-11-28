@@ -175,6 +175,24 @@ class TaskEndpointTest {
     }
 
     @Test
+    void delayed_tasks_are_run_now() throws Exception {
+        long first = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("run-now-a", "first").withDelay(Duration.ofHours(1))).id();
+        long second = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("run-now-b", "second").withDelay(Duration.ofHours(1))).id();
+        long held = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("run-now-c", "held").asSuspended()).id();
+
+        assertThat(send("POST", "/tasks/topics/work/run-now", "{}").status()).as("all of them only when asked for").isEqualTo(400);
+        Response ran = send("POST", "/tasks/topics/work/run-now", "{\"identifier\": \"run-now-a\"}");
+        assertThat(ran.status()).isEqualTo(200);
+        assertThat(ran.body().path("madeReady").asInt()).isEqualTo(1);
+        EngineFixture.await("the task run now succeeded", Duration.ofSeconds(5),
+            () -> unchecked(() -> "succeeded".equals(get("/tasks/tasks/" + first).body().path("state").asString())));
+        assertThat(get("/tasks/tasks/" + second).body().path("state").asString()).isEqualTo("scheduled");
+        assertThat(send("POST", "/tasks/topics/work/run-now", "{\"ids\": \"" + held + "\"}").body().path("madeReady").asInt())
+            .as("waits for a release, not a time").isZero();
+        assertThat(send("POST", "/tasks/topics/work/run-now", "{\"ids\": \"" + second + "\"}").body().path("madeReady").asInt()).isEqualTo(1);
+    }
+
+    @Test
     void unfinished_tasks_are_cancelled() throws Exception {
         long first = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("cancel-a", "first").withDelay(Duration.ofHours(1))).id();
         long second = tasks.independently().push(WORK, Insertion.APPEND, Creation.of("cancel-b", "second").asSuspended()).id();
@@ -208,7 +226,7 @@ class TaskEndpointTest {
         assertThat(get("/tasks/topics/work/tasks?createdFrom=yesterday").status()).isEqualTo(400);
         assertThat(get("/tasks/topics/missing/tasks").status()).isEqualTo(404);
 
-        assertThat(send("POST", "/tasks/topics/work/run-now", "{\"all\": \"true\"}").status()).as("not an action").isEqualTo(404);
+        assertThat(send("POST", "/tasks/topics/work/pause", "{\"all\": \"true\"}").status()).as("not an action").isEqualTo(404);
     }
 
     @Test

@@ -113,6 +113,16 @@ class BulkActionLocksTest {
     }
 
     @Test
+    void a_run_now_takes_a_delayed_task_that_was_locked_while_its_batch_ran() throws Exception {
+        List<Long> ids = push(3);
+        database.execute("UPDATE pgtasks.queue SET state = 'scheduled', run_at = now() + interval '1 hour'");
+        lock(ids.getFirst());
+
+        assertThat(engine.admin().runNow(WORK.name(), TaskQuery.ALL)).isEqualTo(3);
+        assertThat(database.count("SELECT count(*) FROM pgtasks.queue WHERE state = 'ready' AND run_at IS NULL")).isEqualTo(3);
+    }
+
+    @Test
     void a_cancel_takes_a_task_that_was_locked_while_its_batch_ran() throws Exception {
         List<Long> ids = push(3);
         lock(ids.getFirst());

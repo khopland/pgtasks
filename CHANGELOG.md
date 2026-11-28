@@ -13,14 +13,18 @@ break the API; the schema only ever moves forward, with migrations the store app
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
   (`Outcome.CANCELLED`), kept 30 days by default (`retain.cancelled`); an active task is left to
   finish. Tasks a cancelled one held back under an ordering run next.
+- Running tasks now: `admin().runNow(...)` by id or `TaskQuery`, the endpoint's `run-now` action
+  and the dashboard's Run now button make delayed and retrying tasks ready at once, as if their
+  time had come. They keep their attempts and failures, so a further failure backs off from where
+  it was.
 
 ### Changed
 
 - Schema version 2 (`V002__cancelled_outcome.sql`) adds the `cancelled` outcome. The store applies
   it on start; with schema mode `validate`, apply it with your migration tool first. Nodes of 0.1.0
   keep running against it during a rolling deploy.
-- `TaskStore` has a new method, `cancel`. A store of your own must implement it, and pass the
-  `OperatorTck` cases for it.
+- `TaskStore` has new methods, `cancel` and `runNow`. A store of your own must implement them, and
+  pass the `OperatorTck` cases for them.
 
 ## [0.1.0] - 2026-11-27
 
