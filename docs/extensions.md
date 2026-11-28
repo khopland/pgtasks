@@ -2,7 +2,7 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a pause, a circuit breaker
-or recurring tasks, belong in extensions. An extension uses the same hooks the engine's own
+or recurring tasks, belong in extensions; [some ship](#shipped-extensions). An extension uses the same hooks the engine's own
 housekeeping uses, so it needs no change to the engine. Everything an extension implements or
 receives is in the package `io.github.khopland.pgtasks.engine.extension`.
 
@@ -338,3 +338,62 @@ it reserved costs one short transaction on the topic's counter row; one that use
 
 The counter is shared through the store, not through the notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
 message from the other nodes.
+
+### Recurring tasks
+
+`pgtasks-recurring` pushes tasks on cron schedules. Declare the schedules in a `Recurring`
+extension, or with Spring, a `Recurring` bean:
+
+```java
+TaskEngine.builder()
+    .extension(Recurring.of(
+        Schedule.of(REPORTS, "nightly", Cron.parse("0 2 * * *", ZoneId.of("Europe/Oslo")), new ReportRequest("daily")),
+        Schedule.of(CLEANUP, "every-15-minutes", Cron.parse("*/15 * * * *"), new Cleanup())))
+```
+
+`Cron` takes the usual five fields (minute, hour, day of month, month, day of week, with names,
+ranges, steps and lists) and the `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly`
+shorthands, read in a time zone (UTC unless given). A time that daylight saving skips fires right
+after the gap; one that happens twice fires once.
+
+- **Each run fires once.** Every node fires the schedules it declares, in an every-node job. A due
+  run is locked in the store, and its push and the move to the next run commit in one transaction
+  (`tasks(transaction)`), so however many nodes declare a schedule, one of them pushes each run,
+  and a node that dies halfway leaves it to another. No housekeeping leader is involved, so a
+  schedule fires even when the leader is a node of another application that shares the schema.
+- **Late, not lost.** A node looks for due runs every second: the engine-wide setting
+  `recurring.interval`, set with `builder.set(Recurring.INTERVAL, ...)` or
+  `pgtasks.extensions.recurring.interval: 5s`. Runs missed while no node that declares the
+  schedule was up are made up once, and the next run counts from then.
+- **Runs don't pile up.** Each push supersedes a run still waiting, unless the schedule says
+  `withInsertion(Insertion.APPEND)`. The pushed task's identifier is the schedule's name unless
+  `withIdentifier(...)` gives another.
+- **A failing push holds back nothing.** A run whose push fails, say because its topic doesn't
+  exist yet, is rolled back to its savepoint, logged and tried again a minute later (or at its next
+  run, if that comes first), and the other schedules still fire.
+- **Schedules follow the code.** A schedule is kept by its topic and name. A node that starts with a
+  new cron or zone for it moves its next run to what the new one says; a restart with the same cron
+  leaves it alone. While old and new nodes run side by side during a deploy, each moves the schedule
+  on by its own cron. A schedule no running node declares stops firing, and its row is deleted after
+  30 days.
+
+On the in-memory store the schedules live next to the tasks, shared by every engine on the store
+and rolled back with their transactions, and `TaskTester.advance(...)` fires the runs that came
+due. On Postgres, add `pgtasks-recurring-postgres`: its `recurring_schedule` table comes from its
+own `V001__recurring_schedule.sql`, recorded in `recurring_schema_history`, applied with the
+store's schema mode like the rate limit's.
+
+Its `schedules` view shows every stored schedule in the endpoint and on the dashboard's overview,
+with its cron, next and last run, and whether this node declares it, and a Run now action on the
+ones it does, which pushes the run at once. In code, `recurring.status()` and
+`recurring.runNow(topic, name)` do the same.
+
+A `Recurring` bean is code, so a schedule that differs per environment reads its cron from a
+property, and one that runs only in some environments is left out there:
+
+```java
+@Bean
+Recurring recurring(@Value("${reports.nightly.cron:0 2 * * *}") String nightly, @Value("${reports.enabled:true}") boolean enabled) {
+    return Recurring.of(enabled ? List.of(Schedule.of(REPORTS, "nightly", Cron.parse(nightly, OSLO), new ReportRequest("daily"))) : List.of());
+}
+```

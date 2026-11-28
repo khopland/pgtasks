@@ -34,6 +34,8 @@
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-engine</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-rate-limit</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-rate-limit-postgres</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-recurring</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-recurring-postgres</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-micrometer</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-jackson</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>${project.groupId}</groupId><artifactId>pgtasks-junit</artifactId><version>${project.version}</version></dependency>

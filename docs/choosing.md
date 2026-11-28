@@ -41,9 +41,6 @@ fit. If it isn't, one of the tools below is likely a better one.
   threads.
 - **Large payloads.** Payloads are stored as text in the task table, and kept for the retention
   period. Store files and large documents elsewhere and push a reference.
-- **Cron schedules, today.** Delays and run times are supported (`withDelay`, `withRunAt`,
-  `later()`), and a task can push its own next run, but there is no built-in "every night at
-  02:00 on one node". It is planned for 0.2.0.
 - **Work that has nothing to do with the database's transactions.** If the work never needs to
   commit with a data change, an in-memory executor or a scheduler may be simpler.
 
@@ -59,7 +56,7 @@ before deciding.
 | Push in the app's transaction | Yes, the default | Possible, with care (see its transactional staging example) | Pro edition (transaction plugin) | With a container-managed (JTA) job store | No: needs an outbox |
 | A run's database effects commit with its completion | Yes, fenced against stale nodes | Not built in | Not built in | Not built in | Not built in |
 | Ordering per key | Yes | Not built in | Not built in | Not built in | Per partition (Kafka), per queue |
-| Recurring / cron | Not yet (0.2.0) | Yes | Yes | Yes, its core strength | No |
+| Recurring / cron | Yes (`pgtasks-recurring`) | Yes | Yes | Yes, its core strength | No |
 | Dashboard | Yes, with operator actions | Community add-on | Yes; search and more in Pro | No | Product-specific |
 | Retries with backoff, dead letters | Yes | Yes, configurable failure handlers | Yes; custom policies in Pro | Up to the job | Product-specific |
 | Rate limits | Per node and cluster-wide (`pgtasks-rate-limit`) | Not built in | Pro edition | Not built in | Product-specific |
@@ -68,7 +65,7 @@ before deciding.
 In short:
 
 - **db-scheduler** is the closest relative: a Java library that keeps its work in your database.
-  Choose it for recurring tasks, or if you aren't on Postgres. Choose pgtasks for transactional
+  Choose it if you aren't on Postgres. Choose pgtasks for transactional
   pushes as the default, completions that commit the run's effects, per-key ordering and the
   operator tooling.
 - **JobRunr** schedules Java lambdas, with a polished dashboard and many storage backends. Several
