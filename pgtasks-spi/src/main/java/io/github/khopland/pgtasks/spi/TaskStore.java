@@ -378,6 +378,17 @@ public interface TaskStore {
     List<Long> cancel(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
 
     /**
+     * Makes the matching delayed and retrying tasks ready at once, the lowest ids first, as if
+     * their time had come: they keep their attempts, failures and expiries, so a further failure
+     * backs off from where it was. Only delayed and retrying tasks are taken, in the states the
+     * query names if it names either. Like {@link #revive}, it skips rows another transaction
+     * holds locked, and wakes the topic's workers once it commits.
+     *
+     * @return the ids made ready
+     */
+    List<Long> runNow(StoreTransaction transaction, int topicId, TaskQuery query, int limit) throws SQLException;
+
+    /**
      * A task to store. Payload and type are already encoded. {@code headers} are stored as they
      * are and come back with every claim; an empty map stores none. {@code runAt} is an absolute
      * time, compared with the store's clock: a time not after it makes the task ready at once.

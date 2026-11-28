@@ -163,6 +163,7 @@ GET    /actuator/tasks/topics/{topic}/dead-letters?after=&limit=
 GET    /actuator/tasks/topics/{topic}/tasks?after=&limit=&identifier=&reference=&state=scheduled,retrying&header=tenant=north&createdFrom=&createdUntil=
 POST   /actuator/tasks/topics/{topic}/revive | discard   {"ids": "1,2"}, or {"error": "...", "failedFrom": "...", "failedUntil": "..."}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/release            suspended tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
+POST   /actuator/tasks/topics/{topic}/run-now            delayed and retrying tasks: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/cancel             unfinished tasks but active ones: {"ids": "1,2"}, or {"identifier": "order-7"}, or {"all": "true"}
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
@@ -216,10 +217,10 @@ Then open `http://<host>/pgtasks/`. It shows:
 - **Unfinished tasks** (on the topic page): search by identifier, reference, state, a header and
   when they were pushed. A search runs when you ask and on a page change or after a change, not on every refresh, since
   one without an identifier or reference reads the topic's backlog. A task in the results that
-  isn't running has a Cancel button, a suspended one a Release button too, and a topic with
-  suspended tasks has "Release all suspended…".
-- **Task**: look one up by id in the header, with its error, and cancel it if it hasn't finished
-  and isn't running.
+  isn't running has a Cancel button, a suspended one a Release button too, a delayed or retrying
+  one a Run now button, and a topic with suspended tasks has "Release all suspended…".
+- **Task**: look one up by id in the header, with its error. Run it now if it is delayed or
+  retrying, and cancel it if it hasn't finished and isn't running.
 
 Cancels, discards, purges and deletes ask for confirmation, and the ones that can't be undone at scale
 (discarding every dead letter, purging, deleting a topic) ask you to type the topic's name.
@@ -399,6 +400,27 @@ with `Creation.asSuspended()`. Nothing releases it on its own. Once what it wait
   and the new one runs.
 
 The `pgtasks.queue{state="suspended"}` gauge shows how many wait in each topic.
+
+## Running tasks now
+
+A task that waits for a time can be made ready at once, as if its time had come: one pushed with
+a delay or a run time, one its handler put off with `later()`, or one backing off after a failure,
+once what made it fail is fixed. `admin().runNow(topic, ids)`, or `admin().runNow(topic, query)`
+for the tasks a `TaskQuery` matches, the endpoint's `run-now` action, or the Run now button in the
+dashboard's task search and on a task's page.
+
+```java
+admin.runNow("payments", TaskQuery.ALL.inStates(QueueState.RETRYING));   // the gateway is back: retry now
+```
+
+- Only delayed and retrying tasks are taken; ready, active, suspended and dead-lettered ones are
+  skipped and not counted. Release a suspended task, revive a dead letter.
+- They keep their attempts and failures, so one that fails again backs off from where it was, and
+  dead-letters when its attempts run out, as it would have. They take their place in line by id,
+  under the topic's ordering, as any ready task does.
+- A run now commits on its own, in batches of 1,000, like the other bulk actions. It doesn't join
+  a transaction the caller has open.
+- Nothing runs every waiting task of a topic now without `"all": "true"` (`TaskQuery.ALL` in code).
 
 ## Cancelling tasks
 

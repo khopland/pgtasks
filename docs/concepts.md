@@ -207,8 +207,9 @@ policy says, so a task that crashes the JVM can't take down node after node.
 
 Operators can search a topic's unfinished tasks by identifier, reference, state, one header's
 value and when they were pushed, a page at a time, lowest id first (`engine.admin().tasks(...)`,
-the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)). A task that
-should never run can be cancelled: it finishes as `cancelled`, unless a node is running it
+the endpoint and the dashboard; see [operations](operations.md#unfinished-tasks)). A delayed or
+retrying task can be run now, with the attempts it took ([operations](operations.md#running-tasks-now)).
+A task that should never run can be cancelled: it finishes as `cancelled`, unless a node is running it
 ([operations](operations.md#cancelling-tasks)).
 
 ## Where settings come from

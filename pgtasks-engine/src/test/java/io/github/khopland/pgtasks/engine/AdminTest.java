@@ -163,6 +163,40 @@ class AdminTest {
     }
 
     @Test
+    @DisplayName("A delayed or retrying task runs once an operator runs it now, with the attempts it took")
+    void waiting_tasks_run_now() throws Exception {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        Set<String> failedOnce = ConcurrentHashMap.newKeySet();
+        engine = TaskEngine.builder()
+            .store(new InMemoryTaskStore(ManualClock.startingNow()))
+            .configure("work-module", tasks -> tasks.topic(WORK, batch -> batch.decide(task -> {
+                ran.add(task.payload());
+                return task.payload().equals("flaky") && failedOnce.add(task.payload()) ? Decision.failed("not yet") : Decision.success();
+            })))
+            .build()
+            .start();
+        TaskTester tester = TaskTester.of(engine);
+        long flaky = engine.tasks().independently().push(WORK, "order-1", "flaky").id();
+        long delayed = engine.tasks().independently().push(WORK, Insertion.APPEND, Creation.of("order-2", "delayed").withDelay(Duration.ofHours(1))).id();
+        long untouched = engine.tasks().independently().push(WORK, Insertion.APPEND, Creation.of("order-3", "untouched").withDelay(Duration.ofHours(1))).id();
+        tester.awaitIdle();
+        assertThat(ran).containsExactly("flaky");
+        assertThat(engine.admin().find(flaky).orElseThrow().state()).isEqualTo("retrying");
+
+        assertThat(engine.admin().runNow("work", TaskQuery.ALL.inStates(QueueState.READY, QueueState.SUSPENDED))).as("asks for no waiting task").isZero();
+        assertThat(engine.admin().runNow("work", List.of(flaky, delayed, 999_999L))).isEqualTo(2);
+        tester.awaitIdle();
+
+        assertThat(ran).containsExactlyInAnyOrder("flaky", "flaky", "delayed");
+        TaskView retried = engine.admin().find(flaky).orElseThrow();
+        assertThat(retried.state()).isEqualTo("succeeded");
+        assertThat(retried.attempt()).as("the attempt that failed, and this one").isEqualTo(2);
+        assertThat(engine.admin().find(delayed).orElseThrow().state()).isEqualTo("succeeded");
+        assertThat(engine.admin().find(untouched).orElseThrow().state()).isEqualTo("scheduled");
+        assertThatThrownBy(() -> engine.admin().runNow("missing", TaskQuery.ALL)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("A page limit below one is refused before the store sees it")
     void a_page_limit_below_one_is_refused() throws Exception {
         start(new InMemoryTaskStore());
