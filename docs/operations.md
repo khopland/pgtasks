@@ -108,7 +108,8 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    the rows its code left with tasks in every state (ready, scheduled, retrying, suspended, a dead
    letter, a claim held by a node that died, finished and superseded ones), applies the current
    files, and runs them with the current store. A release adds its snapshot (RELEASING.md); the
-   cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`.
+   cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`, and the paused topics'
+   in `PauseSchemaUpgradeTest`.
 
 ### Tables an extension owns
 
@@ -118,7 +119,9 @@ name; the built-in runner applies them under a lock on `<schema>.<name>_schema_h
 lock and a different history table from the engine's and from every other extension's. That is
 where the cluster rate limit's `rate_limit_window` lives: in
 `io/github/khopland/pgtasks/ratelimit/postgres/db/V001__rate_limit_window.sql` in
-`pgtasks-rate-limit-postgres`, applied with the schema mode of its store.
+`pgtasks-rate-limit-postgres`, applied with the schema mode of its store. The paused topics'
+`topic_pause` is the same, in `io/github/khopland/pgtasks/pause/postgres/db/V001__topic_pause.sql`
+in `pgtasks-pause-postgres`.
 
 The extension's files use the same `${pgtasks_schema}` placeholder and the same freeze rules as the
 engine's. With `migrate`, the module's runner applies them for you. With `validate`, point Flyway
@@ -452,6 +455,38 @@ admin.tasks("assessment", stuck, 50);            // a page, lowest id first; nex
   `queue (topic_id, task_id)` would avoid that, at a cost to every push and claim, so there is none.)
 - The search shows payloads, outputs, errors and header values under the same `show-values` rules
   as dead letters. Filtering by a header's value still works when values are hidden.
+
+## Pausing a topic
+
+To hold a topic's tasks back for a while, say while what its handler calls is down, pause it.
+Add `pgtasks-pause` (and `pgtasks-pause-postgres` on Postgres), install the extension on every node,
+and pause and resume through it, the dashboard's Pause and Resume buttons on the topic's page, or
+the endpoint (`POST /actuator/tasks/extensions/pause/pause` and `.../resume` with `{"topic": "assessment"}`):
+
+```java
+@Bean
+Pause pause() {
+    return new Pause();
+}
+
+pause.pause("assessment");     // no node claims its tasks until...
+pause.resume("assessment");    // ...every node claims them again at once
+```
+
+- A paused topic takes pushes, and its delayed and retrying tasks come due as usual; no node
+  claims from it. Batches already running finish.
+- The pause is stored in `topic_pause`, so it outlasts restarts: a node that starts later reads it
+  before its first claim.
+- Each node keeps the paused topics in memory and holds their claims back with a claim gate. A
+  pause or a resume is announced on the `pause` channel when it commits, so it reaches every node
+  within milliseconds; a node that missed the message picks it up on its next heartbeat. A resume
+  wakes the topic, so its tasks are claimed at once.
+- The endpoint's topics say `"extensions": {"pause": {"status": "paused", ...}}`, the dashboard
+  lists the paused topics, and the health shows each as held back by `Pause`, with the reason "paused".
+- A node without the extension doesn't know about pauses and claims as usual: install it wherever
+  the topic runs.
+- Pausing a topic that doesn't exist fails. Deleting a paused topic deletes its pause within an
+  hour, so a topic made again under the name isn't paused.
 
 ## Retention
 
