@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
@@ -21,7 +22,9 @@ import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicStatus;
 import io.github.khopland.pgtasks.engine.EffectiveSettings;
+import io.github.khopland.pgtasks.engine.EngineHealth;
 import io.github.khopland.pgtasks.engine.TaskEngine;
+import io.github.khopland.pgtasks.engine.extension.OperatorView;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
@@ -38,7 +41,7 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * changes. Everything here is also library API, on {@link TaskEngine#admin()}.
  *
  * <pre>
- * GET    /actuator/tasks                                   topics by module, this node and every node
+ * GET    /actuator/tasks                                   topics by module, this node and every node, and the extensions' views
  * GET    /actuator/tasks/topics/{topic}                    status, counts, settings and where each came from
  * GET    /actuator/tasks/topics/{topic}/dead-letters?after=&amp;limit=
  * GET    /actuator/tasks/topics/{topic}/tasks?after=&amp;limit=&amp;identifier=&amp;reference=&amp;state=ready,retrying&amp;header=tenant=north
@@ -50,7 +53,13 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
+ * GET    /actuator/tasks/extensions/{view}                 an extension's view: its rows, and the actions it offers
+ * POST   /actuator/tasks/extensions/{view}/{action}        an extension's action: {"key": "..."} on a row, or {"topic": "orders"}
  * </pre>
+ *
+ * Extensions add what they show and do through {@code OperatorView}s: each topic says what each
+ * view says about it ({@code "extensions": {"pause": {"status": "paused", "actions": ["resume"]}}}),
+ * and an action runs only on a row or topic that offers it.
  *
  * Request bodies are flat JSON objects of strings and numbers, as Actuator reads them,
  * so a list of ids is one comma-separated string.
@@ -97,6 +106,12 @@ public class TaskEndpoint {
         body.put("topics", topics);
         body.put("node", node());
         body.put("nodes", engine.admin().nodes().stream().map(TaskEndpoint::node).toList());
+        body.put("extensions", engine.operatorViews().stream().map(TaskEndpoint::view).toList());
+        if (!engine.engineSettings().isEmpty()) {
+            Map<String, Object> settings = new TreeMap<>();
+            engine.engineSettings().forEach((key, setting) -> settings.put(key, setting(setting)));
+            body.put("settings", settings);
+        }
         return body;
     }
 
@@ -111,6 +126,7 @@ public class TaskEndpoint {
                 return body;
             }));
             case "tasks" -> found(number(name).flatMap(this::task).map(view -> task(view, shown)));
+            case "extensions" -> found(view(name).map(TaskEndpoint::view));
             default -> notFound();
         };
     }
@@ -155,12 +171,19 @@ public class TaskEndpoint {
         return new WebEndpointResponse<>(body);
     }
 
-    /** Topic actions: revive, discard, release, cancel, purge. */
+    /**
+     * Topic actions: revive, discard, release, cancel, purge; and an extension's actions, on one of
+     * its view's rows ({@code key}) or on a topic ({@code topic}).
+     */
     @WriteOperation
     public WebEndpointResponse<Object> act(@Selector String kind, @Selector String name, @Selector String action,
                                            @Nullable String ids, @Nullable String outcome, @Nullable String before,
                                            @Nullable String error, @Nullable String failedFrom, @Nullable String failedUntil,
-                                           @Nullable String all, @Nullable String identifier) throws Exception {
+                                           @Nullable String all, @Nullable String identifier, @Nullable String key,
+                                           @Nullable String topic) throws Exception {
+        if (kind.equals("extensions")) {
+            return extensionAction(name, action, blankToNull(key), blankToNull(topic));
+        }
         if (!kind.equals("topics")) {
             return notFound();
         }
@@ -216,6 +239,103 @@ public class TaskEndpoint {
             }
         }
         return new WebEndpointResponse<>(body);
+    }
+
+    /**
+     * Runs an extension's action on a row of its view or on a topic, if that row or topic offers
+     * it now: 404 for an unknown view, action, row or topic, or one that doesn't offer it, 400 for
+     * neither or both of {@code key} and {@code topic}, and 409 with the message when it fails.
+     */
+    private WebEndpointResponse<Object> extensionAction(String viewName, String action, @Nullable String key, @Nullable String topic) {
+        Optional<OperatorView> found = view(viewName);
+        if (found.isEmpty()) {
+            return notFound();
+        }
+        OperatorView view = found.get();
+        if ((key == null) == (topic == null)) {
+            return badRequest("Name what to " + action + ": a row's \"key\", or a \"topic\"");
+        }
+        Optional<OperatorView.Action> performed = view.actions().stream().filter(each -> each.name().equals(action)).findFirst();
+        if (performed.isEmpty()) {
+            return notFound();
+        }
+        boolean offered;
+        if (topic != null) {
+            OperatorView.TopicState state = status(topic).isPresent() ? view.topic(topic) : null;
+            offered = state != null && state.actions().contains(action);
+        } else {
+            offered = view.rows().stream().anyMatch(row -> row.key().equals(key) && row.actions().contains(action));
+        }
+        if (!offered) {
+            return notFound();
+        }
+        String target = topic != null ? topic : Objects.requireNonNull(key);
+        try {
+            performed.get().perform().perform(target);
+        } catch (Exception e) {
+            return new WebEndpointResponse<>(error(e.getMessage()), CONFLICT);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("view", viewName);
+        body.put("action", action);
+        body.put(topic != null ? "topic" : "key", target);
+        return new WebEndpointResponse<>(body);
+    }
+
+    private Optional<OperatorView> view(String name) {
+        return engine.operatorViews().stream().filter(view -> view.name().equals(name)).findFirst();
+    }
+
+    /** A view as the endpoint shows it: what it is, its columns, rows and actions. */
+    private static Map<String, Object> view(OperatorView view) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", view.name());
+        body.put("title", view.title());
+        body.put("note", view.note());
+        body.put("columns", view.columns().stream().map(column -> {
+            Map<String, Object> each = new LinkedHashMap<>();
+            each.put("key", column.key());
+            each.put("label", column.label());
+            each.put("kind", column.kind().name().toLowerCase(Locale.ROOT));
+            return each;
+        }).toList());
+        body.put("rows", view.rows().stream().map(row -> {
+            Map<String, Object> each = new LinkedHashMap<>();
+            each.put("key", row.key());
+            Map<String, @Nullable Object> values = new LinkedHashMap<>();
+            row.values().forEach((column, value) -> values.put(column, json(value)));
+            each.put("values", values);
+            each.put("actions", List.copyOf(row.actions()));
+            return each;
+        }).toList());
+        body.put("actions", view.actions().stream().map(action -> {
+            Map<String, Object> each = new LinkedHashMap<>();
+            each.put("name", action.name());
+            each.put("label", action.label());
+            each.put("confirm", action.confirm());
+            return each;
+        }).toList());
+        return body;
+    }
+
+    /** What each view says about a topic, by view name; views that say nothing are left out. */
+    private Map<String, Object> extensionStates(String topic) {
+        Map<String, Object> states = new LinkedHashMap<>();
+        for (OperatorView view : engine.operatorViews()) {
+            OperatorView.TopicState state = view.topic(topic);
+            if (state != null) {
+                Map<String, Object> each = new LinkedHashMap<>();
+                each.put("status", state.status());
+                each.put("actions", List.copyOf(state.actions()));
+                states.put(view.name(), each);
+            }
+        }
+        return states;
+    }
+
+    /** Text, numbers and booleans as they are; instants, durations and the rest as text. */
+    private static @Nullable Object json(@Nullable Object value) {
+        return value == null || value instanceof String || value instanceof Number || value instanceof Boolean ? value : value.toString();
     }
 
     /** Deletes a topic no longer used, with its history (409 while it has unfinished tasks). */
@@ -281,6 +401,23 @@ public class TaskEndpoint {
         // A node whose heartbeat is older than this has stopped, or lost the database.
         node.put("leaseTermSeconds", health.leaseTerm().toSeconds());
         node.put("processing", engine.processing().stream().sorted().toList());
+        // Topics an extension's gate holds back here, such as a pause or a rate limit.
+        node.put("held", health.held().stream().map(held -> {
+            Map<String, Object> each = new LinkedHashMap<>();
+            each.put("topic", held.topic());
+            each.put("gate", held.gate());
+            each.put("since", held.since().toString());
+            each.put("until", held.until().toString());
+            return each;
+        }).toList());
+        node.put("failingJobs", health.jobs().stream().filter(EngineHealth.JobStatus::failing).map(job -> {
+            Map<String, Object> each = new LinkedHashMap<>();
+            each.put("name", job.name());
+            each.put("failuresInARow", job.failuresInARow());
+            each.put("lastFailure", text(job.lastFailure()));
+            each.put("lastError", job.lastError());
+            return each;
+        }).toList());
         return node;
     }
 
@@ -303,11 +440,12 @@ public class TaskEndpoint {
         return engine.admin().find(id);
     }
 
-    private static Map<String, Object> topic(TopicStatus status) {
+    private Map<String, Object> topic(TopicStatus status) {
         Map<String, Object> topic = new LinkedHashMap<>();
         topic.put("name", status.name());
         topic.put("module", status.module());
         topic.put("processing", status.processing());
+        topic.put("extensions", extensionStates(status.name()));
         QueueCounts counts = status.counts();
         if (counts != null) {
             Map<String, Object> queue = new LinkedHashMap<>();
@@ -329,9 +467,12 @@ public class TaskEndpoint {
 
     private static Map<String, Object> settings(EffectiveSettings settings) {
         Map<String, Object> values = new TreeMap<>();
-        settings.settings().forEach((key, setting) -> values.put(key, Map.of("value", setting.value(),
-            "source", setting.source().name().toLowerCase(Locale.ROOT).replace('_', '-'))));
+        settings.settings().forEach((key, setting) -> values.put(key, setting(setting)));
         return values;
+    }
+
+    private static Map<String, Object> setting(EffectiveSettings.Setting setting) {
+        return Map.of("value", setting.value(), "source", setting.source().name().toLowerCase(Locale.ROOT).replace('_', '-'));
     }
 
     private static Map<String, Object> task(TaskView view, boolean shown) {

@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.spring;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -23,9 +24,11 @@ import org.springframework.boot.health.contributor.Health;
  *       be unhealthy about, and the database's own indicator covers its pushes.</li>
  * </ul>
  *
- * Disconnected notifications and claims stuck past their deadline are in the details, without
- * changing the status: the engine still works without notifications, only later, and a stuck
- * handler holds one batch while the rest of the node goes on.
+ * Disconnected notifications, claims stuck past their deadline, topics an extension's claim gate
+ * holds back (a pause, a rate limit, an open circuit breaker) and jobs whose last run failed are
+ * in the details, without changing the status: the engine still works without notifications, only
+ * later, a stuck handler holds one batch while the rest of the node goes on, and a held topic is
+ * held on purpose.
  */
 public class TaskHealthIndicator extends AbstractHealthIndicator {
 
@@ -76,6 +79,25 @@ public class TaskHealthIndicator extends AbstractHealthIndicator {
                 claim.put("attempt", stuck.attempt());
                 claim.put("running", stuck.running().toString());
                 return claim;
+            }).toList());
+        }
+        if (!health.held().isEmpty()) {
+            builder.withDetail("held", health.held().stream().map(held -> {
+                Map<String, Object> topic = new LinkedHashMap<>();
+                topic.put("topic", held.topic());
+                topic.put("gate", held.gate());
+                topic.put("since", held.since().toString());
+                return topic;
+            }).toList());
+        }
+        List<EngineHealth.JobStatus> failing = health.jobs().stream().filter(EngineHealth.JobStatus::failing).toList();
+        if (!failing.isEmpty()) {
+            builder.withDetail("failingJobs", failing.stream().map(job -> {
+                Map<String, Object> each = new LinkedHashMap<>();
+                each.put("job", job.name());
+                each.put("failuresInARow", job.failuresInARow());
+                each.put("lastError", String.valueOf(job.lastError()));
+                return each;
             }).toList());
         }
     }

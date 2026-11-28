@@ -47,7 +47,8 @@ final class DashboardRoutes {
 
     /**
      * Calls every route against an endpoint and expects success. The app has topic {@code work},
-     * and an empty topic {@code scratch} to delete. A route added to the script without an example here fails.
+     * an empty topic {@code scratch} to delete, and the {@link ParkedTopics} extension. A route
+     * added to the script without an example here fails.
      */
     static void callEvery(Sender http, String endpoint, long taskId) throws Exception {
         Map<String, String[]> examples = new LinkedHashMap<>();
@@ -63,6 +64,7 @@ final class DashboardRoutes {
         examples.put("purge", new String[] {"topic=work", null, "{\"outcome\": \"succeeded\", \"before\": \"2000-01-01T00:00:00Z\"}"});
         examples.put("deleteTopic", new String[] {"topic=scratch", null, null});
         examples.put("task", new String[] {"id=" + taskId, null, null});
+        examples.put("extensionAction", new String[] {"view=parking&action=park", null, "{\"topic\": \"work\"}"});
 
         Map<String, String[]> routes = routes();
         assertThat(routes.keySet()).as("every route has an example").containsExactlyInAnyOrderElementsOf(examples.keySet());
@@ -70,8 +72,10 @@ final class DashboardRoutes {
             String[] example = examples.get(route.getKey());
             String path = route.getValue()[1];
             if (!example[0].isEmpty()) {
-                String[] param = example[0].split("=", 2);
-                path = path.replace("{" + param[0] + "}", param[1]);
+                for (String pair : example[0].split("&", -1)) {
+                    String[] param = pair.split("=", 2);
+                    path = path.replace("{" + param[0] + "}", param[1]);
+                }
             }
             assertThat(path).as(route.getKey()).doesNotContain("{");
             String answer = http.send(route.getValue()[0], endpoint + path + (example[1] == null ? "" : "?" + example[1]), example[2]);

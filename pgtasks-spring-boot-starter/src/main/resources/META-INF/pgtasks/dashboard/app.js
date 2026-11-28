@@ -20,6 +20,7 @@ const ROUTES = {
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
+  extensionAction: ["POST", "/extensions/{view}/{action}"],
 };
 // routes:end
 
@@ -443,14 +444,93 @@ async function overviewView() {
     meta: h("span", { class: "muted" }, names.length + (names.length === 1 ? " topic" : " topics")),
   }, topicTable(names.map(name => byName.get(name)).filter(Boolean)))) : [h("div", { class: "notice" }, "No topics yet.")];
 
+  const views = data.extensions || [];
   return [
     stats,
     stale ? h("div", { class: "notice warn" }, "The counts are ", since(counted),
       " old: is any node running housekeeping? (", h("code", null, "pgtasks.queue.snapshot.age"), ")") : null,
+    nodeNotices(data.node),
     topicPanels,
+    views.filter(view => view.columns && view.columns.length).map(view => extensionPanel(view)),
+    data.settings ? extensionSettingsPanel(data.settings) : null,
     nodesPanel(data.node, data.nodes || []),
     counted ? h("p", { class: "muted" }, "Counts as of ", time(counted), ", from the housekeeping leader's snapshot.") : null,
   ];
+}
+
+/** Topics this node's claim gates hold back, and jobs whose last run failed: neither changes the health, but both are worth seeing. */
+function nodeNotices(node) {
+  if (!node) {
+    return null;
+  }
+  const held = node.held || [];
+  const failing = node.failingJobs || [];
+  return [
+    held.length ? h("div", { class: "notice" }, "Held back on this node: ",
+      held.map((each, index) => [index ? ", " : null, topicLink(each.topic), " by ", h("strong", null, each.gate), " for ", since(each.since)]),
+      ". Its tasks wait; nothing is lost.") : null,
+    failing.map(job => h("div", { class: "notice warn" }, "The ", h("strong", null, job.name), " job failed ",
+      job.failuresInARow === 1 ? "its last run" : "its last " + job.failuresInARow + " runs", ", last ", time(job.lastFailure),
+      job.lastError ? [": ", h("code", null, job.lastError)] : null, ". It runs again on its own.")),
+  ];
+}
+
+/** An extension's view: a table of its rows, with a button for each action a row offers. */
+function extensionPanel(view) {
+  const actions = new Map((view.actions || []).map(action => [action.name, action]));
+  const columns = view.columns.map(column => ({
+    label: column.label,
+    value: row => cell(column.kind, row.values[column.key]),
+  }));
+  if (actions.size) {
+    columns.push({ label: h("span", { class: "sr-only" }, "Actions"), value: row => h("td", { class: "nowrap" },
+      (row.actions || []).filter(name => actions.has(name)).map(name => h("button", { type: "button", class: "small",
+        onclick: () => extensionAction(view, actions.get(name), { key: row.key }, row.key) }, actions.get(name).label))) });
+  }
+  return panel(view.title, {
+    meta: h("span", { class: "muted" }, view.rows.length + (view.rows.length === 1 ? " row" : " rows")),
+    note: view.note,
+  }, table(columns, view.rows, "Nothing here."));
+}
+
+/** A value of an extension's row, drawn as its column says. */
+function cell(kind, val) {
+  if (val === null || val === undefined) {
+    return "—";
+  }
+  switch (kind) {
+    case "time": return time(val);
+    case "topic": return h("td", { class: "wrap" }, topicLink(String(val)));
+    case "code": return h("td", { class: "wrap mono" }, String(val));
+    case "flag": return val ? chip("yes", "ok") : chip("no");
+    default: return h("td", { class: "wrap" }, String(val));
+  }
+}
+
+/** Runs an extension's action on a row or a topic, after the operator confirms it. */
+async function extensionAction(view, action, target, what) {
+  const result = await ask({
+    title: action.label + " " + what,
+    message: action.confirm ? action.confirm : [action.label, " ", h("strong", null, what), "?"],
+    action: action.label,
+    run: () => api("extensionAction", { view: view.name, action: action.name }, { body: target }),
+  });
+  if (result) {
+    toast(action.label + ": " + what + ".");
+    setTimeout(refresh, 500);
+  }
+}
+
+/** The extensions' engine-wide settings, with where each value came from. */
+function extensionSettingsPanel(settings) {
+  const rows = Object.entries(settings).map(([key, setting]) => ({ key, value: setting.value, source: setting.source }));
+  return panel("Extension settings", {
+    note: "Engine-wide settings of the installed extensions: the extension's default, the builder's value, or a pgtasks.extensions.* override.",
+  }, table([
+    { label: "Setting", value: row => h("td", { class: "mono" }, row.key) },
+    { label: "Value", value: row => h("td", { class: "wrap mono" }, row.value) },
+    { label: "From", value: row => chip(...(SOURCES[row.source] || [row.source, null])) },
+  ], rows, "No settings."));
 }
 
 function stat(label, val, kind) {
@@ -459,8 +539,24 @@ function stat(label, val, kind) {
 }
 
 function topicStatus(topic) {
+  const extensions = Object.entries(topic.extensions || {}).filter(([, said]) => said.status);
   return h("span", { class: "chips" },
-    topic.processing ? chip("running", "ok", "This node processes it") : chip("not here", null, "This node doesn't process it"));
+    topic.processing ? chip("running", "ok", "This node processes it") : chip("not here", null, "This node doesn't process it"),
+    extensions.map(([view, said]) => chip(said.status, "warn", "From the " + view + " extension")));
+}
+
+/** Buttons for the actions the extensions offer on a topic, with each action's label from its view. */
+function topicExtensionActions(topic, views) {
+  const byName = new Map((views || []).map(view => [view.name, view]));
+  return Object.entries(topic.extensions || {}).flatMap(([name, said]) => {
+    const view = byName.get(name);
+    if (!view) {
+      return [];
+    }
+    const actions = new Map((view.actions || []).map(action => [action.name, action]));
+    return (said.actions || []).filter(action => actions.has(action)).map(action => h("button", { type: "button",
+      onclick: () => extensionAction(view, actions.get(action), { topic: topic.name }, topic.name) }, actions.get(action).label));
+  });
 }
 
 function topicTable(topics) {
@@ -533,6 +629,7 @@ async function topicView(name) {
     h("div", { class: "crumbs" }, link("#/", "Overview"), topic.module ? " / " + topic.module : null),
     h("div", { class: "page-head" }, h("h1", null, topic.name), topicStatus(topic),
       h("div", { class: "actions" },
+        topicExtensionActions(topic, overview && overview.extensions),
         h("button", { type: "button", class: "danger", onclick: () => purge(name) }, "Purge…"),
         h("button", { type: "button", class: "danger", onclick: () => deleteTopic(name) }, "Delete topic…"))));
 
@@ -919,6 +1016,7 @@ const SOURCES = {
   "global-defaults": ["global defaults", "info"],
   "module-defaults": ["module defaults", "info"],
   "topic": ["topic", "ok"],
+  "code": ["code", "ok"],
   "override": ["override", "warn"],
 };
 

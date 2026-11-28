@@ -30,11 +30,11 @@ public final class ClusterRateLimit implements Extension {
 
     /** How long the window is; one minute by default, and at least a millisecond. */
     public static final SettingKey<Duration> WINDOW =
-        SettingKey.of("cluster.window", Duration.class, Duration.ofMinutes(1), ClusterRateLimit::window);
+        SettingKey.of("cluster.window", Duration.class, Duration.ofMinutes(1), Duration::parse).checking(ClusterRateLimit::window);
 
     /** Claims allowed per window across all nodes; zero, the default, leaves the topic unlimited. */
     public static final SettingKey<Long> PER_WINDOW =
-        SettingKey.of("cluster.per-window", Long.class, 0L, ClusterRateLimit::nonNegative);
+        SettingKey.of("cluster.per-window", Long.class, 0L, Long::valueOf).checking(ClusterRateLimit::nonNegative);
 
     /** How long a topic waits after the shared counter failed, before asking it again. */
     static final Duration FAILED_COUNTER_WAIT = Duration.ofSeconds(1);
@@ -68,18 +68,12 @@ public final class ClusterRateLimit implements Extension {
         context.onStart(counter::prepare);
         context.claimGate(new ClaimGate() {
             @Override
-            public Permit permit(TopicRef<?> topic) {
-                return permit(topic, Integer.MAX_VALUE);
-            }
-
-            @Override
             public Permit permit(TopicRef<?> topic, int wanted) {
                 long limit = context.topicSetting(topic, PER_WINDOW).orElse(0L);
                 if (limit <= 0) {
                     return Permit.ANY;
                 }
-                // A window set in code skips the parser's check, so a sub-millisecond one counts as one.
-                long window = Math.max(1, context.topicSetting(topic, WINDOW).orElse(WINDOW.defaultValue()).toMillis());
+                long window = context.topicSetting(topic, WINDOW).orElse(WINDOW.defaultValue()).toMillis();
                 // A reservation left from a permit the engine never settled is handed back first.
                 SlidingCounter.Admission stale = reservations.remove(topic);
                 SlidingCounter.Admission admitted;
@@ -105,8 +99,9 @@ public final class ClusterRateLimit implements Extension {
             }
 
             @Override
-            public void claimed(TopicRef<?> topic, int tasks) {
+            public void claimed(TopicRef<?> topic, List<Long> taskIds) {
                 SlidingCounter.Admission admitted = reservations.remove(topic);
+                int tasks = taskIds.size();
                 if (admitted != null && tasks < admitted.reserved()) {
                     // Only a claim that got fewer than it reserved has anything to give back.
                     counter.update(topic.name(), (state, now) -> {
@@ -118,19 +113,15 @@ public final class ClusterRateLimit implements Extension {
         });
     }
 
-    private static Duration window(String text) {
-        Duration window = Duration.parse(text.trim());
+    private static void window(Duration window) {
         if (window.toMillis() < 1) {
-            throw new IllegalArgumentException("A rate limit window must be at least a millisecond, not " + text);
+            throw new IllegalArgumentException("a rate limit window must be at least a millisecond, not " + window);
         }
-        return window;
     }
 
-    private static long nonNegative(String text) {
-        long value = Long.parseLong(text.trim());
+    private static void nonNegative(long value) {
         if (value < 0) {
-            throw new IllegalArgumentException("A rate limit must be a non-negative whole number, not " + text);
+            throw new IllegalArgumentException("a rate limit must not be negative, not " + value);
         }
-        return value;
     }
 }

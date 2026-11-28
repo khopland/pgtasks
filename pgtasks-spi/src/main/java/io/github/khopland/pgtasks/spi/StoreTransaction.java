@@ -43,6 +43,20 @@ public interface StoreTransaction extends AutoCloseable {
         };
     }
 
+    /**
+     * Runs {@code undo} if this transaction rolls back, or a savepoint taken before this call
+     * does: for state kept outside the database next to the store's own, such as an extension's
+     * maps beside the in-memory store's tasks, so it rolls back with them. Undos run newest first,
+     * on the thread that rolls back; one that throws is logged and the others still run. Nothing
+     * runs on commit.
+     *
+     * @throws UnsupportedOperationException in a transaction the store joined rather than began,
+     *                                       whose rollback is its owner's and out of the store's sight
+     */
+    default void onRollback(Runnable undo) {
+        throw new UnsupportedOperationException(this + " can't undo state outside the store on rollback");
+    }
+
     /** A point in a transaction, from {@link #savepoint()}. Ends with exactly one of its methods. */
     interface Savepoint {
 

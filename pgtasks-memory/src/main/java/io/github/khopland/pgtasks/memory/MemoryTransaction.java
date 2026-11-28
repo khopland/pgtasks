@@ -83,6 +83,21 @@ final class MemoryTransaction implements StoreTransaction {
         }
     }
 
+    /** An extension's own undo, run with the store's on rollback; see {@link StoreTransaction#onRollback}. */
+    @Override
+    public void onRollback(Runnable action) {
+        check();
+        Objects.requireNonNull(action, "action");
+        undo.push(() -> {
+            try {
+                action.run();
+            } catch (RuntimeException e) {
+                // The others still run, and the store's lock is still given back.
+                System.getLogger(MemoryTransaction.class.getName()).log(System.Logger.Level.WARNING, "An undo on rollback failed", e);
+            }
+        });
+    }
+
     /** Like the queue's NOTIFY triggers: a row became ready, so wake the topic after commit. */
     void ready(int topicId) {
         readyTopics.add(topicId);

@@ -62,6 +62,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *                        has when a task is pushed is stored as a header of the same name, and is
  *                        in the MDC again while a handler works on the task, so downstream pushes
  *                        carry it too ({@code TaskObserver.mdc})
+ * @param extensions      the extensions' engine-wide settings by name, such as
+ *                        {@code recurring.interval: 5s}; an extension's per-topic settings go under
+ *                        {@code topics}, like the engine's own. One no installed extension declares
+ *                        fails startup
  */
 @ConfigurationProperties("pgtasks")
 @SuppressWarnings("InvalidParam") // {@code none} is a schema mode, not a misspelt {@code node}
@@ -78,7 +82,8 @@ public record TaskProperties(
     Map<String, Map<String, String>> topics,
     @DefaultValue("false") boolean testing,
     String version,
-    List<String> mdcHeaders
+    List<String> mdcHeaders,
+    Map<String, String> extensions
 ) {
 
     public enum Store { POSTGRES, MEMORY }
@@ -86,12 +91,14 @@ public record TaskProperties(
     public TaskProperties {
         topics = topics == null ? Map.of() : topics;
         mdcHeaders = mdcHeaders == null ? List.of() : List.copyOf(mdcHeaders);
+        extensions = extensions == null ? Map.of() : Map.copyOf(extensions);
     }
 
-    /** As the engine builder takes them: {@code topics.<topic>.<setting>}. */
+    /** As the engine builder takes them: {@code topics.<topic>.<setting>} and {@code extensions.<setting>}. */
     public Map<String, String> overrides() {
         Map<String, String> overrides = new TreeMap<>();
         topics.forEach((topic, settings) -> settings.forEach((key, value) -> overrides.put("topics." + topic + "." + key, value)));
+        extensions.forEach((key, value) -> overrides.put("extensions." + key, value));
         return overrides;
     }
 }

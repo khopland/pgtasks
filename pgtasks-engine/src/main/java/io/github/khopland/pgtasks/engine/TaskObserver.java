@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +67,17 @@ public interface TaskObserver {
      */
     default BatchObservation batch(TopicRef<?> topic, List<Task<?>> tasks) {
         return BatchObservation.NONE;
+    }
+
+    /**
+     * An extension's claim gate held a topic's claim back on this node, for this long or until the
+     * topic is woken: a rate limit, a pause or an open circuit breaker. Called on the topic's poll
+     * thread on every claim held back, so a topic held for a while is reported once per poll
+     * interval at most.
+     *
+     * @param gate the name of the extension whose gate held it back
+     */
+    default void held(TopicRef<?> topic, String gate, Duration delay) {
     }
 
     /** What became of a task when its batch completed. */

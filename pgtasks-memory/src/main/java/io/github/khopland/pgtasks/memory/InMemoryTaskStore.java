@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -83,6 +84,8 @@ public final class InMemoryTaskStore implements TaskStore {
     private final TreeMap<Long, Rows.Queued> queue = new TreeMap<>();
     private final Map<Integer, TopicSnapshot> snapshots = new HashMap<>();
     private final Map<String, Held> leases = new HashMap<>();
+    /** What extensions keep next to the tasks, by type; see {@link #shared}. */
+    private final Map<Class<?>, Object> shared = new ConcurrentHashMap<>();
     private int nextTopic = 1, nextNode = 1;
     private long nextTask = 1;
 
@@ -445,6 +448,12 @@ public final class InMemoryTaskStore implements TaskStore {
 
     /** A lease: who holds it and until when, in store time. */
     private record Held(int nodeId, Instant until) {
+    }
+
+    @Override
+    public <V> V shared(Class<V> type, Supplier<? extends V> create) {
+        Objects.requireNonNull(create, "create");
+        return type.cast(shared.computeIfAbsent(type, ignored -> Objects.requireNonNull(create.get(), "create returned nothing")));
     }
 
     @Override

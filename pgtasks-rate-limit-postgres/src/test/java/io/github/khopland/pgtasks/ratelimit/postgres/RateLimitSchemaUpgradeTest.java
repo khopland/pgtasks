@@ -5,6 +5,7 @@ import java.util.stream.Stream;
 
 import io.github.khopland.pgtasks.SchemaMode;
 import io.github.khopland.pgtasks.postgres.ExtensionSchema;
+import io.github.khopland.pgtasks.postgres.ExtensionSchemaReleases;
 import io.github.khopland.pgtasks.postgres.PostgresTaskStore;
 import io.github.khopland.pgtasks.postgres.TaskSchema;
 import io.github.khopland.pgtasks.ratelimit.SlidingCounter;
@@ -27,12 +28,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RateLimitSchemaUpgradeTest {
 
     static final String UNRELEASED = "unreleased";
+    static final ExtensionSchemaReleases RELEASES =
+        ExtensionSchemaReleases.of(PostgresSlidingWindowStore.SCHEMA, "io/github/khopland/pgtasks/ratelimit/postgres/released");
 
     @RegisterExtension
     static PostgresExtension postgres = PostgresExtension.migrated(database -> TaskSchema.migrate(database.dataSource()));
 
     static Stream<String> releases() {
-        List<String> versions = RateLimitSchemaReleases.versions();
+        List<String> versions = RELEASES.versions();
         return versions.isEmpty() ? Stream.of(UNRELEASED) : versions.stream();
     }
 
@@ -45,11 +48,11 @@ class RateLimitSchemaUpgradeTest {
             released = PostgresSlidingWindowStore.SCHEMA;
             seed = seedFromCurrentCode(database);
         } else {
-            released = RateLimitSchemaReleases.schema(release);
-            seed = RateLimitSchemaReleases.seed(release);
+            released = RELEASES.schema(release);
+            seed = RELEASES.seed(release, TaskSchema.DEFAULT_SCHEMA);
         }
         released.migrate(database.dataSource(), TaskSchema.DEFAULT_SCHEMA);
-        database.execute(seed.replace(RateLimitSchemaReleases.PLACEHOLDER, TaskSchema.DEFAULT_SCHEMA));
+        database.execute(seed);
 
         PostgresSlidingWindowStore.SCHEMA.migrate(database.dataSource(), TaskSchema.DEFAULT_SCHEMA);
         assertThat(database.count("SELECT count(*) FROM pgtasks.rate_limit_schema_history WHERE script = ?", "V001__rate_limit_window.sql"))
@@ -68,9 +71,9 @@ class RateLimitSchemaUpgradeTest {
         String scratch = "pgtasks_seed";
         TaskSchema.migrate(database.dataSource(), scratch);
         UpgradeSeedRows.seed(new PostgresSlidingWindowStore(new PostgresTaskStore(database.dataSource(), SchemaMode.MIGRATE, scratch)));
-        String seed = RateLimitSchemaReleases.dump(database, scratch, "");
+        String seed = RELEASES.dump(database.dataSource(), scratch, "");
         database.execute("DROP SCHEMA " + scratch + " CASCADE");
-        return seed;
+        return seed.replace(ExtensionSchemaReleases.PLACEHOLDER, TaskSchema.DEFAULT_SCHEMA);
     }
 
     /** Counters a release leaves behind: one busy topic mid-window. */

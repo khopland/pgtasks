@@ -20,6 +20,7 @@ import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
 import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
 import io.github.khopland.pgtasks.test.TestPostgres;
@@ -160,6 +161,40 @@ class TaskAutoConfigurationTest {
             .withPropertyValues("pgtasks.node-expiry=5s")
             .run(context -> assertThat(context).getFailure().rootCause()
                 .hasMessageContaining("Heartbeat PT15S with node expiry PT5S: expiry must be longer than the heartbeat interval"));
+    }
+
+    private static final SettingKey<Duration> EVERY = SettingKey.of("audit.every", Duration.class, Duration.ofMinutes(1), Duration::parse);
+
+    /** An extension bean with an engine-wide setting. */
+    static final class Audit implements Extension {
+        volatile Duration every;
+
+        @Override
+        public List<SettingKey<?>> engineSettings() {
+            return List.of(EVERY);
+        }
+
+        @Override
+        public void install(ExtensionContext context) {
+            every = context.setting(EVERY);
+        }
+    }
+
+    @Test
+    void extension_properties_set_an_extensions_engine_wide_settings() {
+        memory().withBean(TaskConfigurer.class, () -> tasks -> tasks.eachTask(NOTIFY, task -> { }))
+            .withBean(Audit.class, Audit::new)
+            .withPropertyValues("pgtasks.extensions.audit.every=PT5M")
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBean(Audit.class).every).isEqualTo(Duration.ofMinutes(5));
+                assertThat(context.getBean(TaskEngine.class).engineSettings().get("audit.every").source())
+                    .isEqualTo(EffectiveSettings.Source.OVERRIDE);
+            });
+        memory().withBean(TaskConfigurer.class, () -> tasks -> tasks.eachTask(NOTIFY, task -> { }))
+            .withBean(Audit.class, Audit::new)
+            .withPropertyValues("pgtasks.extensions.audit.evry=PT5M")
+            .run(context -> assertThat(context).getFailure().rootCause().hasMessageContaining("extensions.audit.evry: unknown setting"));
     }
 
     @Test

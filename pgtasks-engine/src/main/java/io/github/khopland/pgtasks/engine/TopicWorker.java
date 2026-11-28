@@ -1,6 +1,7 @@
 package io.github.khopland.pgtasks.engine;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -55,6 +56,11 @@ final class TopicWorker<T> {
     private volatile long lastEmptyClaim = -1;
     /** The wake-ups there had been when the last empty claim began. */
     private volatile long signalsAtEmptyClaim;
+    /** The gate holding claims back now, since when, and until when it said, by the store's clock; null while claims go ahead. */
+    private volatile @Nullable Held held;
+
+    private record Held(String gate, Instant since, Instant until) {
+    }
 
     TopicWorker(Topic<T> topic, int topicId, EngineCore core) {
         this.topic = topic;
@@ -111,6 +117,7 @@ final class TopicWorker<T> {
             long signalsBefore = signal.count();
             long claim = claims.incrementAndGet();
             int limit = topic.settings().batchSize();
+            boolean probing = false;
             Duration gateWait = Duration.ZERO;
             boolean fenced = core.fenced().getAsBoolean();
             if (fenced) {
@@ -121,26 +128,36 @@ final class TopicWorker<T> {
             }
             // The gates that granted a permit; each is told once what came of it.
             List<ClaimGate> granted = new ArrayList<>(fenced ? 0 : core.gates().size());
+            ClaimGate holding = null;
             for (ClaimGate gate : fenced ? List.<ClaimGate>of() : core.gates()) {
                 ClaimGate.Permit permit;
                 try {
                     permit = gate.permit(topic.ref(), limit);
                 } catch (RuntimeException e) {
                     // A broken gate doesn't stop the topic: it claims as if the gate allowed it.
-                    LOGGER.warn("A claim gate failed for {}; claiming without it", topic.ref(), e);
+                    LOGGER.warn("A claim gate of {} failed for {}; claiming without it", NamedGate.nameOf(gate), topic.ref(), e);
                     continue;
                 }
                 if (permit.waits()) {
-                    gateWait = permit.delay().compareTo(gateWait) > 0 ? permit.delay() : gateWait;
+                    if (permit.delay().compareTo(gateWait) > 0) {
+                        gateWait = permit.delay();
+                        holding = gate;
+                    }
                 } else {
                     granted.add(gate);
                     limit = Math.min(limit, permit.maxTasks());
+                    probing |= permit.probing();
                 }
+            }
+            if (holding != null) {
+                held(NamedGate.nameOf(holding), gateWait);
+            } else if (!fenced) {
+                held = null;
             }
             if (!gateWait.isZero()) {
                 // Held back by a gate: counts as having found nothing, so an idle node looks idle.
                 // The gates that did grant a permit get it back, unused.
-                settle(granted, 0);
+                settle(granted, List.of());
                 release();
                 signalsAtEmptyClaim = signalsBefore;
                 lastEmptyClaim = claim;
@@ -163,12 +180,12 @@ final class TopicWorker<T> {
                     core.inFlight().release();
                     nodeHeld = false;
                     // A failed claim got nothing, so the gates get their permits back.
-                    settle(granted, claimed == null ? 0 : claimed.tasks().size());
+                    settle(granted, claimed == null ? List.of() : claimed.tasks().stream().map(TaskStore.ClaimedTask::id).toList());
                 }
                 failures = 0;
                 if (!claimed.tasks().isEmpty()) {
                     claimed.tasks().forEach(task -> core.held().put(task.id(), task.attempt()));
-                    BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks());
+                    BatchRun<T> run = new BatchRun<>(this, core, claimed.tasks(), probing);
                     claimedTasks.addAndGet(claimed.tasks().size());
                     runningBatches.incrementAndGet();
                     try {
@@ -249,15 +266,29 @@ final class TopicWorker<T> {
         }
     }
 
-    /** Tells each gate that granted this claim's permit how many tasks it got. */
-    private void settle(List<ClaimGate> granted, int tasks) {
+    /** Tells each gate that granted this claim's permit which tasks it got. */
+    private void settle(List<ClaimGate> granted, List<Long> taskIds) {
         for (ClaimGate gate : granted) {
             try {
-                gate.claimed(topic.ref(), tasks);
+                gate.claimed(topic.ref(), taskIds);
             } catch (RuntimeException e) {
-                LOGGER.warn("A claim gate failed for {}", topic.ref(), e);
+                LOGGER.warn("A claim gate of {} failed for {}", NamedGate.nameOf(gate), topic.ref(), e);
             }
         }
+    }
+
+    /** A gate held this claim back: keeps since when and until when, for the health and tests, and tells the observers. */
+    private void held(String gate, Duration delay) {
+        Held before = held;
+        Instant now = core.clock().instant();
+        held = new Held(gate, before != null ? before.since() : now, now.plus(delay));
+        core.observer().held(topic.ref(), gate, delay);
+    }
+
+    /** Whether a claim gate held this topic back at its last poll, since when and until when; null if that poll claimed. */
+    EngineHealth.@Nullable HeldTopic heldBack() {
+        Held now = held;
+        return now == null ? null : new EngineHealth.HeldTopic(topic.ref().name(), now.gate(), now.since(), now.until());
     }
 
     /** Cancels the handlers of the batches running now: the node's heartbeat is too late. See {@link HeartbeatFence}. */

@@ -405,6 +405,30 @@
             <excludes>
               <!-- 0.2.0: stores take unfinished tasks out of the queue for admin().cancel(...). -->
               <exclude>io.github.khopland.pgtasks.spi.TaskStore#cancel(io.github.khopland.pgtasks.spi.StoreTransaction,int,io.github.khopland.pgtasks.admin.TaskQuery,int)</exclude>
+              <!-- 0.2.0: state extensions keep in memory per store. -->
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#shared(java.lang.Class,java.util.function.Supplier)</exclude>
+              <!-- 0.2.0: the extension API grows what extensions need (ExtensionContext is implemented by the engine only). -->
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#admin()</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#channel(java.lang.String,io.github.khopland.pgtasks.engine.extension.ExtensionContext$Reload)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#leading()</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#leads(java.lang.String)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#operatorView(io.github.khopland.pgtasks.engine.extension.OperatorView)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#runSoon(java.lang.String)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#setting(io.github.khopland.pgtasks.engine.extension.SettingKey)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#tasks(io.github.khopland.pgtasks.spi.StoreTransaction)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#topics()</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#transact(java.lang.String,io.github.khopland.pgtasks.engine.extension.ExtensionContext$Work)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#wake(io.github.khopland.pgtasks.TopicRef)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ExtensionContext#wake(java.lang.String)</exclude>
+              <!-- 0.2.0: a gate implements permit(topic, wanted) and is told the claimed task ids. -->
+              <exclude>io.github.khopland.pgtasks.engine.extension.ClaimGate#permit(io.github.khopland.pgtasks.TopicRef)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ClaimGate#permit(io.github.khopland.pgtasks.TopicRef,int)</exclude>
+              <exclude>io.github.khopland.pgtasks.engine.extension.ClaimGate#claimed(io.github.khopland.pgtasks.TopicRef,int)</exclude>
+              <!-- 0.2.0: the health shows held topics and jobs. -->
+              <exclude>io.github.khopland.pgtasks.engine.EngineHealth#EngineHealth(boolean,java.lang.String,int,java.time.Instant,java.time.Duration,java.time.Duration,boolean,io.github.khopland.pgtasks.engine.EngineHealth$Notifications,java.util.List)</exclude>
+              <!-- 0.2.0: pgtasks.extensions.* and the endpoint's extension actions. -->
+              <exclude>io.github.khopland.pgtasks.spring.TaskProperties#TaskProperties(boolean,io.github.khopland.pgtasks.spring.TaskProperties$Store,io.github.khopland.pgtasks.SchemaMode,java.lang.String,java.lang.String,java.time.Duration,java.time.Duration,boolean,java.time.Duration,java.util.Map,boolean,java.lang.String,java.util.List)</exclude>
+              <exclude>io.github.khopland.pgtasks.spring.TaskEndpoint#act(java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String)</exclude>
             </excludes>
           </parameter>
         </configuration>

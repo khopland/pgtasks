@@ -3,9 +3,11 @@ package io.github.khopland.pgtasks.engine;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -19,6 +21,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import io.github.khopland.pgtasks.BatchResource;
 import io.github.khopland.pgtasks.Creation;
@@ -69,6 +72,16 @@ final class BatchRun<T> {
     private final TopicWorker<T> worker;
     private final EngineCore core;
     private final List<ClaimedTask> claimed;
+    /**
+     * Claimed on a probe permit ({@link io.github.khopland.pgtasks.engine.extension.ClaimGate.Permit#probe}):
+     * a counted failure of a task that ran doesn't use up its attempt.
+     */
+    private final boolean probe;
+    /**
+     * Tasks of the completion being written that failed through their own fault, for the batch
+     * listeners: those the retry policy dead-letters at once, and those decided without running.
+     */
+    private final Set<Long> taskFaults = new HashSet<>();
     private volatile @Nullable BatchScope scope;
     /** Set when the node fenced itself (see {@link HeartbeatFence}): the batch is handed back unless its handler already decided. */
     private volatile boolean fenced;
@@ -80,10 +93,11 @@ final class BatchRun<T> {
     /** Each task's own observation, by task id, created the first time the engine needs it. */
     private final Map<Long, TaskObserver.TaskObservation> taskObservations = new ConcurrentHashMap<>();
 
-    BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed) {
+    BatchRun(TopicWorker<T> worker, EngineCore core, List<ClaimedTask> claimed, boolean probe) {
         this.worker = worker;
         this.core = core;
         this.claimed = claimed;
+        this.probe = probe;
     }
 
     void run() {
@@ -471,8 +485,13 @@ final class BatchRun<T> {
     private void completeWithin(Topic<T> topic, Map<Long, ClaimedTask> claims, Decisions decisions, Decisions early, Map<BatchResource<?>, Object> opened,
                                 TaskObserver.BatchObservation observation, Map<Creation<?>, @Nullable String> encoded) {
         List<Completion> completions = new ArrayList<>(claims.size());
-        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
-        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision())));
+        taskFaults.clear();
+        decisions.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision(), probe)));
+        // Decided without running the handler, so no probe of anything, even when claimed as one:
+        // a task out of attempts is dead-lettered rather than retried as an uncounted failure.
+        Set<Long> notRun = early.verdicts().stream().map(verdict -> verdict.task().id()).collect(Collectors.toSet());
+        early.verdicts().forEach(verdict -> completions.add(completion(claimOf(claims, verdict.task()), verdict.decision(), false)));
+        taskFaults.addAll(notRun);
         unstarted.forEach(id -> {
             ClaimedTask claim = claimOf(claims, id);
             completions.add(new Completion(claim.id(), claim.attempt(), claim.claimedAt(), RELEASE));
@@ -524,18 +543,28 @@ final class BatchRun<T> {
             }
             LOGGER.warn("The completion of a batch in {} failed and was rolled back", topic.ref(), e);
             observation.error(e);
-            List<Completion> failures = claims.values().stream().map(claim -> completion(claim, Decision.failed(e))).toList();
+            taskFaults.retainAll(notRun);
+            List<Completion> failures = claims.values().stream()
+                .map(claim -> completion(claim, Decision.failed(e), probe && !notRun.contains(claim.id()))).toList();
             try {
                 core.transactRetrying("Recording a failed batch in " + topic.ref(), transaction -> core.store().release(transaction, worker.topicId(), core.nodeId(), failures));
                 observation.completed(results(failures));
-                tell(topic, failures, claims);
+                tell(topic, failures, claims, id -> e);
             } catch (Exception recording) {
                 LOGGER.error("Could not record the failure; the tasks stay active until this node's claims expire", recording);
             }
             return;
         }
         observation.completed(results(completions));
-        tell(topic, completions, claims);
+        Map<Long, Throwable> errors = new LinkedHashMap<>();
+        for (Decisions each : List.of(decisions, early)) {
+            each.verdicts().forEach(verdict -> {
+                if (verdict.decision() instanceof Decision.Failed failed && failed.cause() != null) {
+                    errors.put(verdict.task().id(), failed.cause());
+                }
+            });
+        }
+        tell(topic, completions, claims, errors::get);
         observations.forEach(Runnable::run);
         for (Map.Entry<BatchResource<?>, Object> resource : opened.entrySet()) {
             try {
@@ -646,7 +675,8 @@ final class BatchRun<T> {
         }
     }
 
-    private Completion completion(ClaimedTask claim, Decision decision) {
+    /** @param asProbe whether the task ran on a probe's claim, so a counted failure isn't counted */
+    private Completion completion(ClaimedTask claim, Decision decision, boolean asProbe) {
         Retry retry = worker.topic().settings().retry();
         Resolution resolution = switch (decision) {
             case Decision.Success success -> new Resolution.Finished(Outcome.SUCCEEDED, capped(success.output()));
@@ -658,8 +688,15 @@ final class BatchRun<T> {
                 // The backoff follows the failures in a row, counted or not, so it keeps growing through an outage.
                 yield switch (retry.classify(failed.cause())) {
                     case NOT_COUNTED -> new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
-                    case DEAD_LETTER -> new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    case DEAD_LETTER -> {
+                        taskFaults.add(claim.id());
+                        yield new Resolution.Waiting(WaitState.DEAD_LETTER, null, true, error);
+                    }
+                    // A probe fails while a gate holds the topic back: likely for what made it hold, not for the task.
                     case COUNTED -> {
+                        if (asProbe) {
+                            yield new Resolution.Waiting(WaitState.RETRYING, retry.uncountedBackoff(claim.failures() + 1, core.random()), false, error);
+                        }
                         Duration backoff = retry.backoff(claim.failures() + 1, core.random());
                         yield retry.allowsAnotherAfter(claim.attempt(), claim.firstFailedAt(), core.clock().instant(), backoff)
                             ? new Resolution.Waiting(WaitState.RETRYING, backoff, true, error)
@@ -703,15 +740,36 @@ final class BatchRun<T> {
         };
     }
 
-    /** Tells the extensions' batch listeners what became of each task. */
-    private void tell(Topic<T> topic, List<Completion> completions, Map<Long, ClaimedTask> claims) {
+    /** Whether a task of the completion being written failed, and whether through its own fault. */
+    private BatchListener.Failure failure(Completion completion) {
+        if (!(completion.resolution() instanceof Resolution.Waiting waiting) || waiting.error() == null) {
+            return BatchListener.Failure.NONE;
+        }
+        return taskFaults.contains(completion.taskId()) ? BatchListener.Failure.TASK_FAULT : BatchListener.Failure.FAILED;
+    }
+
+    /**
+     * Tells the extensions' batch listeners what became of each task it ran: those handed back
+     * without running, as on a stop, aren't reported.
+     */
+    @SuppressWarnings("ReferenceEquality") // RELEASE is the one resolution of a task handed back unrun
+    private void tell(Topic<T> topic, List<Completion> completions, Map<Long, ClaimedTask> claims, Function<Long, @Nullable Throwable> errors) {
         if (core.listeners().isEmpty()) {
             return;
         }
+        Instant now = core.clock().instant();
         List<BatchListener.Completed> results = completions.stream()
-            .map(completion -> new BatchListener.Completed(completion.taskId(), claimOf(claims, completion.taskId()).identifier(),
-                completion.attempt(), result(completion)))
+            .filter(completion -> completion.resolution() != RELEASE)
+            .map(completion -> {
+                ClaimedTask claim = claimOf(claims, completion.taskId());
+                Duration took = claim.claimedAt().isBefore(now) ? Duration.between(claim.claimedAt(), now) : Duration.ZERO;
+                return new BatchListener.Completed(completion.taskId(), claim.identifier(), completion.attempt(), result(completion),
+                    failure(completion), errors.apply(completion.taskId()), took);
+            })
             .toList();
+        if (results.isEmpty()) {
+            return;
+        }
         for (BatchListener listener : core.listeners()) {
             try {
                 listener.completed(topic.ref(), results);

@@ -10,7 +10,11 @@ import java.util.Map;
  */
 public record EffectiveSettings(String topic, String module, Map<String, Setting> settings) {
 
-    public enum Source { DEFAULT, GLOBAL_DEFAULTS, MODULE_DEFAULTS, TOPIC, OVERRIDE }
+    /**
+     * Where a value came from. {@link #CODE} is only an engine-wide extension setting's: set on the
+     * builder ({@link TaskEngineBuilder#set}).
+     */
+    public enum Source { DEFAULT, GLOBAL_DEFAULTS, MODULE_DEFAULTS, TOPIC, OVERRIDE, CODE }
 
     public record Setting(String value, Source source) {
     }

@@ -88,7 +88,7 @@ class ExtensionTest {
             TaskTester.of(engine).advance(Duration.ofMinutes(1));
 
             assertThat(extension.leaderRuns.get()).as("advance runs the leader's jobs, the extension's too").isGreaterThan(before);
-            assertThat(extension.context.leading()).isTrue();
+            assertThat(extension.context.leads("leader-count")).as("the job's own lease").isTrue();
             assertThat(extension.context.clock().instant()).isEqualTo(clock.instant());
         }
     }
@@ -195,23 +195,18 @@ class ExtensionTest {
         AtomicInteger asked = new AtomicInteger();
         ClaimGate reserving = new ClaimGate() {
             @Override
-            public Permit permit(TopicRef<?> topic) {
-                throw new AssertionError("the engine says how many it wants");
-            }
-
-            @Override
             public Permit permit(TopicRef<?> topic, int want) {
                 wanted.add(want);
                 return Permit.atMost(2);
             }
 
             @Override
-            public void claimed(TopicRef<?> topic, int tasks) {
-                settled.add("reserving " + tasks);
+            public void claimed(TopicRef<?> topic, List<Long> taskIds) {
+                settled.add("reserving " + taskIds.size());
             }
         };
         // Holds the first two claims back, then lets everything through.
-        ClaimGate holding = topic -> asked.incrementAndGet() <= 2
+        ClaimGate holding = (topic, want) -> asked.incrementAndGet() <= 2
             ? ClaimGate.Permit.waitFor(Duration.ofMillis(5)) : ClaimGate.Permit.ANY;
         try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
             .extension(context -> context.claimGate(reserving), context -> context.claimGate(holding))
@@ -227,7 +222,7 @@ class ExtensionTest {
     @Test
     void decorators_wrap_every_handler_the_first_outermost() throws Exception {
         List<String> calls = new CopyOnWriteArrayList<>();
-        Function<String, Extension> named = name -> context -> context.handlerDecorator(new HandlerDecorator() {
+        Function<String, Extension> named = name -> Extension.of(name, context -> context.handlerDecorator(new HandlerDecorator() {
             @Override
             public <T> BatchHandler<T> decorate(TopicRef<T> topic, BatchHandler<T> handler) {
                 return batch -> {
@@ -239,7 +234,7 @@ class ExtensionTest {
                     }
                 };
             }
-        });
+        }));
         try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
             .extension(named.apply("outer"), named.apply("inner"))
             .configure("work", tasks -> tasks.eachTask(WORK, task -> calls.add("handler")))

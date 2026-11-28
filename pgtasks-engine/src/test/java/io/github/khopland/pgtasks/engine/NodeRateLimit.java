@@ -34,16 +34,16 @@ final class NodeRateLimit implements Extension {
         InstantSource clock = context.clock();
         context.claimGate(new ClaimGate() {
             @Override
-            public Permit permit(TopicRef<?> topic) {
+            public Permit permit(TopicRef<?> topic, int wanted) {
                 double rate = context.topicSetting(topic, RATE).orElse(0.0);
                 return rate <= 0 ? Permit.ANY : bucket(topic, rate, clock).permit();
             }
 
             @Override
-            public void claimed(TopicRef<?> topic, int tasks) {
+            public void claimed(TopicRef<?> topic, List<Long> taskIds) {
                 Bucket bucket = buckets.get(topic.name());
                 if (bucket != null) {
-                    bucket.take(tasks);
+                    bucket.take(taskIds.size());
                 }
             }
         });

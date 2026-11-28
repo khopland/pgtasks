@@ -90,7 +90,9 @@ final class ClusterRateLimitTest {
         assertThat(ClusterRateLimit.PER_WINDOW.parse(" 35 ")).isEqualTo(35L);
         assertThatThrownBy(() -> ClusterRateLimit.PER_WINDOW.parse("0.5")).isInstanceOf(NumberFormatException.class);
         assertThatThrownBy(() -> ClusterRateLimit.PER_WINDOW.parse("-1"))
-            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative");
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("must not be negative");
+        assertThatThrownBy(() -> ClusterRateLimit.WINDOW.checked(Duration.ofNanos(10)))
+            .as("a window set in code gets the parser's check too").hasMessageContaining("cluster.window: a rate limit window must be at least a millisecond");
         assertThatThrownBy(() -> ClusterRateLimit.WINDOW.parse("PT0.0005S"))
             .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at least a millisecond");
     }

@@ -26,6 +26,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
 
 import io.github.khopland.pgtasks.Insertion;
@@ -79,6 +81,8 @@ public final class PostgresTaskStore implements TaskStore {
     private final SchemaMode mode;
     private final String schema;
     private final DatabaseClock clock = new DatabaseClock();
+    /** What extensions keep in memory next to the store, by type; see {@link #shared}. */
+    private final Map<Class<?>, Object> shared = new ConcurrentHashMap<>();
     private final NamedSql createTopic, findTopic, listTopics, registerNode, heartbeat;
     private final NamedSql finish, wait, noteError, promote, expire, findTask, countQueue, activeClaims, settledClaims, purge, snapshot, snapshots, claimPlanning;
     private final NamedSql deadLetters, revive, discard, notifyReady, notifyChannel, purgeAll, lockTopic, topicHasTasks, deleteTopic;
@@ -1260,6 +1264,12 @@ public final class PostgresTaskStore implements TaskStore {
             }
         }
         return List.copyOf(topics);
+    }
+
+    @Override
+    public <V> V shared(Class<V> type, Supplier<? extends V> create) {
+        Objects.requireNonNull(create, "create");
+        return type.cast(shared.computeIfAbsent(type, ignored -> Objects.requireNonNull(create.get(), "create returned nothing")));
     }
 
     @Override

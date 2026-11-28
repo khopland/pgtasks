@@ -1,26 +1,34 @@
 package io.github.khopland.pgtasks.engine.extension;
 
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
 import io.github.khopland.pgtasks.engine.TopicOptions;
 
 /**
- * A per-topic setting an {@link Extension} adds, such as {@code window.size}. It layers like the
- * engine's own: the key's default, then global and module defaults, the topic's options
- * ({@link TopicOptions#set}), and overrides ({@code topics.<topic>.<name>}, parsed with
- * {@link #parse}). It shows in the effective settings with where its value came from. The
- * extension declares it in {@link Extension#settings()} and reads it with
- * {@link ExtensionContext#topicSetting}.
+ * A setting an {@link Extension} adds, such as {@code window.size}. A per-topic one, declared in
+ * {@link Extension#settings()}, layers like the engine's own: the key's default, then global and
+ * module defaults, the topic's options ({@link TopicOptions#set}), and overrides
+ * ({@code topics.<topic>.<name>}, parsed with {@link #parse}); the extension reads it with
+ * {@link ExtensionContext#topicSetting}. An engine-wide one, declared in
+ * {@link Extension#engineSettings()}, has the key's default, what the builder sets and an
+ * override ({@code extensions.<name>}); the extension reads it with {@link ExtensionContext#setting}.
+ * Either shows in the effective settings with where its value came from.
+ *
+ * <p>A {@linkplain #checking check} applies to every value, whichever layer it comes from: the
+ * default, a value set in code, and an override.
  *
  * @param name         a dotted lowercase name, such as {@code window.size}; the dot keeps it apart
  *                     from the engine's own settings
  * @param type         the value's type, checked when a value is set
- * @param defaultValue the value of a topic that doesn't set it
+ * @param defaultValue the value when nothing sets it
  * @param parser       reads an override's text; throws IllegalArgumentException for a bad one
+ * @param check        throws IllegalArgumentException for a value the setting doesn't take, such as
+ *                     a negative rate; accepts every value unless set with {@link #checking}
  */
-public record SettingKey<T>(String name, Class<T> type, T defaultValue, Function<String, ? extends T> parser) {
+public record SettingKey<T>(String name, Class<T> type, T defaultValue, Function<String, ? extends T> parser, Consumer<? super T> check) {
 
     private static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+");
 
@@ -29,28 +37,76 @@ public record SettingKey<T>(String name, Class<T> type, T defaultValue, Function
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(defaultValue, "defaultValue");
         Objects.requireNonNull(parser, "parser");
+        Objects.requireNonNull(check, "check");
         if (!NAME.matcher(name).matches()) {
             throw new IllegalArgumentException("Invalid setting name '" + name + "': dotted lowercase words, such as window.size");
         }
         if (!type.isInstance(defaultValue)) {
             throw new IllegalArgumentException("The default of " + name + " is not a " + type.getName());
         }
+        try {
+            check.accept(defaultValue);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("The default of " + name + " is invalid: " + e.getMessage(), e);
+        }
+    }
+
+    /** A key that takes every value of its type. */
+    public SettingKey(String name, Class<T> type, T defaultValue, Function<String, ? extends T> parser) {
+        this(name, type, defaultValue, parser, SettingKey::any);
     }
 
     public static <T> SettingKey<T> of(String name, Class<T> type, T defaultValue, Function<String, ? extends T> parser) {
         return new SettingKey<>(name, type, defaultValue, parser);
     }
 
-    /** The value of an override's text. */
-    public T parse(String text) {
-        return checked(parser.apply(text.trim()));
+    /**
+     * This key, taking only values the check accepts: it throws IllegalArgumentException, with a
+     * message saying why, for one it doesn't. Applied to the default here, and to every value set
+     * in code or overridden.
+     */
+    public SettingKey<T> checking(Consumer<? super T> check) {
+        return new SettingKey<>(name, type, defaultValue, parser, check);
     }
 
-    /** The value, if it is one of this setting's type. */
+    /**
+     * The value of an override's text.
+     *
+     * @throws IllegalArgumentException saying why, if the parser can't read it or the check refuses it
+     */
+    public T parse(String text) {
+        T value = parser.apply(text.trim());
+        if (!type.isInstance(value)) {
+            throw new IllegalArgumentException("not a " + type.getSimpleName() + ": " + text);
+        }
+        check.accept(value);
+        return value;
+    }
+
+    /**
+     * The value, if it is one of this setting's type and passes its check.
+     *
+     * @throws IllegalArgumentException naming the setting, if it isn't
+     */
     public T checked(Object value) {
         if (!type.isInstance(value)) {
             throw new IllegalArgumentException(name + " takes a " + type.getSimpleName() + ", not " + value);
         }
-        return type.cast(value);
+        T typed = type.cast(value);
+        try {
+            check.accept(typed);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(name + ": " + e.getMessage(), e);
+        }
+        return typed;
+    }
+
+    /** The check of a key that takes every value. */
+    private static void any(Object value) {
+    }
+
+    @Override
+    public String toString() {
+        return "SettingKey[" + name + ": " + type.getSimpleName() + " = " + defaultValue + "]";
     }
 }

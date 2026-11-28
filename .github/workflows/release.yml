@@ -139,8 +139,8 @@ jobs:
       - name: Snapshot the released schemas
         working-directory: released
         run: >-
-          mvn -B -ntp test -pl pgtasks-postgres,pgtasks-rate-limit-postgres -am
-          -Dpgtasks.schema.snapshot="$VERSION" -Dtest='SchemaSnapshot,RateLimitSchemaSnapshot'
+          mvn -B -ntp test
+          -Dpgtasks.schema.snapshot="$VERSION" -Dtest='*SchemaSnapshot'
           -Dsurefire.failIfNoSpecifiedTests=false
       - name: Copy the snapshots to main
         run: |
