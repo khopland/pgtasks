@@ -195,6 +195,10 @@ run that ends in `later(...)` or `suspended()` didn't fail, so the next failure 
 Backoffs have 20 % jitter. A payload the
 codec can't decode is always dead-lettered at once, since retrying won't change it.
 
+Retries slow a failing topic down, but each task still retries on its own backoff. To stop
+claiming from a topic while most of its tasks fail, and probe it with one task at a time, add the
+[circuit breaker](extensions.md#the-circuit-breaker).
+
 A dead letter stays in the queue, holding back later tasks under `…_ON_FAILURE` and
 `…_UNTIL_SUCCESS`, until an operator revives it (another round of attempts) or discards it
 (finished as failed).

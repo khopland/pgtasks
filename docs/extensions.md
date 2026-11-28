@@ -2,7 +2,7 @@
 
 The engine's core is small: topics, pushing in the caller's transaction, claiming, retries, dead
 letters and housekeeping. Features beyond that, such as a rate limit, a pause, a circuit breaker
-or recurring tasks, belong in extensions. An extension uses the same hooks the engine's own
+or recurring tasks, belong in extensions; [some ship](#shipped-extensions). An extension uses the same hooks the engine's own
 housekeeping uses, so it needs no change to the engine. Everything an extension implements or
 receives is in the package `io.github.khopland.pgtasks.engine.extension`.
 
@@ -338,3 +338,51 @@ it reserved costs one short transaction on the topic's counter row; one that use
 
 The counter is shared through the store, not through the notifier: a node that claims again after its delay reads the current state, so it needs no wake-up
 message from the other nodes.
+
+### The circuit breaker
+
+`pgtasks-circuit-breaker` stops a node claiming from a topic whose recent tasks mostly fail: a
+downstream system is probably down, and claiming more only fails more. `CircuitBreaker` is a claim
+gate and a batch listener. Registered, it guards every topic of the engine:
+
+```java
+TaskEngine engine = TaskEngine.builder()
+    .extension(new CircuitBreaker())
+    .configure("work", tasks -> tasks.eachTask(WORK, task -> handle(task)))
+    .build();
+```
+
+With Spring, declare a `CircuitBreaker` bean. One instance keeps the breakers of each engine it
+is installed in apart.
+
+It opens when 80 % of the last 50 results on this node failed, from at least 5 different tasks.
+While open, the node claims nothing from the topic but one probe every 30 s: a single task whose
+failure doesn't use up an attempt. The probe's success closes it, and the topic claims as usual
+at once; its failure puts the next probe 30 s after it. Only the probe's own result counts, so
+results of batches that were already running when it opened don't. Each node has its own breaker
+per topic, and a restart closes them.
+
+A single task that keeps failing doesn't open it, however often it retries, so a poison task still
+reaches the dead letters while the rest of the topic runs. Failures that are the task's own fault
+don't count at all: those the retry policy dead-letters at once (`deadLetterAt`), such as bad
+input, an undecodable payload, and a task out of attempts. Failures the policy doesn't count
+(`notCounting`) do: they are what an outage looks like.
+
+| Setting | Default | |
+|---|---|---|
+| `breaker.enabled` | `true` | `false` (or `off`) leaves the topic unguarded. In the defaults, turns it off for every topic, so topics opt in. |
+| `breaker.opens-at` | `0.8` | The share of the window that must be failures: above 0, at most 1. |
+| `breaker.window` | `50` | How many recent results count. |
+| `breaker.min-tasks` | `5` | How many different tasks must have failed among them. |
+| `breaker.probe-every` | `30s` | The wait between probes while open, by the store's clock. |
+
+They layer like any setting, `options.set(CircuitBreaker.WINDOW, 20)`, and YAML overrides them:
+`pgtasks.topics.work.breaker.enabled: false`. A value out of range fails the build, whether set in
+code or overridden.
+
+Each node logs a warning when a topic's breaker opens and an info line when it closes. The
+endpoint and dashboard show this node's open breakers in the `breaker` view, mark the topic
+"breaker open", and close one on an operator's word; the health shows the topic as held back by
+`CircuitBreaker`, with the reason "breaker open", and `pgtasks.claims.held` counts how long. In code, `breaker.openTopics()`,
+`breaker.isOpen(topic)` and `breaker.close(topic)` do the same. `TaskTester.drain` jumps the clock
+to the next probe like it jumps past backoffs.

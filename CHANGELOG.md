@@ -13,6 +13,13 @@ break the API; the schema only ever moves forward, with migrations the store app
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
   (`Outcome.CANCELLED`), kept 30 days by default (`retain.cancelled`); an active task is left to
   finish. Tasks a cancelled one held back under an ordering run next.
+- `pgtasks-circuit-breaker`: a per-node circuit breaker, as an extension. A topic whose recent tasks
+  mostly fail (80 % of the last 50, from at least 5 tasks) stops claiming on that node and sends
+  one probe task every 30 s, whose failure doesn't use up an attempt; the probe's success closes
+  it. Failures that are the task's own fault (`deadLetterAt`, an undecodable payload, no attempts
+  left) don't count. Settings `breaker.enabled`, `breaker.opens-at`, `breaker.window`,
+  `breaker.min-tasks` and `breaker.probe-every`. The endpoint and dashboard show the open breakers
+  (view `breaker`) and close one on an operator's word.
 - Extensions can show operators what they know and let them act on it: an `OperatorView` (a
   table with actions on its rows, and a status and actions per topic) shows in the endpoint
   (`GET /actuator/tasks/extensions/{view}`, `POST .../{view}/{action}`, and on each topic) and the
