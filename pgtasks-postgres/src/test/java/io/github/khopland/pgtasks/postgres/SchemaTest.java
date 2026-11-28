@@ -63,12 +63,13 @@ class SchemaTest {
 
     @Test
     void creates_every_table_and_records_its_version(PostgresDatabase database) {
-        assertThat(database.count(sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'pgtasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'topic_count', 'lease', 'meta', 'schema_history')")))
-            .isEqualTo(8);
-        assertThat(database.rows(sql("SELECT version, compatible_from FROM pgtasks.meta"))).containsExactly(List.of(2, 1));
+        assertThat(database.count(sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'pgtasks' AND table_name IN ('queue', 'task', 'topic', 'node', 'topic_count', 'lease', 'extension_data', 'meta', 'schema_history')")))
+            .isEqualTo(9);
+        assertThat(database.rows(sql("SELECT version, compatible_from FROM pgtasks.meta"))).containsExactly(List.of(3, 1));
         assertThat(database.rows(sql("SELECT version, script FROM pgtasks.schema_history ORDER BY installed_rank"))).containsExactly(
             Arrays.asList(1, "V001__tasks_schema.sql"),
             Arrays.asList(2, "V002__cancelled_outcome.sql"),
+            Arrays.asList(3, "V003__extension_data.sql"),
             Arrays.asList(null, "R__create_topic.sql"),
             Arrays.asList(null, "R__notify_ready.sql"),
             Arrays.asList(null, "R__notify_topic.sql"),

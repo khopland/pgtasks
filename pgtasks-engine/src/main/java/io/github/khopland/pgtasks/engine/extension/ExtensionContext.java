@@ -28,8 +28,9 @@ import org.jspecify.annotations.Nullable;
  * the other way round: the topics finish their batches, the reloads and jobs end, and then the
  * {@linkplain #onStop stop actions} run.
  *
- * <p>The engine implements this interface, its {@link Job} and its {@link Channel}; extensions
- * only call them. Minor releases add methods to them, so don't implement them.
+ * <p>The engine implements this interface, its {@link Job}, {@link Channel} and
+ * {@link ExtensionData}; extensions only call them. Minor releases add methods to them, so don't
+ * implement them.
  */
 public interface ExtensionContext {
 
@@ -165,7 +166,7 @@ public interface ExtensionContext {
      * message may get lost. Runs on a thread of its own, never before the extensions' start
      * actions have run; requests that arrive while one waits are served by that one run. Channel
      * names are lowercase words ({@link io.github.khopland.pgtasks.spi.Notifier#CHANNEL});
-     * {@code ready}, {@code topic} and {@code job} are the engine's.
+     * {@code ready}, {@code topic}, {@code job} and {@code data} are the engine's.
      *
      * @return the channel, to send messages on
      */
@@ -199,6 +200,23 @@ public interface ExtensionContext {
          */
         void send(StoreTransaction transaction, String payload) throws SQLException;
     }
+
+    /**
+     * The extension's own values in the engine's store, by key, shared by every node; see
+     * {@link ExtensionData}. Usable for as long as the engine lives.
+     */
+    ExtensionData data();
+
+    /**
+     * Reloads when the extension's {@linkplain #data data} may have changed, on any node: told the
+     * keys written since its last run, or an empty set when anything may have changed. It runs
+     * like a {@linkplain #channel channel's} reload: on a thread of its own, never before the start
+     * actions, also after a lost connection and on every heartbeat. A write is announced when the
+     * extension in the writing engine has one of these, so one that doesn't need them pays nothing
+     * for the notification at commit: register it in every engine, as an extension does that
+     * installs the same hooks everywhere.
+     */
+    void onDataChange(Reload reload);
 
     /**
      * Shows operators what the extension knows and lets them act on it, through the starter's

@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -20,10 +21,12 @@ import io.github.khopland.pgtasks.engine.extension.BatchListener;
 import io.github.khopland.pgtasks.engine.extension.ClaimGate;
 import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.ExtensionData;
 import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
 import io.github.khopland.pgtasks.engine.extension.OperatorView;
 import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.memory.InMemoryTaskStore;
+import io.github.khopland.pgtasks.spi.ExtensionEntry;
 import io.github.khopland.pgtasks.spi.ManualClock;
 
 import org.junit.jupiter.api.DisplayName;
@@ -683,12 +686,92 @@ class ExtensionHooksTest {
                 return null;
             });
             assertThatThrownBy(() -> builder(store).extension(Extension.of("x", context -> context.channel("job", () -> { }))).build())
-                .hasMessageContaining("other than ready, topic and job");
+                .hasMessageContaining("other than ready, topic, job, data");
             EngineFixture.await("the messages", Duration.ofSeconds(5),
                 () -> reloads.stream().flatMap(Set::stream).toList().containsAll(List.of("orders", "payments")));
             assertThat(listening.running()).isTrue();
             assertThat(sending.running()).isTrue();
         }
+    }
+
+    @Test
+    @DisplayName("An extension's data is shared by every engine on the store, apart from other extensions', and rolls back with its transaction")
+    void extension_data_is_shared_and_transactional() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        Kept first = new Kept("quota");
+        Kept second = new Kept("quota");
+        Kept other = new Kept("other");
+        builder(store).extension(first, other).build();
+        builder(store).extension(second).build();
+        ExtensionData mine = first.context.data();
+
+        first.context.transact("Counting", transaction -> mine.put(transaction, "tenant/north", "1"));
+        Optional<ExtensionEntry> seen = second.context.transact("Reading", transaction -> second.context.data().get(transaction, "tenant/north"));
+        assertThat(seen).as("another engine on the store, same extension").map(ExtensionEntry::value).contains("1");
+        Optional<ExtensionEntry> elsewhere = other.context.transact("Reading", transaction -> other.context.data().get(transaction, "tenant/north"));
+        assertThat(elsewhere).as("another extension's keys are its own").isEmpty();
+
+        assertThatThrownBy(() -> first.context.transact("Counting and failing", transaction -> {
+            mine.put(transaction, "tenant/north", "99");
+            throw new IllegalStateException("the push it counted for failed");
+        })).hasMessageContaining("the push it counted for failed");
+        ExtensionEntry counted = first.context.transact("Counting", transaction -> mine.update(transaction, "tenant/north",
+            count -> String.valueOf(Integer.parseInt(count == null ? "0" : count) + 1))).orElseThrow();
+        assertThat(counted.value()).as("the failed write rolled back").isEqualTo("2");
+        assertThat(counted.version()).isEqualTo(2);
+
+        Optional<ExtensionEntry> stale = first.context.transact("Racing", transaction -> mine.putIf(transaction, "tenant/north", 1, "stale"));
+        assertThat(stale).isEmpty();
+        first.context.transact("Adding", transaction -> mine.put(transaction, "tenant/south", "5"));
+        List<ExtensionEntry> tenants = first.context.transact("Listing", transaction -> mine.list(transaction, "tenant/"));
+        assertThat(tenants).extracting(ExtensionEntry::key).containsExactly("tenant/north", "tenant/south");
+        Optional<ExtensionEntry> removed = first.context.transact("Removing", transaction -> mine.update(transaction, "tenant/south", count -> null));
+        assertThat(removed).isEmpty();
+        List<ExtensionEntry> all = first.context.transact("Listing", transaction -> mine.list(transaction, ""));
+        assertThat(all).hasSize(1);
+        boolean notAtVersion = first.context.transact("Deleting", transaction -> mine.deleteIf(transaction, "tenant/north", 1));
+        assertThat(notAtVersion).isFalse();
+        boolean deleted = first.context.transact("Deleting", transaction -> mine.delete(transaction, "tenant/north"));
+        assertThat(deleted).isTrue();
+
+        assertThatThrownBy(() -> first.context.transact("Writing", transaction -> mine.put(transaction, "", "x")))
+            .hasMessageContaining("A key is 1 to 200 characters");
+        assertThatThrownBy(() -> first.context.transact("Writing", transaction -> mine.put(transaction, "big", "x".repeat(ExtensionEntry.MAX_VALUE + 1))))
+            .hasMessageContaining("A value is at most");
+    }
+
+    @Test
+    @DisplayName("A write to an extension's data reaches its reloads on every node, once it commits")
+    void a_data_change_reaches_every_nodes_reloads() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        List<Set<String>> heard = new CopyOnWriteArrayList<>();
+        Kept writer = new Kept("settings");
+        // The same extension on both nodes, as in a deployment: each has the reload, the reading one records it.
+        Extension listening = Extension.of("settings", context -> context.onDataChange(heard::add));
+        Extension writing = Extension.of("settings", context -> {
+            writer.install(context);
+            context.onDataChange(keys -> { });
+        });
+        try (TaskEngine reading = builder(store).node("reading").extension(listening).build().start();
+             TaskEngine writingEngine = builder(store).node("writing").extension(writing).build().start()) {
+            EngineFixture.await("the heartbeat's reload", Duration.ofSeconds(5), () -> heard.contains(Set.of()));
+            ExtensionData data = writer.context.data();
+            assertThatThrownBy(() -> writer.context.transact("Changing and failing", transaction -> {
+                data.put(transaction, "rolled-back", "x");
+                throw new IllegalStateException("undone");
+            })).hasMessageContaining("undone");
+            writer.context.transact("Changing", transaction -> data.put(transaction, "limit", "10"));
+
+            EngineFixture.await("the change", Duration.ofSeconds(5), () -> heard.stream().anyMatch(keys -> keys.contains("limit")));
+            assertThat(heard).as("nothing from a write that rolled back").noneMatch(keys -> keys.contains("rolled-back"));
+            assertThat(reading.running() && writingEngine.running()).isTrue();
+        }
+        assertThat(StoredData.parse(StoredData.payload("a:b", "c:d"))).isEqualTo(new StoredData.Change("a:b", "c:d"));
+        assertThat(StoredData.parse(StoredData.payload("x".repeat(8_000), "key"))).as("too long to name the key")
+            .isEqualTo(new StoredData.Change("x".repeat(8_000), ""));
+        assertThat(StoredData.parse("nonsense")).isNull();
+        assertThatThrownBy(() -> builder(store).extension(Extension.of("x", context -> context.channel("data", () -> { }))).build())
+            .hasMessageContaining("other than ready, topic, job, data");
     }
 
     @Test

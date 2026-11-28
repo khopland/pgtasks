@@ -110,9 +110,18 @@ file's checksum changed, and Flyway and Liquibase do the same. Add the next file
    files, and runs them with the current store. A release adds its snapshot (RELEASING.md); the
    cluster rate limit's table has the same in `RateLimitSchemaUpgradeTest`.
 
+### Extension data
+
+Most extensions keep their state in the engine's own `extension_data` table (schema version 3):
+one row per extension and key, written through `ExtensionContext.data()`, so they bring no table
+or migration of their own. `SELECT extension, key, value, version, updated_at FROM
+pgtasks.extension_data` shows what each extension keeps; the rows are the extension's, so change
+them through the extension rather than by hand.
+
 ### Tables an extension owns
 
-An extension can keep tables beside the engine's without changing these files. `ExtensionSchema`
+An extension that needs real SQL, such as a counter every node locks a row of, can keep tables
+beside the engine's without changing these files. `ExtensionSchema`
 points at versioned and repeatable SQL files in the extension's own jar and gives the extension a
 name; the built-in runner applies them under a lock on `<schema>.<name>_schema_history`, a different
 lock and a different history table from the engine's and from every other extension's. That is

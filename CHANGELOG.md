@@ -8,6 +8,12 @@ break the API; the schema only ever moves forward, with migrations the store app
 
 ### Added
 
+- Extension data: `context.data()` keeps an extension's values in the engine's store, by key, the
+  same on every store and shared by every node, with writes that roll back with their
+  transaction, compare-and-set (`putIf`, `update`) and listing by prefix. An extension that keeps
+  its state there needs no table, migration or code per store of its own. `context.onDataChange`
+  reloads on every node when an entry changes.
+
 - Cancelling tasks: `admin().cancel(...)` by id or `TaskQuery`, the endpoint's `cancel` action and
   the dashboard take unfinished tasks out of the queue, so they never run. Ready, delayed,
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
@@ -82,8 +88,11 @@ break the API; the schema only ever moves forward, with migrations the store app
 - Schema version 2 (`V002__cancelled_outcome.sql`) adds the `cancelled` outcome. The store applies
   it on start; with schema mode `validate`, apply it with your migration tool first. Nodes of 0.1.0
   keep running against it during a rolling deploy.
-- `TaskStore` has a new method, `cancel`. A store of your own must implement it, and pass the
-  `OperatorTck` cases for it.
+- Schema version 3 (`V003__extension_data.sql`) adds the `extension_data` table, for the values
+  extensions keep. Applied like version 2; earlier nodes ignore it.
+- `TaskStore` has new methods: `cancel`, and `extensionEntry`, `extensionEntries`,
+  `putExtensionEntry` and `deleteExtensionEntry` for extension data. A store of your own must
+  implement them, and pass the `OperatorTck` and `ExtensionDataTck` cases for them.
 
 ## [0.1.0] - 2026-11-27
 

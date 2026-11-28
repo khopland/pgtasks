@@ -53,6 +53,7 @@ lambda with a name: `Extension.of("audit", context -> context.batchListener(audi
 | `observer(TaskObserver)` | Sees this node's pushes and batches, for tracing, metrics, or headers that follow the work, next to the observers given to the builder. For a header name both give, the builder's value is stored. One that throws is logged and ignored. |
 | `job(HousekeepingJob)` | Runs work on a fixed delay, on every node (`everyNode`) or on one node at a time (`leader`). Returns the `Job`, to ask `runsHere()` or to `runSoon()`. |
 | `channel(name, reload)` | Reloads something that may have changed on another node, told what the messages said. Returns the `Channel`, to `send` messages on. |
+| `onDataChange(reload)` | Reloads when the extension's data changes on any node, told the keys written. |
 | `operatorView(OperatorView)` | Shows operators what the extension knows, and lets them act on it, in the starter's endpoint and dashboard. |
 | `onStart` / `onStop` | Runs each time the engine starts (before its reloads, jobs and topics) and stops (after them). |
 
@@ -66,6 +67,7 @@ And what it can use:
 - `admin()`: the operator's side, such as every topic in the store; `topics()`: those this node registers.
 - `clock()`: the store's clock, the database's on Postgres.
 - `topicSetting(topic, key)` and `setting(key)`: the extension's per-topic and engine-wide settings.
+- `data()`: the extension's own values in the store, by key (below).
 - `wake(topic)`: asks a topic's gates again now, for a gate whose answer changed.
 
 The engine implements `ExtensionContext`, `Job` and `Channel`, and extensions only call them:
@@ -153,7 +155,7 @@ run; an empty set means anything may have changed, and comes after a lost notifi
 connection, on every heartbeat (in case a message got lost), and when more messages came in than
 are worth listing. Requests that arrive while a reload waits are served by that one run, and none
 runs before the extensions' start actions have. `channel(name, () -> ...)` is the same without the
-payloads. `ready`, `topic` and `job` are the engine's channels.
+payloads. `ready`, `topic`, `job` and `data` are the engine's channels.
 
 ## Settings
 
@@ -223,11 +225,42 @@ its `"error"` in its place, and the rest of the response as usual. The dashboard
 as a panel on the overview, the status next to the topic, and the topic's actions on its page;
 an action with `confirm` text asks the operator first, and one without runs at once.
 
+## Extension data
+
+Most extensions have something to remember: schedules and when they last ran, a tenant's counts,
+a setting an operator changed. `context.data()` keeps it in the engine's store, by key, under the
+extension's name, the same on Postgres and in memory, shared by every node:
+
+```java
+ExtensionData data = context.data();
+context.transact("Counting a push", transaction -> data.update(transaction, "tenant/" + tenant,
+    count -> String.valueOf(count == null ? 1 : Long.parseLong(count) + 1)));
+```
+
+Each call takes a transaction the extension holds, so its writes commit or roll back with
+everything else in it: an extension's own `transact`, or the transaction a push or completion
+hook is given. `get`, `put` and `delete` read and write one entry; `list(transaction, prefix)` reads
+those whose keys start with the prefix, in key order. Every entry has a version, 1 when it is first
+written and one more on each write: `putIf(transaction, key, version, value)` writes only if nobody
+wrote in between, and `update` reads, changes and writes until it does. Keys are up to 200
+characters, values up to 64 KiB of text in whatever encoding the extension likes, for a modest
+number of entries: thousands, not millions.
+
+`context.onDataChange(keys -> ...)` reloads on every node when an entry changes, told the keys
+written since its last run, or nothing in particular when anything may have changed, like a
+channel's reload. Writes announce themselves at commit only when the extension has such a
+reload, so one that doesn't need them pays nothing for the notification.
+
+On Postgres the entries are rows of `extension_data`; a store of your own implements four methods
+and passes `ExtensionDataTck`. An extension that keeps its state there needs no table, migration,
+capability or second module.
+
 ## Store capabilities
 
-An extension that keeps state of its own needs store-specific code: statements on Postgres, maps
-in memory. It ships an interface, say `WindowStore`, and a `StoreCapability` per store it
-supports, registered in `META-INF/services/io.github.khopland.pgtasks.spi.StoreCapability`:
+An extension whose state needs real SQL, such as a counter every node locks a row of on each
+claim, needs store-specific code: statements on Postgres, maps in memory. It ships an interface,
+say `WindowStore`, and a `StoreCapability` per store it supports, registered in
+`META-INF/services/io.github.khopland.pgtasks.spi.StoreCapability`:
 
 ```java
 public final class PostgresWindows implements StoreCapability {

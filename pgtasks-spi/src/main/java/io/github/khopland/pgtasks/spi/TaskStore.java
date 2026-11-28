@@ -262,6 +262,38 @@ public interface TaskStore {
     void resign(StoreTransaction transaction, String name, int nodeId) throws SQLException;
 
     /**
+     * The extension's entry of this key, if it has one. Extensions keep their state in these,
+     * through the engine's {@code ExtensionData}, so they need no table or store-specific code of
+     * their own. Entries are by extension name, shared by every node and application on the store.
+     */
+    Optional<ExtensionEntry> extensionEntry(StoreTransaction transaction, String extension, String key) throws SQLException;
+
+    /**
+     * The extension's entries whose keys start with the prefix (taken literally, wildcards and
+     * all), in key order by code point, after the key {@code after} if given, at most {@code limit}.
+     */
+    List<ExtensionEntry> extensionEntries(StoreTransaction transaction, String extension, String prefix, @Nullable String after, int limit)
+        throws SQLException;
+
+    /**
+     * Writes the extension's entry of this key: whatever is there, with a {@code version} of null;
+     * otherwise only if the entry is at that version, 0 meaning it doesn't exist yet. A write raises
+     * the version by one, or starts it at 1.
+     *
+     * @return the entry as written, or empty if it wasn't at the version
+     */
+    Optional<ExtensionEntry> putExtensionEntry(StoreTransaction transaction, String extension, String key, String value, @Nullable Long version)
+        throws SQLException;
+
+    /**
+     * Deletes the extension's entry of this key: whatever its version, with a {@code version} of
+     * null, otherwise only at that version.
+     *
+     * @return whether it deleted one
+     */
+    boolean deleteExtensionEntry(StoreTransaction transaction, String extension, String key, @Nullable Long version) throws SQLException;
+
+    /**
      * Deletes up to {@code limit} finished tasks with this outcome that completed before the cutoff.
      * Unfinished tasks are never touched. Returns how many were deleted.
      */

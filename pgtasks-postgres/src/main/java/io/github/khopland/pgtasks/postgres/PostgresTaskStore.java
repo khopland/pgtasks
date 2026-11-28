@@ -41,6 +41,7 @@ import io.github.khopland.pgtasks.admin.QueueState;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
+import io.github.khopland.pgtasks.spi.ExtensionEntry;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -89,6 +90,8 @@ public final class PostgresTaskStore implements TaskStore {
     private final NamedSql searchTasks, releaseSuspended, cancel;
     private final NamedSql deleteDeadNodes, deregisterNode, listNodes;
     private final NamedSql lead, resign, setRetention, retention;
+    private final NamedSql extensionEntry, extensionEntries, putExtensionEntry, insertExtensionEntry, updateExtensionEntry,
+        deleteExtensionEntry, deleteExtensionEntryAt;
     private final NamedSql singularClaimLock, identifierLocks, identifierLocksGuarded, topicLock, topicLockGuarded;
     private final Map<Insertion, NamedSql> pushes = new EnumMap<>(Insertion.class);
     private final Map<Insertion, NamedSql> pushesWokenByCaller = new EnumMap<>(Insertion.class);
@@ -649,6 +652,36 @@ public final class PostgresTaskStore implements TaskStore {
             RETURNING l.expires_at
             """.formatted(guard));
         resign = sql("DELETE FROM pgtasks.lease WHERE name = :name AND node_id = :node::integer");
+        extensionEntry = sql("SELECT key, value, version, updated_at FROM pgtasks.extension_data WHERE extension = :extension AND key = :key");
+        // The key's "C" collation lets the prefix LIKE walk the primary key's index.
+        extensionEntries = sql("""
+            SELECT key, value, version, updated_at
+            FROM pgtasks.extension_data
+            WHERE extension = :extension AND key LIKE :pattern AND key > :after
+            ORDER BY key
+            LIMIT :limit::integer
+            """);
+        putExtensionEntry = sql("""
+            INSERT INTO pgtasks.extension_data AS d (extension, key, value, version, updated_at)
+            VALUES (:extension, :key, :value, 1, now())
+            ON CONFLICT (extension, key) DO UPDATE SET value = excluded.value, version = d.version + 1, updated_at = excluded.updated_at
+            RETURNING key, value, version, updated_at
+            """);
+        insertExtensionEntry = sql("""
+            INSERT INTO pgtasks.extension_data (extension, key, value, version, updated_at)
+            VALUES (:extension, :key, :value, 1, now())
+            ON CONFLICT (extension, key) DO NOTHING
+            RETURNING key, value, version, updated_at
+            """);
+        // Under READ COMMITTED a concurrent write that commits first leaves the version unmatched here.
+        updateExtensionEntry = sql("""
+            UPDATE pgtasks.extension_data
+            SET value = :value, version = version + 1, updated_at = now()
+            WHERE extension = :extension AND key = :key AND version = :version::bigint
+            RETURNING key, value, version, updated_at
+            """);
+        deleteExtensionEntry = sql("DELETE FROM pgtasks.extension_data WHERE extension = :extension AND key = :key");
+        deleteExtensionEntryAt = sql("DELETE FROM pgtasks.extension_data WHERE extension = :extension AND key = :key AND version = :version::bigint");
         snapshots = sql("""
             SELECT tp.name, c.scheduled, c.retrying, c.ready, c.active, c.suspended, c.dead_letters, c.due, c.next_run_at, c.taken_at,
                    c.oldest_ready_at, c.failing, c.oldest_failing_at
@@ -1286,6 +1319,72 @@ public final class PostgresTaskStore implements TaskStore {
         try (PreparedStatement statement = resign.prepare(transaction.connection(), NamedSql.parameters().set("name", name).set("node", nodeId))) {
             statement.executeUpdate();
         }
+    }
+
+    @Override
+    public Optional<ExtensionEntry> extensionEntry(StoreTransaction transaction, String extension, String key) throws SQLException {
+        try (PreparedStatement statement = extensionEntry.prepare(transaction.connection(), NamedSql.parameters().set("extension", extension).set("key", key));
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next() ? Optional.of(entry(resultSet)) : Optional.empty();
+        }
+    }
+
+    @Override
+    public List<ExtensionEntry> extensionEntries(StoreTransaction transaction, String extension, String prefix, @Nullable String after, int limit)
+        throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters()
+            .set("extension", extension)
+            .set("pattern", likePrefix(prefix))
+            .set("after", after == null ? "" : after)
+            .set("limit", limit);
+        List<ExtensionEntry> entries = new ArrayList<>();
+        try (PreparedStatement statement = extensionEntries.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                entries.add(entry(resultSet));
+            }
+        }
+        return entries;
+    }
+
+    @Override
+    public Optional<ExtensionEntry> putExtensionEntry(StoreTransaction transaction, String extension, String key, String value, @Nullable Long version)
+        throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters().set("extension", extension).set("key", key).set("value", value);
+        NamedSql statementSql;
+        if (version == null) {
+            statementSql = putExtensionEntry;
+        } else if (version == 0) {
+            statementSql = insertExtensionEntry;
+        } else {
+            statementSql = updateExtensionEntry;
+            parameters.set("version", version);
+        }
+        try (PreparedStatement statement = statementSql.prepare(transaction.connection(), parameters);
+             ResultSet resultSet = statement.executeQuery()) {
+            return resultSet.next() ? Optional.of(entry(resultSet)) : Optional.empty();
+        }
+    }
+
+    @Override
+    public boolean deleteExtensionEntry(StoreTransaction transaction, String extension, String key, @Nullable Long version) throws SQLException {
+        NamedSql.Parameters parameters = NamedSql.parameters().set("extension", extension).set("key", key);
+        if (version != null) {
+            parameters.set("version", version);
+        }
+        try (PreparedStatement statement = (version == null ? deleteExtensionEntry : deleteExtensionEntryAt).prepare(transaction.connection(), parameters)) {
+            return statement.executeUpdate() > 0;
+        }
+    }
+
+    private static ExtensionEntry entry(ResultSet resultSet) throws SQLException {
+        return new ExtensionEntry(resultSet.getString("key"), resultSet.getString("value"), resultSet.getLong("version"),
+            requiredInstant(resultSet, "updated_at"));
+    }
+
+    /** A LIKE pattern for keys starting with the prefix, taken literally. */
+    static String likePrefix(String prefix) {
+        return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
     }
 
     @Override

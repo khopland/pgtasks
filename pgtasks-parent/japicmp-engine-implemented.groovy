@@ -10,6 +10,7 @@ def engineImplemented = [
     'io.github.khopland.pgtasks.engine.extension.ExtensionContext',
     'io.github.khopland.pgtasks.engine.extension.ExtensionContext$Job',
     'io.github.khopland.pgtasks.engine.extension.ExtensionContext$Channel',
+    'io.github.khopland.pgtasks.engine.extension.ExtensionData',
 ] as Set
 
 jApiClasses.findAll { engineImplemented.contains(it.fullyQualifiedName) }.each { jApiClass ->

@@ -405,8 +405,12 @@
             <excludes>
               <!-- 0.2.0: stores take unfinished tasks out of the queue for admin().cancel(...). -->
               <exclude>io.github.khopland.pgtasks.spi.TaskStore#cancel(io.github.khopland.pgtasks.spi.StoreTransaction,int,io.github.khopland.pgtasks.admin.TaskQuery,int)</exclude>
-              <!-- 0.2.0: state extensions keep in memory per store. -->
+              <!-- 0.2.0: state extensions keep in memory per store, and in the store's extension data. -->
               <exclude>io.github.khopland.pgtasks.spi.TaskStore#shared(java.lang.Class,java.util.function.Supplier)</exclude>
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#extensionEntry(io.github.khopland.pgtasks.spi.StoreTransaction,java.lang.String,java.lang.String)</exclude>
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#extensionEntries(io.github.khopland.pgtasks.spi.StoreTransaction,java.lang.String,java.lang.String,java.lang.String,int)</exclude>
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#putExtensionEntry(io.github.khopland.pgtasks.spi.StoreTransaction,java.lang.String,java.lang.String,java.lang.String,java.lang.Long)</exclude>
+              <exclude>io.github.khopland.pgtasks.spi.TaskStore#deleteExtensionEntry(io.github.khopland.pgtasks.spi.StoreTransaction,java.lang.String,java.lang.String,java.lang.Long)</exclude>
               <!--
                 0.2.0: the extension API grows what extensions need. Methods added to ExtensionContext
                 need no exclude (japicmp-engine-implemented.groovy); these change or remove one.

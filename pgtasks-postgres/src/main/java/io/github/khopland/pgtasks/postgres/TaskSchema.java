@@ -89,6 +89,7 @@ public final class TaskSchema {
     static final List<String> FILES = List.of(
         "V001__tasks_schema.sql",
         "V002__cancelled_outcome.sql",
+        "V003__extension_data.sql",
         "R__create_topic.sql",
         "R__notify_ready.sql",
         "R__notify_topic.sql",
@@ -96,7 +97,7 @@ public final class TaskSchema {
     );
 
     /** The schema version this library is built for. */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /**
      * The oldest Postgres major version the store runs on. Its statements are written against the

@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.Period;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -15,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -39,6 +41,7 @@ import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
 import io.github.khopland.pgtasks.memory.Rows.State;
+import io.github.khopland.pgtasks.spi.ExtensionEntry;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StaleClaimException;
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -86,6 +89,8 @@ public final class InMemoryTaskStore implements TaskStore {
     private final Map<String, Held> leases = new HashMap<>();
     /** What extensions keep next to the tasks, by type; see {@link #shared}. */
     private final Map<Class<?>, Object> shared = new ConcurrentHashMap<>();
+    /** Extensions' entries, by extension and key in code point order, as Postgres's "C" collation orders them. */
+    private final TreeMap<DataKey, ExtensionEntry> extensionData = new TreeMap<>();
     private int nextTopic = 1, nextNode = 1;
     private long nextTask = 1;
 
@@ -448,6 +453,67 @@ public final class InMemoryTaskStore implements TaskStore {
 
     /** A lease: who holds it and until when, in store time. */
     private record Held(int nodeId, Instant until) {
+    }
+
+    private record DataKey(String extension, String key) implements Comparable<DataKey> {
+
+        @Override
+        public int compareTo(DataKey other) {
+            int byExtension = byCodePoint(extension, other.extension);
+            return byExtension != 0 ? byExtension : byCodePoint(key, other.key);
+        }
+    }
+
+    static int byCodePoint(String first, String second) {
+        return Arrays.compare(first.codePoints().toArray(), second.codePoints().toArray());
+    }
+
+    @Override
+    public Optional<ExtensionEntry> extensionEntry(StoreTransaction transaction, String extension, String key) {
+        memory(transaction);
+        return Optional.ofNullable(extensionData.get(new DataKey(extension, key)));
+    }
+
+    @Override
+    public List<ExtensionEntry> extensionEntries(StoreTransaction transaction, String extension, String prefix, @Nullable String after, int limit) {
+        memory(transaction);
+        // The keys that start with the prefix are one run, beginning at the prefix itself.
+        NavigableMap<DataKey, ExtensionEntry> from = after != null && byCodePoint(after, prefix) >= 0
+            ? extensionData.tailMap(new DataKey(extension, after), false)
+            : extensionData.tailMap(new DataKey(extension, prefix), true);
+        List<ExtensionEntry> entries = new ArrayList<>();
+        for (Map.Entry<DataKey, ExtensionEntry> each : from.entrySet()) {
+            if (entries.size() >= limit || !each.getKey().extension().equals(extension) || !each.getKey().key().startsWith(prefix)) {
+                break;
+            }
+            entries.add(each.getValue());
+        }
+        return entries;
+    }
+
+    @Override
+    public Optional<ExtensionEntry> putExtensionEntry(StoreTransaction transaction, String extension, String key, String value, @Nullable Long version) {
+        MemoryTransaction memory = memory(transaction);
+        DataKey at = new DataKey(extension, key);
+        ExtensionEntry current = extensionData.get(at);
+        if (version != null && version != (current == null ? 0 : current.version())) {
+            return Optional.empty();
+        }
+        ExtensionEntry written = new ExtensionEntry(key, value, current == null ? 1 : current.version() + 1, now());
+        memory.put(extensionData, at, written);
+        return Optional.of(written);
+    }
+
+    @Override
+    public boolean deleteExtensionEntry(StoreTransaction transaction, String extension, String key, @Nullable Long version) {
+        MemoryTransaction memory = memory(transaction);
+        DataKey at = new DataKey(extension, key);
+        ExtensionEntry current = extensionData.get(at);
+        if (current == null || (version != null && version != current.version())) {
+            return false;
+        }
+        memory.remove(extensionData, at);
+        return true;
     }
 
     @Override

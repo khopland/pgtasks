@@ -32,6 +32,7 @@ import io.github.khopland.pgtasks.engine.extension.BatchListener;
 import io.github.khopland.pgtasks.engine.extension.ClaimGate;
 import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
+import io.github.khopland.pgtasks.engine.extension.ExtensionData;
 import io.github.khopland.pgtasks.engine.extension.HandlerDecorator;
 import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
 import io.github.khopland.pgtasks.engine.extension.OperatorView;
@@ -104,6 +105,8 @@ public final class TaskEngine implements AutoCloseable {
     private TaskObserver observer;
     /** Each extension channel's reloads, run soon on a message, a reconnect or a heartbeat. */
     private final Map<String, List<ChannelReload>> channels = new LinkedHashMap<>();
+    /** Each extension's data reloads, by extension name, run soon on a changed entry, a reconnect or a heartbeat. */
+    private final Map<String, List<ChannelReload>> dataReloads = new LinkedHashMap<>();
     /** How long one retention run may take; shorter in tests. */
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
@@ -248,7 +251,7 @@ public final class TaskEngine implements AutoCloseable {
             // Started again after a stop, as Spring does on context.stop() and start(): the
             // reloads that stop() switched off take notifications again. It registers as a new node.
             reconcileSoon.restart();
-            channels.values().forEach(reloads -> reloads.forEach(ChannelReload::restart));
+            reloads().forEach(ChannelReload::restart);
         }
         // Started before registering, which records the first heartbeat, so the fence errs early.
         HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
@@ -263,6 +266,9 @@ public final class TaskEngine implements AutoCloseable {
             if (wakeUps != null) {
                 Set<String> listened = new LinkedHashSet<>(channels.keySet());
                 listened.add(Notifier.TOPIC);
+                if (!dataReloads.isEmpty()) {
+                    listened.add(StoredData.CHANNEL);
+                }
                 if (extensionJobs.stream().anyMatch(Housekeeper.ExtensionJob::leader)) {
                     listened.add(JOB_CHANNEL);
                 }
@@ -283,6 +289,18 @@ public final class TaskEngine implements AutoCloseable {
                             Housekeeper keeper = housekeeper;
                             if (keeper != null && started) {
                                 keeper.runSoonByLease(payload);
+                            }
+                        } else if (channel.equals(StoredData.CHANNEL)) {
+                            StoredData.Change change = StoredData.parse(payload);
+                            if (change != null) {
+                                dataReloads.getOrDefault(change.extension(), List.of())
+                                    .forEach(reload -> {
+                                        if (change.key().isEmpty()) {
+                                            reload.everything();
+                                        } else {
+                                            reload.message(change.key());
+                                        }
+                                    });
                             }
                         } else {
                             channels.getOrDefault(channel, List.of()).forEach(reload -> reload.message(payload));
@@ -316,7 +334,7 @@ public final class TaskEngine implements AutoCloseable {
             // and one that can't fails the start before anything is claimed. The reloads kept what
             // arrived while it did, since the notifier listens already, and run now.
             startExtensions();
-            channels.values().forEach(reloads -> reloads.forEach(ChannelReload::open));
+            reloads().forEach(ChannelReload::open);
             keeper.start();
             started = true;
             reconcileTopics();
@@ -652,10 +670,8 @@ public final class TaskEngine implements AutoCloseable {
     /** Stops the extensions' channel reloads, waiting for those running; they take requests again on the next start. */
     private void stopReloads() {
         try {
-            for (List<ChannelReload> reloads : channels.values()) {
-                for (ChannelReload reload : reloads) {
-                    reload.stop(TopicWorker.PATIENCE);
-                }
+            for (ChannelReload reload : reloads()) {
+                reload.stop(TopicWorker.PATIENCE);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -764,7 +780,7 @@ public final class TaskEngine implements AutoCloseable {
 
     /** Asks every extension channel's reloads to run soon, as anything may have changed. */
     private void reloadChannels() {
-        channels.values().forEach(reloads -> reloads.forEach(ChannelReload::everything));
+        reloads().forEach(ChannelReload::everything);
     }
 
     /** One extension's start and stop actions, in the order it registered them. */
@@ -809,6 +825,17 @@ public final class TaskEngine implements AutoCloseable {
 
     /** The engine's channel for a leader job to run soon on the node that holds its lease; its payload is the lease. */
     static final String JOB_CHANNEL = "job";
+
+    /** The engine's own channels, which extensions' channels can't be named. */
+    static final List<String> RESERVED_CHANNELS = List.of("ready", Notifier.TOPIC, JOB_CHANNEL, StoredData.CHANNEL);
+
+    /** Every channel and data reload of the installed extensions. */
+    private List<ChannelReload> reloads() {
+        List<ChannelReload> all = new ArrayList<>();
+        channels.values().forEach(all::addAll);
+        dataReloads.values().forEach(all::addAll);
+        return all;
+    }
 
     /**
      * The capabilities extensions asked for on one store, one per type, kept with the store, so
@@ -914,6 +941,7 @@ public final class TaskEngine implements AutoCloseable {
 
         private final String extension;
         private final Lifecycle lifecycle;
+        private volatile @Nullable ExtensionData data;
         /** Hooks are taken only while the extension installs. */
         private volatile boolean installing = true;
 
@@ -1043,11 +1071,28 @@ public final class TaskEngine implements AutoCloseable {
         public Channel channel(String name, Reload reload) {
             hook("a channel");
             Objects.requireNonNull(reload, "reload");
-            if (!Notifier.CHANNEL.matcher(name).matches() || name.equals("ready") || name.equals(Notifier.TOPIC) || name.equals(JOB_CHANNEL)) {
-                throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready, topic and job");
+            if (!Notifier.CHANNEL.matcher(name).matches() || RESERVED_CHANNELS.contains(name)) {
+                throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than " + String.join(", ", RESERVED_CHANNELS));
             }
-            channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new ChannelReload(name, reload));
+            channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(ChannelReload.onChannel(name, reload));
             return new RegisteredChannel(store, name);
+        }
+
+        @Override
+        public ExtensionData data() {
+            ExtensionData made = data;
+            if (made == null) {
+                made = new StoredData(store, extension, () -> dataReloads.containsKey(extension));
+                data = made;
+            }
+            return made;
+        }
+
+        @Override
+        public void onDataChange(Reload reload) {
+            hook("a data reload");
+            Objects.requireNonNull(reload, "reload");
+            dataReloads.computeIfAbsent(extension, ignored -> new ArrayList<>()).add(ChannelReload.onData(extension, reload));
         }
 
         @Override

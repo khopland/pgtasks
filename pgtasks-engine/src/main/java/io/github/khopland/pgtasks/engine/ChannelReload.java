@@ -30,9 +30,19 @@ final class ChannelReload {
     /** Guarded by this: whether runs may start; until then, what arrives is kept for the first run. */
     private boolean open;
 
-    ChannelReload(String channel, ExtensionContext.Reload reload) {
+    private ChannelReload(String thread, String what, ExtensionContext.Reload reload) {
         this.reload = reload;
-        this.runs = new Coalesced("channel-" + channel, "channel " + channel, this::run);
+        this.runs = new Coalesced(thread, what, this::run);
+    }
+
+    /** A reload on an extension's channel. */
+    static ChannelReload onChannel(String channel, ExtensionContext.Reload reload) {
+        return new ChannelReload("channel-" + channel, "channel " + channel, reload);
+    }
+
+    /** A reload of an extension's data, told the keys written; see {@link StoredData}. */
+    static ChannelReload onData(String extension, ExtensionContext.Reload reload) {
+        return new ChannelReload("data-" + extension, "data of " + extension, reload);
     }
 
     /** A message on the channel. */

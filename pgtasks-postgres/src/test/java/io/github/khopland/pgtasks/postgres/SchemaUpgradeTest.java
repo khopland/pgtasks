@@ -4,12 +4,14 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.admin.TaskQuery;
 import io.github.khopland.pgtasks.admin.TaskView;
+import io.github.khopland.pgtasks.spi.ExtensionEntry;
 import io.github.khopland.pgtasks.spi.TaskStore.ClaimedTask;
 import io.github.khopland.pgtasks.spi.TaskStore.NewTask;
 import io.github.khopland.pgtasks.test.PostgresDatabase;
@@ -120,6 +122,10 @@ class SchemaUpgradeTest {
         List<Long> cancelled = fixture.inTransaction(transaction -> fixture.store().cancel(transaction, topic, TaskQuery.ids(List.of(newest)), 10));
         assertThat(cancelled).containsExactly(newest);
         assertThat(fixture.view(newest).orElseThrow().state()).isEqualTo("cancelled");
+
+        // An extension keeps an entry, in a table newer than some releases.
+        Optional<ExtensionEntry> entry = fixture.inTransaction(transaction -> fixture.store().putExtensionEntry(transaction, "upgrade", "key", "value", 0L));
+        assertThat(entry.map(ExtensionEntry::version)).contains(1L);
     }
 
     /** Before the first release: the rows the current code writes, dumped from a scratch schema. */
