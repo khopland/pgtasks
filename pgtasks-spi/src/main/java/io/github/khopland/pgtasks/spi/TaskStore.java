@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.function.Supplier;
 
 import io.github.khopland.pgtasks.Insertion;
 import io.github.khopland.pgtasks.Ordering;
@@ -248,6 +249,14 @@ public interface TaskStore {
      *         transaction
      */
     boolean lead(StoreTransaction transaction, String name, int nodeId, Duration term) throws SQLException;
+
+    /**
+     * A value kept as long as this store, one per type, made on first use: for state an extension
+     * keeps in memory next to the store's own, such as its tables on the in-memory store, so every
+     * engine on the store shares it, as the nodes of a {@code TaskTester} do. Changes to it in a
+     * transaction are undone with {@link StoreTransaction#onRollback}.
+     */
+    <V> V shared(Class<V> type, Supplier<? extends V> create);
 
     /** Gives a lease up at once, if this node holds it. */
     void resign(StoreTransaction transaction, String name, int nodeId) throws SQLException;

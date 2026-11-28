@@ -81,7 +81,12 @@ final class RateLimitTest {
         assertThatThrownBy(() -> RateLimit.PER_SECOND.parse("Infinity"))
             .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("finite");
         assertThatThrownBy(() -> RateLimit.BURST.parse("-1"))
-            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative");
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not negative");
+        // Set in code, a rate gets the same check: NaN used to make the gate wait a nanosecond on every poll.
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore()).extension(new RateLimit())
+            .configure("work", tasks -> tasks.eachTask(TopicRef.of("limited", String.class), task -> { },
+                options -> options.set(RateLimit.PER_SECOND, Double.NaN)))
+            .build()).hasMessageContaining("rate.per-second: a rate or burst must be finite");
     }
 
     @Test

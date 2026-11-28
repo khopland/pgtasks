@@ -51,11 +51,13 @@ Outside the extension, `new InMemoryTaskStore(clock, dataSource)` does the same.
 ## TaskTester
 
 - `awaitIdle()`: waits until nothing is left to do now, without moving the clock.
-- `drain(topic)`: runs until nothing in the topic can run, jumping the clock past delays and
-  backoffs. Suspended tasks and dead letters stay. Every topic of the engine runs meanwhile, not
-  only this one, and the clock jumps for all of them: to check what waits on a step, push that
-  step's input in the test rather than draining the topic before it.
-- `advance(duration)`: moves the clock and runs housekeeping once, as if that much time passed.
+- `drain(topic)`: runs until nothing in the topic can run, jumping the clock past delays,
+  backoffs and the waits of extensions' claim gates (such as a circuit breaker's next probe).
+  Suspended tasks, dead letters and a topic a gate holds for good (a paused one) stay. Every topic
+  of the engine runs meanwhile, not only this one, and the clock jumps for all of them: to check
+  what waits on a step, push that step's input in the test rather than draining the topic before it.
+- `advance(duration)`: moves the clock and runs housekeeping once, as if that much time passed,
+  extensions' jobs included, such as recurring tasks that came due.
 - `pushed(topic)`, `pushedPayloads(topic)`, `pushedIdentifiers(topic)`, `assertPushed(topic, n)`,
   `assertNothingPushed(topic)`: what was pushed and committed.
 - `counts(topic)` and `task(id)`: the queue and one task, as an operator sees them.

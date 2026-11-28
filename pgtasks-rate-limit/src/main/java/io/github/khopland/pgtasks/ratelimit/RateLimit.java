@@ -22,17 +22,15 @@ import io.github.khopland.pgtasks.engine.extension.SettingKey;
  */
 public final class RateLimit implements Extension {
 
-    /** Tasks a second on this node; zero, the default, leaves the topic unlimited. */
+    /** Tasks a second on this node; zero, the default, leaves the topic unlimited. Finite and not negative. */
     public static final SettingKey<Double> PER_SECOND =
-        SettingKey.of("rate.per-second", Double.class, 0.0, RateLimit::nonNegative);
+        SettingKey.of("rate.per-second", Double.class, 0.0, Double::valueOf).checking(RateLimit::nonNegative);
 
-    /** The burst in tasks; zero, the default, uses one second's worth of {@link #PER_SECOND}. */
+    /** The burst in tasks; zero, the default, uses one second's worth of {@link #PER_SECOND}. Finite and not negative. */
     public static final SettingKey<Double> BURST =
-        SettingKey.of("rate.burst", Double.class, 0.0, RateLimit::nonNegative);
+        SettingKey.of("rate.burst", Double.class, 0.0, Double::valueOf).checking(RateLimit::nonNegative);
 
-    private final Buckets buckets = new Buckets();
-
-    /** Creates the extension; a single instance can serve every topic of one engine. */
+    /** Creates the extension; one instance serves every topic of the engines it is installed in, each with buckets of its own. */
     public RateLimit() {
     }
 
@@ -44,9 +42,10 @@ public final class RateLimit implements Extension {
     @Override
     public void install(ExtensionContext context) {
         InstantSource clock = context.clock();
+        Buckets buckets = new Buckets();
         context.claimGate(new ClaimGate() {
             @Override
-            public Permit permit(TopicRef<?> topic) {
+            public Permit permit(TopicRef<?> topic, int wanted) {
                 double rate = context.topicSetting(topic, PER_SECOND).orElse(0.0);
                 if (rate <= 0) {
                     return Permit.ANY;
@@ -56,20 +55,18 @@ public final class RateLimit implements Extension {
             }
 
             @Override
-            public void claimed(TopicRef<?> topic, int tasks) {
-                if (tasks > 0) {
-                    buckets.taken(topic.name(), tasks);
+            public void claimed(TopicRef<?> topic, List<Long> taskIds) {
+                if (!taskIds.isEmpty()) {
+                    buckets.taken(topic.name(), taskIds.size());
                 }
             }
         });
     }
 
-    private static double nonNegative(String text) {
-        double value = Double.parseDouble(text.trim());
+    private static void nonNegative(double value) {
         if (!Double.isFinite(value) || value < 0) {
-            throw new IllegalArgumentException("A rate or burst must be finite and non-negative, not " + text);
+            throw new IllegalArgumentException("a rate or burst must be finite and not negative, not " + value);
         }
-        return value;
     }
 
     /** One token bucket per topic name, keyed the way the gate is asked. */

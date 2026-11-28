@@ -5,6 +5,8 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -14,6 +16,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.random.RandomGenerator;
@@ -22,6 +25,7 @@ import java.util.stream.Collectors;
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.PayloadCodec;
 import io.github.khopland.pgtasks.TaskStorageException;
+import io.github.khopland.pgtasks.TaskWriter;
 import io.github.khopland.pgtasks.Tasks;
 import io.github.khopland.pgtasks.TopicRef;
 import io.github.khopland.pgtasks.engine.extension.BatchListener;
@@ -30,9 +34,11 @@ import io.github.khopland.pgtasks.engine.extension.Extension;
 import io.github.khopland.pgtasks.engine.extension.ExtensionContext;
 import io.github.khopland.pgtasks.engine.extension.HandlerDecorator;
 import io.github.khopland.pgtasks.engine.extension.HousekeepingJob;
+import io.github.khopland.pgtasks.engine.extension.OperatorView;
 import io.github.khopland.pgtasks.engine.extension.SettingKey;
 import io.github.khopland.pgtasks.spi.Notifier;
 import io.github.khopland.pgtasks.spi.StoreCapability;
+import io.github.khopland.pgtasks.spi.StoreTransaction;
 import io.github.khopland.pgtasks.spi.TaskStore;
 
 import org.jspecify.annotations.Nullable;
@@ -90,11 +96,12 @@ public final class TaskEngine implements AutoCloseable {
     private final List<HandlerDecorator> decorators = new ArrayList<>();
     private final List<Runnable> onStart = new ArrayList<>();
     private final List<Runnable> onStop = new ArrayList<>();
-    private final List<String> extensions = new ArrayList<>();
+    private final List<Extension> extensions = new ArrayList<>();
+    private final Map<String, OperatorView> views = new LinkedHashMap<>();
     /** The builder's observers, and those installed extensions add. */
     private TaskObserver observer;
     /** Each extension channel's reloads, run soon on a message, a reconnect or a heartbeat. */
-    private final Map<String, List<Coalesced>> channels = new LinkedHashMap<>();
+    private final Map<String, List<ChannelReload>> channels = new LinkedHashMap<>();
     /** How long one retention run may take; shorter in tests. */
     Duration purgeBudget = Housekeeper.PURGE_BUDGET;
 
@@ -239,7 +246,7 @@ public final class TaskEngine implements AutoCloseable {
             // Started again after a stop, as Spring does on context.stop() and start(): the
             // reloads that stop() switched off take notifications again. It registers as a new node.
             reconcileSoon.restart();
-            channels.values().forEach(reloads -> reloads.forEach(Coalesced::restart));
+            channels.values().forEach(reloads -> reloads.forEach(ChannelReload::restart));
         }
         // Started before registering, which records the first heartbeat, so the fence errs early.
         HeartbeatFence fence = new HeartbeatFence(settings.heartbeat(), settings.expiry(), System::nanoTime);
@@ -268,7 +275,7 @@ public final class TaskEngine implements AutoCloseable {
                         if (channel.equals(Notifier.TOPIC)) {
                             reconcileSoon.request();
                         } else {
-                            channels.getOrDefault(channel, List.of()).forEach(Coalesced::request);
+                            channels.getOrDefault(channel, List.of()).forEach(reload -> reload.message(payload));
                         }
                     }
 
@@ -295,15 +302,18 @@ public final class TaskEngine implements AutoCloseable {
                 }
             });
             housekeeper = keeper;
+            // Before the jobs and the topics: an extension readies what its gates and jobs use, and
+            // one that can't fails the start before anything is claimed.
+            startExtensions();
             keeper.start();
             started = true;
             reconcileTopics();
-            onStart.forEach(Runnable::run);
         } catch (Exception | Error e) {
             if (started) {
                 stop(Duration.ZERO);
             } else {
                 // Not started, so stop() would do nothing: end what this start got going.
+                stopExtensions();
                 if (wakeUps != null) {
                     wakeUps.close();
                 }
@@ -311,6 +321,7 @@ public final class TaskEngine implements AutoCloseable {
                 if (keeper != null) {
                     keeper.stop();
                 }
+                deregister();
             }
             throw e;
         }
@@ -399,7 +410,8 @@ public final class TaskEngine implements AutoCloseable {
     private EngineHealth checkHealth() throws Exception {
         Duration term = settings.leaseTerm();
         if (!started) {
-            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of());
+            return new EngineHealth(false, settings.nodeName(), nodeId, null, null, term, false, EngineHealth.Notifications.NONE, List.of(),
+                List.of(), List.of());
         }
         Instant now = store.clock().instant();
         Instant beat = running(housekeeper).lastHeartbeat();
@@ -417,7 +429,16 @@ public final class TaskEngine implements AutoCloseable {
             }
         }
         return new EngineHealth(true, settings.nodeName(), nodeId, beat, beat == null ? null : Duration.between(beat, now), term,
-            running(housekeeper).leading(), notifications, stuck);
+            running(housekeeper).leading(), notifications, stuck, heldTopics(), running(housekeeper).jobs());
+    }
+
+    /**
+     * The topics an extension's claim gate holds back on this node now, such as a rate limit or a
+     * pause, with since when; none once the engine has stopped. Read from memory, without the store.
+     */
+    public List<EngineHealth.HeldTopic> heldTopics() {
+        return workers().stream().map(TopicWorker::heldBack).filter(Objects::nonNull).map(Objects::requireNonNull)
+            .sorted(Comparator.comparing(EngineHealth.HeldTopic::topic)).toList();
     }
 
     /** What {@link #start} set up, while the engine runs. */
@@ -462,10 +483,13 @@ public final class TaskEngine implements AutoCloseable {
         }
     }
 
-    /** If this node leads, runs expiry, promotion, retention and count snapshots once, now. */
-    void runLeaderJobsNow() throws Exception {
+    /**
+     * Runs the jobs that act on what time it is once, now, for tests that move the clock: those
+     * this node leads, the engine's and its extensions', then the extensions' every-node jobs.
+     */
+    void runJobsNow() throws Exception {
         if (started) {
-            running(housekeeper).runLeaderJobsNow();
+            running(housekeeper).runJobsNow();
         }
     }
 
@@ -548,13 +572,7 @@ public final class TaskEngine implements AutoCloseable {
         started = false;
         stopped = true;
         long deadline = System.nanoTime() + timeout.toNanos();
-        for (Runnable action : onStop) {
-            try {
-                action.run();
-            } catch (RuntimeException e) {
-                LOGGER.warn("An extension's stop action failed; the engine stops anyway", e);
-            }
-        }
+        stopExtensions();
         try {
             // Nothing new starts: no wake-ups, no reloads.
             Notifier wakeUps = notifier;
@@ -562,8 +580,8 @@ public final class TaskEngine implements AutoCloseable {
                 wakeUps.close();
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
-            for (List<Coalesced> reloads : channels.values()) {
-                for (Coalesced reload : reloads) {
+            for (List<ChannelReload> reloads : channels.values()) {
+                for (ChannelReload reload : reloads) {
                     reload.stop(TopicWorker.PATIENCE);
                 }
             }
@@ -648,23 +666,53 @@ public final class TaskEngine implements AutoCloseable {
         stop(Duration.ofSeconds(30));
     }
 
-    /** Installs an extension: it registers its hooks with this engine. Only while the engine is built. */
+    /**
+     * Installs an extension: it registers its hooks with this engine, through a context of its own
+     * that takes hooks only while it installs. Only while the engine is built.
+     */
     void install(Extension extension) {
         if (prepared || started) {
             throw new IllegalStateException("Extensions are installed while the engine is built");
         }
-        extension.install(new Context());
-        extensions.add(extension.name());
+        String name = Objects.requireNonNull(extension.name(), "name");
+        if (extensions.stream().anyMatch(installed -> installed.name().equals(name))) {
+            throw new IllegalArgumentException("An extension named " + name + " is installed already: a feature installed twice "
+                + "usually counts twice. Give one of them another name() if both are meant");
+        }
+        Context context = new Context(name);
+        try {
+            extension.install(context);
+        } finally {
+            context.installing = false;
+        }
+        extensions.add(extension);
     }
 
     /** Extension settings by topic name, then setting name; see {@link SettingKey}. */
     private Map<String, Map<String, Object>> extensionSettings = Map.of();
+    /** Engine-wide extension settings by name, every declared one, and where each value came from. */
+    private Map<String, Object> engineSettingValues = Map.of();
+    private Map<String, EffectiveSettings.Setting> engineSettings = Map.of();
 
     TaskEngine withExtensionSettings(Map<String, Map<String, Object>> settings) {
         Map<String, Map<String, Object>> copy = new LinkedHashMap<>();
         settings.forEach((topic, values) -> copy.put(topic, Map.copyOf(values)));
         this.extensionSettings = Map.copyOf(copy);
         return this;
+    }
+
+    TaskEngine withEngineSettings(Map<String, Object> values, Map<String, EffectiveSettings.Setting> report) {
+        this.engineSettingValues = Map.copyOf(values);
+        this.engineSettings = Collections.unmodifiableMap(new TreeMap<>(report));
+        return this;
+    }
+
+    /**
+     * The installed extensions' engine-wide settings, by name, with where each value came from;
+     * see {@link Extension#engineSettings()}. Their per-topic settings are in {@link #effectiveSettings()}.
+     */
+    public Map<String, EffectiveSettings.Setting> engineSettings() {
+        return engineSettings;
     }
 
     /** The topic with its handler wrapped by every decorator, the first outermost. */
@@ -676,18 +724,64 @@ public final class TaskEngine implements AutoCloseable {
         return new Topic<>(topic.ref(), handler, topic.codec(), topic.settings(), topic.resources());
     }
 
-    /** Asks every extension channel's reloads to run soon. */
+    /** Asks every extension channel's reloads to run soon, as anything may have changed. */
     private void reloadChannels() {
-        channels.values().forEach(reloads -> reloads.forEach(Coalesced::request));
+        channels.values().forEach(reloads -> reloads.forEach(ChannelReload::everything));
+    }
+
+    /** Runs the extensions' start actions, in the order they were registered; the first that throws fails the start. */
+    private void startExtensions() {
+        for (Runnable action : onStart) {
+            action.run();
+        }
+    }
+
+    /** Runs the extensions' stop actions; one that throws is logged, and the others still run. */
+    private void stopExtensions() {
+        for (Runnable action : onStop) {
+            try {
+                action.run();
+            } catch (RuntimeException e) {
+                LOGGER.warn("An extension's stop action failed; the engine stops anyway", e);
+            }
+        }
     }
 
     /** The names of the installed extensions, in the order they were installed. */
     public List<String> extensions() {
-        return List.copyOf(extensions);
+        return extensions.stream().map(Extension::name).toList();
     }
 
-    /** The context an extension installs into: this engine's. */
+    /**
+     * The installed extension of this type, the first one if there are several: for code that has
+     * the engine but not the extension, such as an operator's tool.
+     */
+    public <E extends Extension> Optional<E> extension(Class<E> type) {
+        return extensions.stream().filter(type::isInstance).map(type::cast).findFirst();
+    }
+
+    /** What the installed extensions show operators, in the order they registered it; see {@link OperatorView}. */
+    public List<OperatorView> operatorViews() {
+        return List.copyOf(views.values());
+    }
+
+    /** The context one extension installs into: this engine's. */
     private final class Context implements ExtensionContext {
+
+        private final String extension;
+        /** Hooks are taken only while the extension installs. */
+        private volatile boolean installing = true;
+
+        Context(String extension) {
+            this.extension = extension;
+        }
+
+        private void hook(String what) {
+            if (!installing) {
+                throw new IllegalStateException(extension + " registered " + what + " after it was installed: an extension "
+                    + "registers its hooks in install()");
+            }
+        }
 
         @Override
         public TaskStore store() {
@@ -711,13 +805,29 @@ public final class TaskEngine implements AutoCloseable {
         }
 
         @Override
+        public TaskWriter tasks(StoreTransaction transaction) {
+            return tasks.in(transaction);
+        }
+
+        @Override
+        public TaskAdmin admin() {
+            return admin;
+        }
+
+        @Override
         public InstantSource clock() {
             return store.clock();
         }
 
         @Override
-        public boolean leading() {
-            return leadsHousekeeping();
+        public List<TopicRef<?>> topics() {
+            return TaskEngine.this.topics.stream().<TopicRef<?>>map(Topic::ref).toList();
+        }
+
+        @Override
+        public <R extends @Nullable Object> R transact(String what, Work<R> work) {
+            Objects.requireNonNull(work, "work");
+            return Unchecked.call(what, () -> EngineCore.transact(store, work::run));
         }
 
         @Override
@@ -730,48 +840,124 @@ public final class TaskEngine implements AutoCloseable {
         }
 
         @Override
+        public <T> T setting(SettingKey<T> key) {
+            Object value = engineSettingValues.get(key.name());
+            if (value == null) {
+                throw new IllegalArgumentException("No installed extension declares the engine setting " + key.name()
+                    + " in engineSettings()");
+            }
+            return key.checked(value);
+        }
+
+        @Override
+        public boolean leads(String job) {
+            Housekeeper keeper = housekeeper;
+            return started && keeper != null && keeper.leads(job);
+        }
+
+        @Override
+        public void runSoon(String job) {
+            if (extensionJobs.stream().noneMatch(each -> each.name().equals(job))) {
+                throw new IllegalArgumentException("This engine has no extension job named '" + job + "'");
+            }
+            Housekeeper keeper = housekeeper;
+            if (started && keeper != null) {
+                keeper.runSoon(job);
+            }
+        }
+
+        @Override
+        public void wake(TopicRef<?> topic) {
+            TaskEngine.this.wake(topic.name());
+        }
+
+        @Override
+        public void wake(String topic) {
+            TaskEngine.this.wake(Objects.requireNonNull(topic, "topic"));
+        }
+
+        @Override
         public void claimGate(ClaimGate gate) {
-            gates.add(Objects.requireNonNull(gate, "gate"));
+            hook("a claim gate");
+            gates.add(new NamedGate(extension, Objects.requireNonNull(gate, "gate")));
         }
 
         @Override
         public void batchListener(BatchListener listener) {
+            hook("a batch listener");
             batchListeners.add(Objects.requireNonNull(listener, "listener"));
         }
 
         @Override
         public void handlerDecorator(HandlerDecorator decorator) {
+            hook("a handler decorator");
             decorators.add(Objects.requireNonNull(decorator, "decorator"));
         }
 
         @Override
         public void job(HousekeepingJob job) {
-            extensionJobs.add(Objects.requireNonNull(job, "job"));
+            hook("a job");
+            Objects.requireNonNull(job, "job");
+            if (Housekeeper.RESERVED.contains(job.name())) {
+                throw new IllegalArgumentException("The engine has a job or lease named '" + job.name() + "' of its own: name the job after the extension");
+            }
+            if (extensionJobs.stream().anyMatch(other -> other.name().equals(job.name()))) {
+                throw new IllegalArgumentException("Another job is named '" + job.name() + "': each job of an engine has a name of its own");
+            }
+            extensionJobs.add(job);
         }
 
         @Override
         public void channel(String name, Runnable reload) {
             Objects.requireNonNull(reload, "reload");
+            channel(name, payloads -> reload.run());
+        }
+
+        @Override
+        public void channel(String name, Reload reload) {
+            hook("a channel");
+            Objects.requireNonNull(reload, "reload");
             if (!Notifier.CHANNEL.matcher(name).matches() || name.equals("ready") || name.equals(Notifier.TOPIC)) {
                 throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready and topic");
             }
-            channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new Coalesced("channel-" + name, "channel " + name, reload::run));
+            channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new ChannelReload(name, reload));
+        }
+
+        @Override
+        public void operatorView(OperatorView view) {
+            hook("an operator view");
+            Objects.requireNonNull(view, "view");
+            String name = view.name();
+            if (name == null || !OperatorView.NAME.matcher(name).matches()) {
+                throw new IllegalArgumentException("Invalid operator view name '" + name + "': lowercase words with hyphens, such as schedules");
+            }
+            if (views.putIfAbsent(name, view) != null) {
+                throw new IllegalArgumentException("Another operator view is named '" + name + "'");
+            }
         }
 
         @Override
         public void observer(TaskObserver added) {
+            hook("an observer");
             observer = TaskObserver.composite(List.of(observer, Objects.requireNonNull(added, "observer")));
             tasks.taskObserver(observer);
         }
 
         @Override
         public void onStart(Runnable action) {
+            hook("a start action");
             onStart.add(Objects.requireNonNull(action, "action"));
         }
 
         @Override
         public void onStop(Runnable action) {
+            hook("a stop action");
             onStop.add(Objects.requireNonNull(action, "action"));
+        }
+
+        @Override
+        public String toString() {
+            return "ExtensionContext[" + extension + ", " + TaskEngine.this + "]";
         }
     }
 

@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -70,8 +71,10 @@ public final class TaskTester {
     /**
      * Moves the store's clock forward, then runs every engine's housekeeping at once: the engines
      * were alive all along, so they all heartbeat first; then the housekeeping leader requeues
-     * tasks of dead nodes, promotes due tasks, applies retention and snapshots counts. Needs a
-     * store with a {@link ManualClock}.
+     * tasks of dead nodes, promotes due tasks, applies retention and snapshots counts, each
+     * extension leader job runs on the node holding its lease, and every engine runs its
+     * extensions' every-node jobs, such as recurring tasks that came due. Needs a store with a
+     * {@link ManualClock}.
      */
     public Instant advance(Duration duration) {
         if (!(store.clock() instanceof ManualClock clock)) {
@@ -120,9 +123,11 @@ public final class TaskTester {
     }
 
     /**
-     * Runs until nothing in the topic can run any more, jumping the clock past delays and
-     * backoffs when the store has a {@link ManualClock}. Suspended and dead-lettered tasks stay.
-     * Every engine's topics run meanwhile, not only this one, and see the clock jumps too.
+     * Runs until nothing in the topic can run any more, jumping the clock past delays, backoffs
+     * and the waits of claim gates (such as a circuit breaker's next probe) when the store has a
+     * {@link ManualClock}. Suspended and dead-lettered tasks stay, and a topic a gate holds back
+     * for good, such as a paused one, doesn't drain. Every engine's topics run meanwhile, not only
+     * this one, and see the clock jumps too.
      */
     public QueueCounts drain(TopicRef<?> topic) {
         return drain(topic, DEFAULT_TIMEOUT);
@@ -134,6 +139,14 @@ public final class TaskTester {
             awaitIdle(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
             QueueCounts counts = counts(topic);
             Instant next = counts.nextRunAt();
+            if (counts.ready() > 0) {
+                // Ready tasks that a claim gate holds back until then.
+                Instant held = engines.stream().flatMap(engine -> engine.workers().stream())
+                    .filter(worker -> worker.topic().ref().name().equals(topic.name()))
+                    .map(TopicWorker::heldBack).filter(Objects::nonNull).map(each -> Objects.requireNonNull(each).until())
+                    .min(Instant::compareTo).orElse(null);
+                next = held == null || (next != null && next.isBefore(held)) ? next : held;
+            }
             if (next == null) {
                 return counts;
             }
@@ -234,7 +247,7 @@ public final class TaskTester {
                 engine.heartbeatNow();
             }
             for (TaskEngine engine : engines) {
-                engine.runLeaderJobsNow();
+                engine.runJobsNow();
             }
         } catch (RuntimeException e) {
             throw e;

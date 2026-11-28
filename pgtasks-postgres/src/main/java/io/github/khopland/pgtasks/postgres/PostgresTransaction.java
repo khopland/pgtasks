@@ -3,8 +3,11 @@ package io.github.khopland.pgtasks.postgres;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.Map;
+import java.util.Objects;
 import java.util.WeakHashMap;
 
 import io.github.khopland.pgtasks.spi.StoreTransaction;
@@ -47,6 +50,8 @@ final class PostgresTransaction implements StoreTransaction {
     /** The network timeout to restore on close, or -1 when it wasn't changed. */
     private final int restoreNetworkTimeout;
     private boolean done;
+    /** Undos of state outside the database, newest first; see {@link #onRollback}. */
+    private final Deque<Runnable> undo = new ArrayDeque<>();
 
     private PostgresTransaction(Connection connection, boolean owned, int restore, int restoreNetworkTimeout) {
         this.connection = connection;
@@ -155,14 +160,62 @@ final class PostgresTransaction implements StoreTransaction {
             connection.commit();
         }
         done = true;
+        undo.clear();
     }
 
     @Override
     public void rollback() throws SQLException {
-        if (owned) {
-            connection.rollback();
+        try {
+            if (owned) {
+                connection.rollback();
+            }
+        } finally {
+            done = true;
+            undoAll(0);
         }
-        done = true;
+    }
+
+    @Override
+    public void onRollback(Runnable action) {
+        Objects.requireNonNull(action, "action");
+        if (!owned) {
+            throw new UnsupportedOperationException("A joined transaction rolls back with its owner, out of the store's sight");
+        }
+        undo.push(action);
+    }
+
+    /** Undoes, with JDBC's savepoint, the undos recorded since too. */
+    @Override
+    public Savepoint savepoint() throws SQLException {
+        java.sql.Savepoint savepoint = connection.setSavepoint();
+        int changes = undo.size();
+        return new Savepoint() {
+            @Override
+            public void rollback() throws SQLException {
+                try {
+                    connection.rollback(savepoint);
+                    connection.releaseSavepoint(savepoint);
+                } finally {
+                    undoAll(changes);
+                }
+            }
+
+            @Override
+            public void release() throws SQLException {
+                connection.releaseSavepoint(savepoint);
+            }
+        };
+    }
+
+    /** Runs the undos recorded after the first {@code keep}, newest first; one that throws is logged. */
+    private void undoAll(int keep) {
+        while (undo.size() > keep) {
+            try {
+                undo.pop().run();
+            } catch (RuntimeException e) {
+                LOGGER.warn("An undo on rollback failed", e);
+            }
+        }
     }
 
     @Override
@@ -172,7 +225,11 @@ final class PostgresTransaction implements StoreTransaction {
         }
         try {
             if (!done) {
-                connection.rollback();
+                try {
+                    connection.rollback();
+                } finally {
+                    undoAll(0);
+                }
             }
             if (restore != -1) {
                 // Not every pool resets the level when the connection goes back, and the cache

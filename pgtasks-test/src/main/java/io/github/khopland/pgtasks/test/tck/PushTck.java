@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -75,6 +76,41 @@ public abstract class PushTck extends StoreTck {
 
         assertThat(fixture.inTransaction(transaction -> fixture.store().count(transaction, topic)).ready()).isEqualTo(2);
         assertThat(kept).allSatisfy(id -> assertThat(fixture.state(id)).isEqualTo("ready"));
+    }
+
+    @Test
+    void an_undo_runs_when_its_transaction_or_a_savepoint_before_it_rolls_back() throws SQLException {
+        StoreFixture fixture = setUp();
+        List<String> undone = new ArrayList<>();
+        fixture.inTransaction(transaction -> {
+            transaction.onRollback(() -> undone.add("committed"));
+            return null;
+        });
+        assertThat(undone).as("nothing runs on commit").isEmpty();
+
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            transaction.onRollback(() -> undone.add("first"));
+            StoreTransaction.Savepoint savepoint = transaction.savepoint();
+            transaction.onRollback(() -> undone.add("after the savepoint"));
+            transaction.onRollback(() -> {
+                throw new IllegalStateException("a broken undo");
+            });
+            savepoint.rollback();
+            assertThat(undone).as("only what came after the savepoint, and a broken one stops nothing").containsExactly("after the savepoint");
+            transaction.onRollback(() -> undone.add("second"));
+            transaction.rollback();
+        }
+        assertThat(undone).as("newest first").containsExactly("after the savepoint", "second", "first");
+
+        try (StoreTransaction transaction = fixture.store().begin()) {
+            transaction.onRollback(() -> undone.add("closed"));
+        }
+        assertThat(undone).as("closed without a commit rolls back").endsWith("closed");
+
+        StringBuilder kept = fixture.store().shared(StringBuilder.class, StringBuilder::new);
+        assertThat(fixture.store().shared(StringBuilder.class, () -> {
+            throw new AssertionError("made once per store");
+        })).isSameAs(kept);
     }
 
     @Test

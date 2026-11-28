@@ -68,7 +68,8 @@ the next snapshot; the release workflow takes the version from the tag the draft
    - snapshots the schemas the release shipped into each module's
      `src/test/resources/.../released/0.2.0/`, with the rows the release leaves in every state.
      `SchemaFreezeTest` then keeps those versioned files from changing, and `SchemaUpgradeTest` and
-     `RateLimitSchemaUpgradeTest` upgrade from them;
+     each extension's upgrade test, such as `RateLimitSchemaUpgradeTest`, upgrade from them. Every
+     test class named `*SchemaSnapshot` takes one, so a new extension needs no change here;
    - moves `main` to the next minor snapshot, unless `main` is already past the release. It points
      the README's BOM snippet and the quickstart at the release;
    - sets `pgtasks.api.baseline` to the release and empties the japicmp plugin's `<excludes>`, so

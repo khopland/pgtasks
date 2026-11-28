@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +49,11 @@ final class SafeObserver implements TaskObserver {
     @Override
     public void pushed(TopicRef<?> topic, List<Pushed> results) {
         run(() -> observer.pushed(topic, results));
+    }
+
+    @Override
+    public void held(TopicRef<?> topic, String gate, Duration delay) {
+        run(() -> observer.held(topic, gate, delay));
     }
 
     @Override

@@ -57,6 +57,11 @@ class TaskDashboardTest {
             return tasks -> tasks.eachTask(SCRATCH, task -> { });
         }
 
+        @Bean
+        ParkedTopics parking() {
+            return new ParkedTopics();
+        }
+
     }
 
     record Response(int status, HttpResponse<String> raw) {

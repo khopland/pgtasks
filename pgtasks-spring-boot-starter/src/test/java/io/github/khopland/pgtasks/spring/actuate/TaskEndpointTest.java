@@ -20,8 +20,10 @@ import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
+import io.github.khopland.pgtasks.spring.dashboard.ParkedTopics;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -47,6 +49,8 @@ class TaskEndpointTest {
     static final TopicRef<String> WORK = TopicRef.of("work", String.class);
     /** An empty topic for the delete route. */
     static final TopicRef<String> OLD_WORK = TopicRef.of("old-work", String.class);
+    /** A topic for the parking extension to park. */
+    static final TopicRef<String> PARKED = TopicRef.of("parked", String.class);
 
     /** No database: JDBC is on the test classpath for the other tests. */
     @SpringBootApplication(excludeName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
@@ -63,6 +67,17 @@ class TaskEndpointTest {
         @Bean
         TaskConfigurer oldTasks() {
             return tasks -> tasks.eachTask(OLD_WORK, task -> { });
+        }
+
+        @Bean
+        TaskConfigurer parkedTasks() {
+            return tasks -> tasks.eachTask(PARKED, task -> { });
+        }
+
+        /** An extension with an operator view, shaped like a pause. */
+        @Bean
+        ParkedTopics parking() {
+            return new ParkedTopics();
         }
 
     }
@@ -123,6 +138,46 @@ class TaskEndpointTest {
         assertThat(nodes.isArray()).isTrue();
         assertThat(nodes.valueStream().filter(node -> node.path("id").asLong() == self).findFirst()).as("this node is listed")
             .hasValueSatisfying(node -> assertThat(node.path("heartbeatAt").asString()).isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("An extension's view shows in the overview and on each topic, and its actions run only where it offers them")
+    void an_extensions_view_and_actions() throws Exception {
+        Response overview = get("/tasks");
+        JsonNode view = overview.body().path("extensions").get(0);
+        assertThat(view.path("name").asString()).isEqualTo("parking");
+        assertThat(view.path("title").asString()).isEqualTo("Parked topics");
+        assertThat(view.path("columns").valueStream().map(column -> column.path("kind").asString()).toList()).containsExactly("topic", "time", "flag");
+        assertThat(view.path("actions").valueStream().map(action -> action.path("name").asString()).toList()).containsExactly("park", "unpark", "break");
+        assertThat(overview.body().path("topics").valueStream().filter(topic -> topic.path("name").asString().equals("parked")).findFirst())
+            .hasValueSatisfying(topic -> assertThat(topic.path("extensions").path("parking").path("actions").get(0).asString()).isEqualTo("park"));
+
+        assertThat(send("POST", "/tasks/extensions/parking/unpark", "{\"topic\": \"parked\"}").status())
+            .as("not parked, so unpark isn't offered").isEqualTo(404);
+        assertThat(send("POST", "/tasks/extensions/parking/park", "{}").status()).as("neither a row nor a topic").isEqualTo(400);
+        assertThat(send("POST", "/tasks/extensions/parking/park", "{\"topic\": \"nowhere\"}").status()).isEqualTo(404);
+        assertThat(send("POST", "/tasks/extensions/nothing/park", "{\"topic\": \"parked\"}").status()).isEqualTo(404);
+
+        Response parked = send("POST", "/tasks/extensions/parking/park", "{\"topic\": \"parked\"}");
+        assertThat(parked.status()).isEqualTo(200);
+        assertThat(parked.body().path("topic").asString()).isEqualTo("parked");
+        JsonNode topic = get("/tasks/topics/parked").body();
+        assertThat(topic.path("extensions").path("parking").path("status").asString()).isEqualTo("parked");
+        JsonNode rows = get("/tasks/extensions/parking").body().path("rows");
+        assertThat(rows.get(0).path("key").asString()).isEqualTo("parked");
+        assertThat(rows.get(0).path("values").path("here").asBoolean()).isTrue();
+        assertThat(rows.get(0).path("values").path("since").asString()).as("an instant as text").isNotEmpty();
+        // A push wakes the topic, which asks the gate, and the gate holds it back.
+        tasks.independently().push(PARKED, "waiting", "x");
+        EngineFixture.await("the health to show the held topic", Duration.ofSeconds(10), () -> unchecked(() ->
+            get("/health").body().path("components").path("tasks").path("details").path("held").valueStream()
+                .anyMatch(held -> held.path("topic").asString().equals("parked") && held.path("gate").asString().equals("parking"))));
+
+        Response broken = send("POST", "/tasks/extensions/parking/break", "{\"topic\": \"parked\"}");
+        assertThat(broken.status()).isEqualTo(409);
+        assertThat(broken.body().path("error").asString()).isEqualTo("could not break parked");
+        assertThat(send("POST", "/tasks/extensions/parking/unpark", "{\"key\": \"parked\"}").status()).as("on the row").isEqualTo(200);
+        assertThat(get("/tasks/extensions/parking").body().path("rows").isEmpty()).isTrue();
     }
 
     @Test

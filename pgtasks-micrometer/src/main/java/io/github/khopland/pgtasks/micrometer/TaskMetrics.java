@@ -12,10 +12,12 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.ToDoubleFunction;
 
 import io.github.khopland.pgtasks.admin.QueueCounts;
 import io.github.khopland.pgtasks.admin.TopicSnapshot;
+import io.github.khopland.pgtasks.engine.EngineHealth;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 
 import io.micrometer.core.instrument.Gauge;
@@ -46,6 +48,9 @@ import org.slf4j.LoggerFactory;
  *       none is. Alert on this one rather than on dead letters, which may take days to come.</li>
  *   <li>{@value #SNAPSHOT_AGE}: seconds since the counts were taken. If it grows past a few
  *       snapshot intervals, no node is running housekeeping.</li>
+ *   <li>{@value #HELD}: seconds an extension's claim gate has held the topic back on this node
+ *       without a break, such as a pause, a rate limit or an open circuit breaker; 0 while it
+ *       claims. Read from this node's memory, not the snapshot, when bound to an engine.</li>
  * </ul>
  */
 public final class TaskMetrics implements MeterBinder {
@@ -58,6 +63,7 @@ public final class TaskMetrics implements MeterBinder {
     public static final String FAILING = "pgtasks.queue.failing";
     public static final String OLDEST_FAILING = "pgtasks.queue.oldest.failing";
     public static final String SNAPSHOT_AGE = "pgtasks.queue.snapshot.age";
+    public static final String HELD = "pgtasks.claims.held";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TaskMetrics.class);
     private static final Map<String, ToDoubleFunction<QueueCounts>> STATES = Map.of(
@@ -73,6 +79,8 @@ public final class TaskMetrics implements MeterBinder {
     private final BooleanSupplier readable;
     private final Duration refresh;
     private final InstantSource clock;
+    /** The topics this node's claim gates hold back now; none without an engine. */
+    private final Supplier<List<EngineHealth.HeldTopic>> held;
     private final Set<String> registered = ConcurrentHashMap.newKeySet();
     private volatile Map<String, TopicSnapshot> latest = Map.of();
     private volatile @Nullable Instant readAt;
@@ -80,14 +88,16 @@ public final class TaskMetrics implements MeterBinder {
 
     /** Reads the engine's snapshots at most every 10 seconds, once the engine has prepared the store. */
     public TaskMetrics(TaskEngine engine) {
-        this(engine.admin()::snapshots, engine::prepared, Duration.ofSeconds(10), InstantSource.system());
+        this(engine.admin()::snapshots, engine::prepared, Duration.ofSeconds(10), InstantSource.system(), engine::heldTopics);
     }
 
     public TaskMetrics(Callable<List<TopicSnapshot>> snapshots, Duration refresh, InstantSource clock) {
-        this(snapshots, () -> true, refresh, clock);
+        this(snapshots, () -> true, refresh, clock, List::of);
     }
 
-    private TaskMetrics(Callable<List<TopicSnapshot>> snapshots, BooleanSupplier readable, Duration refresh, InstantSource clock) {
+    private TaskMetrics(Callable<List<TopicSnapshot>> snapshots, BooleanSupplier readable, Duration refresh, InstantSource clock,
+                        Supplier<List<EngineHealth.HeldTopic>> held) {
+        this.held = held;
         this.readable = readable;
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.refresh = Objects.requireNonNull(refresh, "refresh");
@@ -167,6 +177,22 @@ public final class TaskMetrics implements MeterBinder {
             .tag("topic", topic)
             .strongReference(true)
             .register(registry);
+        Gauge.builder(HELD, this, metrics -> metrics.heldFor(topic))
+            .description("Seconds an extension's claim gate has held the topic back on this node without a break; 0 while it claims")
+            .baseUnit("seconds")
+            .tag("topic", topic)
+            .strongReference(true)
+            .register(registry);
+    }
+
+    /** How long this node's claim gates have held the topic back, by the clock the engine held it by; 0 if they don't. */
+    private double heldFor(String topic) {
+        for (EngineHealth.HeldTopic each : held.get()) {
+            if (each.topic().equals(topic)) {
+                return Math.max(0, Duration.between(each.since(), clock.instant()).toMillis() / 1000.0);
+            }
+        }
+        return 0;
     }
 
     private double count(String topic, ToDoubleFunction<QueueCounts> value) {

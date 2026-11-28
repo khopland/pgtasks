@@ -169,6 +169,23 @@ final class DefaultTasks implements Tasks {
         };
     }
 
+    /**
+     * Writes in a store transaction that its owner, an extension, commits: see
+     * {@link io.github.khopland.pgtasks.engine.extension.ExtensionContext#tasks(StoreTransaction)}.
+     */
+    TaskWriter in(StoreTransaction transaction) {
+        Objects.requireNonNull(transaction, "transaction");
+        return new TaskWriter() {
+            @Override
+            public <T> List<Pushed> push(TopicRef<T> topic, Insertion insertion, List<Creation<T>> creations) {
+                // The engine doesn't see this commit, so the push wakes the workers at commit.
+                List<Pushed> results = write(transaction, topic, insertion, creations, null, parent -> TaskObserver.Scope.NONE, null);
+                observed(topic, insertion, creations, results);
+                return results;
+            }
+        };
+    }
+
     @Override
     public TaskWriter independently() {
         return new TaskWriter() {

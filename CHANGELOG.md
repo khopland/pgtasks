@@ -13,8 +13,48 @@ break the API; the schema only ever moves forward, with migrations the store app
   retrying, suspended and dead-lettered tasks finish with the new outcome `cancelled`
   (`Outcome.CANCELLED`), kept 30 days by default (`retain.cancelled`); an active task is left to
   finish. Tasks a cancelled one held back under an ordering run next.
+- Extensions can show operators what they know and let them act on it: an `OperatorView` (a
+  table with actions on its rows, and a status and actions per topic) shows in the endpoint
+  (`GET /actuator/tasks/extensions/{view}`, `POST .../{view}/{action}`, and on each topic) and the
+  dashboard, without the starter knowing the extension.
+- Engine-wide extension settings: `Extension.engineSettings()`, set with `TaskEngineBuilder.set(key, value)`,
+  overridden as `extensions.<name>` (Spring: `pgtasks.extensions.<name>`), read with
+  `context.setting(key)` and listed by `engine.engineSettings()`.
+- More for extensions to work with: `context.transact(...)`, `tasks(transaction)` to push in the
+  extension's own transaction, `admin()`, `topics()`, `wake(topic)`, `runSoon(job)`, probe permits
+  (`Permit.probe`, whose counted failures don't use up an attempt), `Extension.of(name, install)`
+  and `engine.extension(Type.class)`.
+- A batch listener's `Completed` says whose fault a failure was (`Failure.FAILED` or `TASK_FAULT`),
+  and carries the error and the batch's duration; a gate's `claimed` names the tasks it let through.
+- Seeing what extensions do: `EngineHealth.held()` (and the health indicator, the endpoint, the
+  dashboard and the `pgtasks.claims.held` metric) shows topics an extension's claim gate holds
+  back, and `EngineHealth.jobs()` when each job last ran and failed. Observers are told with
+  `TaskObserver.held`.
+- `SettingKey.checking(...)`: a check every value of a setting passes, whether it comes from
+  the default, code or an override. The rate limits use it.
+- For extension stores: `StoreTransaction.onRollback(undo)`, `TaskStore.shared(type, create)` for
+  state kept in memory per store, and `ExtensionSchemaReleases` for an extension's schema upgrade
+  test. The release snapshots every `*SchemaSnapshot` test class.
+- `TaskTester.advance` runs the extensions' every-node jobs too, and `drain` moves the clock past
+  a claim gate's wait.
 
 ### Changed
+
+- An extension's `onStart` actions run before its engine's topics and jobs do, so nothing is
+  claimed before it is ready, and one that fails the start leaves no node behind.
+- A leader job of an extension runs under a lease of its own, named after the job, among the
+  nodes that have it, instead of only on the node running the engine's housekeeping, which might
+  not have the extension. `context.leading()` is now `context.leads(job)`.
+- A value set in code for an extension's setting goes through the key's check, like an
+  override: `options.set(RateLimit.PER_SECOND, Double.NaN)` fails the build instead of making
+  the topic poll without pause.
+- `ClaimGate.permit(topic, wanted)` is the method to implement, and `claimed` gets the claimed
+  task ids instead of a count. `BatchListener.Completed` has more fields; its four-field
+  constructor stays, for tests.
+- Hooks are taken only while an extension installs, and two extensions with the same `name()`
+  can't be installed in one engine.
+- Channel reloads are told the messages' payloads: `channel(name, payloads -> ...)`.
+- `TaskStore` has a new method, `shared`, and `StoreTransaction` a new default one, `onRollback`.
 
 - Schema version 2 (`V002__cancelled_outcome.sql`) adds the `cancelled` outcome. The store applies
   it on start; with schema mode `validate`, apply it with your migration tool first. Nodes of 0.1.0

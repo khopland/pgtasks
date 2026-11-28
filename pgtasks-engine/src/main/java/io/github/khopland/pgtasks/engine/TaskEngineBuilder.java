@@ -83,6 +83,9 @@ public final class TaskEngineBuilder {
     private TransactionBinding transactions = TransactionBinding.none();
     private TaskObserver observer = TaskObserver.NONE;
     private final List<Extension> extensions = new ArrayList<>();
+    /** Engine-wide extension settings set in code, by name, and their keys. */
+    private final Map<String, Object> engineValues = new LinkedHashMap<>();
+    private final Map<String, SettingKey<?>> engineKeys = new LinkedHashMap<>();
     private @Nullable String version;
     private @Nullable PayloadCodecs fallbackCodecs;
     private boolean topicsCreatedOnPush;
@@ -153,7 +156,8 @@ public final class TaskEngineBuilder {
      * {@code topics.<topic>.batch-size}, {@code ordering}, {@code poll-interval},
      * {@code batch-deadline}, {@code retry.max-attempts} (a number or {@code forever}),
      * {@code retry.give-up-after} (such as 7d, or {@code never}), {@code retry.first-backoff},
-     * {@code retry.max-backoff}, {@code retain.<outcome>}. An unknown topic or key fails the build,
+     * {@code retry.max-backoff}, {@code retain.<outcome>}; an extension's per-topic settings by
+     * their names, and its engine-wide ones as {@code extensions.<name>}. An unknown topic or key fails the build,
      * and so do overrides that contradict each other: {@code retry.max-attempts} with
      * {@code retry.give-up-after}, or a first backoff above the max backoff. A first backoff alone
      * above the code's max backoff raises the max with it; a max backoff alone below the code's
@@ -217,6 +221,19 @@ public final class TaskEngineBuilder {
     public TaskEngineBuilder observer(TaskObserver observer) {
         Objects.requireNonNull(observer);
         this.observer = this.observer == TaskObserver.NONE ? observer : TaskObserver.composite(List.of(this.observer, observer));
+        return this;
+    }
+
+    /**
+     * Sets an engine-wide setting an extension declares in {@link Extension#engineSettings()},
+     * over the key's default; an override ({@code extensions.<name>}) wins over this.
+     *
+     * @throws IllegalArgumentException if the value doesn't pass the key's check
+     */
+    public <T> TaskEngineBuilder set(SettingKey<T> key, T value) {
+        Objects.requireNonNull(key, "key");
+        engineValues.put(key.name(), key.checked(Objects.requireNonNull(value, key.name())));
+        engineKeys.put(key.name(), key);
         return this;
     }
 
@@ -518,8 +535,12 @@ public final class TaskEngineBuilder {
         }
 
         Map<String, Map<String, String>> topicOverrides = new LinkedHashMap<>();
-        splitOverrides(topics.keySet(), topicOverrides, problems);
+        Map<String, String> engineOverrides = new TreeMap<>();
+        splitOverrides(topics.keySet(), topicOverrides, engineOverrides, problems);
         Map<String, SettingKey<?>> keys = settingKeys(global, topics.values(), problems);
+        Map<String, Object> engineSettingValues = new LinkedHashMap<>();
+        Map<String, Setting> engineSettingReport = new LinkedHashMap<>();
+        engineSettings(keys, engineOverrides, engineSettingValues, engineSettingReport, problems);
 
         List<Topic<?>> resolved = new ArrayList<>();
         List<EffectiveSettings> effective = new ArrayList<>();
@@ -599,7 +620,8 @@ public final class TaskEngineBuilder {
             wakeUps = chosen.notifier();
         }
         EngineSettings settings = global.settings.withNotifier(notifications ? wakeUps : null).withTransactions(transactions).withCodecs(allCodecs).withObserver(observer);
-        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withExtensionSettings(extensionSettings);
+        TaskEngine engine = new TaskEngine(chosen, settings, resolved).withEffectiveSettings(effective).withExtensionSettings(extensionSettings)
+            .withEngineSettings(engineSettingValues, engineSettingReport);
         engine.withVersion(version);
         engine.withFallbackCodecs(fallbackCodecs);
         // A codec for every topic modules push to, now rather than at the first push.
@@ -711,10 +733,13 @@ public final class TaskEngineBuilder {
         return new Topic<>(TopicRef.of(topic.name, topic.type), topic.handler, codec, settings, topic.spec.resources);
     }
 
-    private void splitOverrides(Set<String> topics, Map<String, Map<String, String>> topicOverrides, List<String> problems) {
+    private void splitOverrides(Set<String> topics, Map<String, Map<String, String>> topicOverrides, Map<String, String> engineOverrides,
+                                List<String> problems) {
         for (Map.Entry<String, String> override : new TreeMap<>(overrides).entrySet()) {
             String key = override.getKey();
-            if (key.startsWith("topics.")) {
+            if (key.startsWith("extensions.")) {
+                engineOverrides.put(key.substring("extensions.".length()), override.getValue());
+            } else if (key.startsWith("topics.")) {
                 String rest = key.substring("topics.".length());
                 String topic = longestPrefix(topics, rest);
                 if (topic == null) {
@@ -723,7 +748,7 @@ public final class TaskEngineBuilder {
                     topicOverrides.computeIfAbsent(topic, ignored -> new LinkedHashMap<>()).put(rest.substring(topic.length() + 1), override.getValue());
                 }
             } else {
-                problems.add("Unknown override " + key + "; overrides start with topics.");
+                problems.add("Unknown override " + key + "; overrides start with topics. or extensions.");
             }
         }
     }
@@ -751,6 +776,58 @@ public final class TaskEngineBuilder {
             });
         }
         return keys;
+    }
+
+    /**
+     * The engine-wide extension settings: each key's default, what the builder set, and an
+     * override. A name is one key, not also a per-topic setting's.
+     */
+    private void engineSettings(Map<String, SettingKey<?>> topicKeys, Map<String, String> overridden, Map<String, Object> values,
+                                Map<String, Setting> report, List<String> problems) {
+        Map<String, SettingKey<?>> declared = new LinkedHashMap<>();
+        for (Extension extension : extensions) {
+            for (SettingKey<?> key : extension.engineSettings()) {
+                SettingKey<?> other = declared.putIfAbsent(key.name(), key);
+                if (other != null && !other.equals(key)) {
+                    problems.add("Two engine settings named " + key.name() + ": " + other + " and " + key);
+                }
+                if (topicKeys.containsKey(key.name())) {
+                    problems.add(key.name() + " is both a per-topic and an engine-wide setting; give one another name");
+                }
+            }
+        }
+        engineKeys.forEach((name, key) -> {
+            SettingKey<?> known = declared.get(name);
+            if (known == null) {
+                problems.add("The builder sets " + name + ", which no installed extension declares in engineSettings()");
+            } else if (!known.equals(key)) {
+                problems.add("The builder sets " + name + " with another key than the extension declares: " + key + ", not " + known);
+            }
+        });
+        overridden.forEach((name, text) -> {
+            if (!declared.containsKey(name)) {
+                problems.add("extensions." + name + ": unknown setting; installed extensions declare " + declared.keySet());
+            }
+        });
+        declared.forEach((name, key) -> {
+            Object value = key.defaultValue();
+            Source source = Source.DEFAULT;
+            if (engineValues.containsKey(name)) {
+                value = Objects.requireNonNull(engineValues.get(name));
+                source = Source.CODE;
+            }
+            String text = overridden.get(name);
+            if (text != null) {
+                try {
+                    value = key.parse(text);
+                    source = Source.OVERRIDE;
+                } catch (IllegalArgumentException | DateTimeParseException e) {
+                    problems.add("extensions." + name + ": " + e.getMessage());
+                }
+            }
+            values.put(name, value);
+            report.put(name, new Setting(describe(value), source));
+        });
     }
 
     /** A setting every topic has, from the defaults if nothing else set it. */

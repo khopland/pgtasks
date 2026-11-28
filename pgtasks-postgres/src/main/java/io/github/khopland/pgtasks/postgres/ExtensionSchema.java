@@ -27,13 +27,15 @@ import javax.sql.DataSource;
  */
 public final class ExtensionSchema {
 
+    private final String name;
     private final String historyTable;
     private final Class<?> owner;
     private final String location;
     private final List<String> files;
     private final List<String> tables;
 
-    private ExtensionSchema(String historyTable, Class<?> owner, String location, List<String> files, List<String> tables) {
+    private ExtensionSchema(String name, String historyTable, Class<?> owner, String location, List<String> files, List<String> tables) {
+        this.name = name;
         this.historyTable = historyTable;
         this.owner = owner;
         this.location = location;
@@ -73,7 +75,7 @@ public final class ExtensionSchema {
         for (String table : tables) {
             TaskSchema.validName(table);
         }
-        return new ExtensionSchema(history, owner, strip(location), List.copyOf(files), List.copyOf(tables));
+        return new ExtensionSchema(name, history, owner, strip(location), List.copyOf(files), List.copyOf(tables));
     }
 
     /** Applies or checks the files according to the store's schema mode; extensions call this before using their tables. */
@@ -117,6 +119,35 @@ public final class ExtensionSchema {
                 }
             }
         }
+    }
+
+    /** The extension's name, as {@link #of} was given it. */
+    public String name() {
+        return name;
+    }
+
+    /** The table that records which files are applied: {@code <name>_schema_history}. */
+    public String historyTable() {
+        return historyTable;
+    }
+
+    /** The classpath directory of the files, without a leading or trailing slash. */
+    public String location() {
+        return location;
+    }
+
+    /** The files, in the order they are applied. */
+    public List<String> files() {
+        return files;
+    }
+
+    /** The tables the files make, in the order their foreign keys need. */
+    public List<String> tables() {
+        return tables;
+    }
+
+    Class<?> owner() {
+        return owner;
     }
 
     /** The classpath location and files, for error messages and migration-tool configuration. */

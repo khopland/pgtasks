@@ -83,7 +83,8 @@ final class TaskDashboardApi implements HttpRequestHandler {
             case "POST 3" -> {
                 Map<String, Object> body = body(request);
                 yield endpoint.act(parts.get(0), parts.get(1), parts.get(2), text(body, "ids"), text(body, "outcome"), text(body, "before"),
-                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"), text(body, "identifier"));
+                    text(body, "error"), text(body, "failedFrom"), text(body, "failedUntil"), text(body, "all"), text(body, "identifier"),
+                    text(body, "key"), text(body, "topic"));
             }
             case "DELETE 2" -> endpoint.delete(parts.get(0), parts.get(1));
             default -> method.equals("GET") || method.equals("POST") || method.equals("DELETE")
