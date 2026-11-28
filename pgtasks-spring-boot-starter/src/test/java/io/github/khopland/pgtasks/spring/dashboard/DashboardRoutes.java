@@ -64,6 +64,7 @@ final class DashboardRoutes {
         examples.put("purge", new String[] {"topic=work", null, "{\"outcome\": \"succeeded\", \"before\": \"2000-01-01T00:00:00Z\"}"});
         examples.put("deleteTopic", new String[] {"topic=scratch", null, null});
         examples.put("task", new String[] {"id=" + taskId, null, null});
+        examples.put("extension", new String[] {"view=parking", null, null});
         examples.put("extensionAction", new String[] {"view=parking&action=park", null, "{\"topic\": \"work\"}"});
 
         Map<String, String[]> routes = routes();

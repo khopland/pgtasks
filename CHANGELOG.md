@@ -21,17 +21,27 @@ break the API; the schema only ever moves forward, with migrations the store app
   overridden as `extensions.<name>` (Spring: `pgtasks.extensions.<name>`), read with
   `context.setting(key)` and listed by `engine.engineSettings()`.
 - More for extensions to work with: `context.transact(...)`, `tasks(transaction)` to push in the
-  extension's own transaction, `admin()`, `topics()`, `wake(topic)`, `runSoon(job)`, probe permits
+  extension's own transaction, `admin()`, `topics()`, `wake(topic)`, probe permits
   (`Permit.probe`, whose counted failures don't use up an attempt), `Extension.of(name, install)`
   and `engine.extension(Type.class)`.
+- `context.job(...)` returns the `Job`: `runsHere()` says whether this node runs it now, and
+  `runSoon()` runs it now besides its schedule, on the node that holds a leader job's lease even
+  when asked on another, told through the store's notifications. `context.channel(...)` returns
+  the `Channel`, to `send` messages on.
+- A claim gate's wait can say why, `Permit.waitFor(delay, "paused")`: the health, the endpoint and
+  the dashboard show the reason with the held topic.
+- `OperatorView.topics(names)`: what a view says about many topics, asked once per request, so a
+  view that reads its state from the store reads it in one go.
 - A batch listener's `Completed` says whose fault a failure was (`Failure.FAILED` or `TASK_FAULT`),
   and carries the error and the batch's duration; a gate's `claimed` names the tasks it let through.
 - Seeing what extensions do: `EngineHealth.held()` (and the health indicator, the endpoint, the
   dashboard and the `pgtasks.claims.held` metric) shows topics an extension's claim gate holds
-  back, and `EngineHealth.jobs()` when each job last ran and failed. Observers are told with
-  `TaskObserver.held`.
+  back: at once for a wait with a reason, and once the topic has gone a poll interval without a
+  claim for one without, so a rate limit spacing claims out doesn't show.
+  `EngineHealth.jobs()` shows when each job last ran and failed. Observers are told of every wait
+  with `TaskObserver.held`.
 - `SettingKey.checking(...)`: a check every value of a setting passes, whether it comes from
-  the default, code or an override. The rate limits use it.
+  the default, code or an override; checks add up. The rate limits use it.
 - For extension stores: `StoreTransaction.onRollback(undo)`, `TaskStore.shared(type, create)` for
   state kept in memory per store, and `ExtensionSchemaReleases` for an extension's schema upgrade
   test. The release snapshots every `*SchemaSnapshot` test class.
@@ -40,17 +50,30 @@ break the API; the schema only ever moves forward, with migrations the store app
 
 ### Changed
 
-- An extension's `onStart` actions run before its engine's topics and jobs do, so nothing is
-  claimed before it is ready, and one that fails the start leaves no node behind.
-- A leader job of an extension runs under a lease of its own, named after the job, among the
-  nodes that have it, instead of only on the node running the engine's housekeeping, which might
-  not have the extension. `context.leading()` is now `context.leads(job)`.
+- An extension's `onStart` actions run before its engine's channel reloads, jobs and topics do, so
+  nothing is claimed before it is ready, and one that fails the start leaves no node behind. A
+  message on a channel that arrives meanwhile waits for them. They take a `Callback`, which may
+  throw checked exceptions.
+- An extension's `onStop` actions run last, once the topics, reloads and jobs have stopped, in the
+  reverse order the extensions were installed, and only for extensions whose start actions all ran.
+- A leader job of an extension runs under a lease of its own, named after its extension and
+  itself (`<extension>/<job>`), among the nodes that have it, instead of only on the node running
+  the engine's housekeeping, which might not have the extension. `context.leading()` is gone; ask
+  the job's `runsHere()`.
+- `context.capability(type)` makes each capability once per store, so engines on one store share
+  it; it made a new one on every call.
 - A value set in code for an extension's setting goes through the key's check, like an
   override: `options.set(RateLimit.PER_SECOND, Double.NaN)` fails the build instead of making
   the topic poll without pause.
 - `ClaimGate.permit(topic, wanted)` is the method to implement, and `claimed` gets the claimed
   task ids instead of a count. `BatchListener.Completed` has more fields; its four-field
-  constructor stays, for tests.
+  constructor stays, for tests, with `withFailure` and `withDuration`.
+- `ClaimGate.Permit`, `BatchListener.Completed`, `SettingKey` and `EngineHealth` are final classes
+  instead of records, so they can grow without breaking again: the same accessors, and the
+  factories and public constructors they had. Two `SettingKey`s are equal when their name, type
+  and default are, and the declared key's check applies to a value set with another.
+- The interfaces only the engine implements (`ExtensionContext`, its `Job` and `Channel`) get new
+  methods in minor releases; the API check allows that for them.
 - Hooks are taken only while an extension installs, and two extensions with the same `name()`
   can't be installed in one engine.
 - Channel reloads are told the messages' payloads: `channel(name, payloads -> ...)`.

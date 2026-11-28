@@ -89,7 +89,7 @@ public final class ClusterRateLimit implements Extension {
                     // holds the topic back instead. A stale reservation fades with its window.
                     LOGGER.log(System.Logger.Level.WARNING,
                         "The shared rate limit counter failed for " + topic + "; holding claims back", e);
-                    return Permit.waitFor(FAILED_COUNTER_WAIT);
+                    return Permit.waitFor(FAILED_COUNTER_WAIT, "rate limit counter failed");
                 }
                 if (admitted.waits()) {
                     return Permit.waitFor(admitted.delay());

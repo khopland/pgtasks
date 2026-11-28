@@ -52,8 +52,8 @@ final class SafeObserver implements TaskObserver {
     }
 
     @Override
-    public void held(TopicRef<?> topic, String gate, Duration delay) {
-        run(() -> observer.held(topic, gate, delay));
+    public void held(TopicRef<?> topic, String gate, @Nullable String reason, Duration delay) {
+        run(() -> observer.held(topic, gate, reason, delay));
     }
 
     @Override

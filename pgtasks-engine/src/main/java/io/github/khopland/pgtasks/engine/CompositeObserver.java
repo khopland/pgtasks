@@ -10,6 +10,8 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Several observers seen as one, each wrapped so one that throws doesn't keep the others from
  * seeing anything. A push stores every observer's headers; for a name two give, the first one's.
@@ -46,8 +48,8 @@ final class CompositeObserver implements TaskObserver {
     }
 
     @Override
-    public void held(TopicRef<?> topic, String gate, Duration delay) {
-        observers.forEach(observer -> observer.held(topic, gate, delay));
+    public void held(TopicRef<?> topic, String gate, @Nullable String reason, Duration delay) {
+        observers.forEach(observer -> observer.held(topic, gate, reason, delay));
     }
 
     @Override

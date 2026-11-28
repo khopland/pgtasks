@@ -1,5 +1,6 @@
 package io.github.khopland.pgtasks.engine.extension;
 
+import java.sql.SQLException;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Optional;
@@ -20,6 +21,15 @@ import org.jspecify.annotations.Nullable;
  * operator APIs, and the hooks it can register. Hooks are registered while the extension is
  * installed: one registered after {@link Extension#install} returns throws. The rest can be used
  * for as long as the engine lives, so an extension may keep its context.
+ *
+ * <p>The engine starts an extension's hooks in this order: its {@linkplain #onStart start
+ * actions}, then its {@linkplain #channel channel reloads} (messages that arrived meanwhile are
+ * kept for them), its {@linkplain #job jobs}, and the topics, which ask its gates. It stops them
+ * the other way round: the topics finish their batches, the reloads and jobs end, and then the
+ * {@linkplain #onStop stop actions} run.
+ *
+ * <p>The engine implements this interface, its {@link Job} and its {@link Channel}; extensions
+ * only call them. Minor releases add methods to them, so don't implement them.
  */
 public interface ExtensionContext {
 
@@ -28,8 +38,9 @@ public interface ExtensionContext {
 
     /**
      * The extension's own view of the store, from the first {@link io.github.khopland.pgtasks.spi.StoreCapability}
-     * on the class path that provides one of this type for this store. One instance per store and
-     * type: engines that share a store, as a {@code TaskTester} with several nodes does, share it.
+     * on the class path that provides one of this type for this store. Made once per store and
+     * type, the first time it is asked for: engines that share a store, as the nodes of a
+     * {@code TaskTester} do, get the same one.
      *
      * @throws IllegalStateException if none does: the module that provides it is missing
      */
@@ -86,23 +97,6 @@ public interface ExtensionContext {
     <T> T setting(SettingKey<T> key);
 
     /**
-     * Whether this node holds the lease of the {@linkplain HousekeepingJob#leader leader job} of
-     * this name now. A leader job that loops over batches stops when it turns false. False for a
-     * name this engine has no leader job by, and while the engine isn't running.
-     */
-    boolean leads(String job);
-
-    /**
-     * Runs this engine's job of that name once more, soon, besides its schedule: on its own thread
-     * once a run in progress ends, as if its interval had passed. For work an operator asked for
-     * now, such as a recurring task to run now. A leader job runs only on the node that holds its
-     * lease; nothing runs while the engine isn't running.
-     *
-     * @throws IllegalArgumentException if this engine has no extension job by that name
-     */
-    void runSoon(String job);
-
-    /**
      * Wakes this node's worker for a topic, so it asks the claim gates again now instead of after
      * the delay a gate gave: for a gate whose answer changed, such as on a message on its
      * {@link #channel}. Nothing for a topic this node doesn't run.
@@ -131,33 +125,79 @@ public interface ExtensionContext {
     /**
      * Runs a job on a fixed delay while the engine runs; see {@link HousekeepingJob}.
      *
+     * @return the job, to ask whether this node runs it now, or to have it run soon
      * @throws IllegalArgumentException if this engine has a job by that name already, its own
      *                                  included, such as {@code promotion}
      */
-    void job(HousekeepingJob job);
+    Job job(HousekeepingJob job);
+
+    /**
+     * A job of this engine, as {@link #job} registered it. A job that needs it while it runs,
+     * such as one that loops over batches, keeps it in a field of the extension.
+     */
+    interface Job {
+
+        /** The job's name, as its {@link HousekeepingJob} gave it. */
+        String name();
+
+        /**
+         * Whether this node runs the job now: while the engine runs, and for a
+         * {@linkplain HousekeepingJob#leader leader job} only while this node holds its lease. A
+         * job that loops over batches stops when it turns false.
+         */
+        boolean runsHere();
+
+        /**
+         * Runs the job once more, soon, besides its schedule, as if its interval had passed: for
+         * work an operator asked for now, such as a recurring task to run now. It runs on the node
+         * that runs the job: here, on the job's own thread once a run in progress ends, or, for a
+         * leader job whose lease another node holds, on that node, told through the store's
+         * notifications. While no node holds the lease, or if the notification is lost, it runs
+         * at its next interval. Nothing runs while this engine isn't running.
+         */
+        void runSoon();
+    }
 
     /**
      * Reloads something when it may have changed on another node: on a message on the channel
-     * (sent with {@link TaskStore#notify} in the transaction that changed it, so it arrives once
+     * (sent with {@link Channel#send} in the transaction that changed it, so it arrives once
      * that commits), after the notification connection was lost, and on every heartbeat, since a
-     * message may get lost. Runs on a thread of its own; requests that arrive while one waits are
-     * served by that one run. Channel names are lowercase words ({@link io.github.khopland.pgtasks.spi.Notifier#CHANNEL});
-     * {@code ready} and {@code topic} are the engine's.
+     * message may get lost. Runs on a thread of its own, never before the extensions' start
+     * actions have run; requests that arrive while one waits are served by that one run. Channel
+     * names are lowercase words ({@link io.github.khopland.pgtasks.spi.Notifier#CHANNEL});
+     * {@code ready}, {@code topic} and {@code job} are the engine's.
+     *
+     * @return the channel, to send messages on
      */
-    void channel(String name, Runnable reload);
+    Channel channel(String name, Runnable reload);
 
     /**
      * Like {@link #channel(String, Runnable)}, told what the messages since the last run said:
      * their payloads, or an empty set when anything may have changed, after a lost connection,
      * on the heartbeat, or when more messages came in than it is worth listing.
      */
-    void channel(String name, Reload reload);
+    Channel channel(String name, Reload reload);
 
     /** A reload told what changed; see {@link #channel(String, Reload)}. */
     @FunctionalInterface
     interface Reload {
         /** @param payloads the messages' payloads, or empty when anything may have changed */
         void reload(Set<String> payloads) throws Exception;
+    }
+
+    /** A notification channel, as {@link #channel} registered it. */
+    interface Channel {
+
+        /** The channel's name. */
+        String name();
+
+        /**
+         * Sends a message on the channel in this transaction: once it commits, the reloads on the
+         * channel get the payload, on every node of every application that shares the store, and
+         * none do if it rolls back. Keep the payload short, such as a topic's name; see
+         * {@link TaskStore#notify}.
+         */
+        void send(StoreTransaction transaction, String payload) throws SQLException;
     }
 
     /**
@@ -169,11 +209,26 @@ public interface ExtensionContext {
     void operatorView(OperatorView view);
 
     /**
-     * Runs each time the engine starts, before its topics and jobs do, so nothing is claimed
-     * before the extension is ready; also after a restart. One that throws fails the start.
+     * Runs each time the engine starts, before the channel reloads, jobs and topics do, so nothing
+     * is claimed before the extension is ready; also after a restart. Extensions start in the
+     * order they were installed, and each one's actions run in the order it registered them. One
+     * that throws fails the start: the stop actions then run for the extensions that started
+     * before it, not for this one.
      */
-    void onStart(Runnable action);
+    void onStart(Callback action);
 
-    /** Runs each time the engine stops, before its topics stop. One that throws is logged. */
-    void onStop(Runnable action);
+    /**
+     * Runs each time the engine stops, once its topics, channel reloads and jobs have stopped, so
+     * its gates, listeners, reloads and jobs are done with before it runs. Extensions stop in the
+     * reverse order they were installed, and each one's actions run in the reverse order it
+     * registered them, only if all its start actions ran. One that throws is logged, and the
+     * others still run.
+     */
+    void onStop(Callback action);
+
+    /** A start or stop action; see {@link #onStart} and {@link #onStop}. */
+    @FunctionalInterface
+    interface Callback {
+        void run() throws Exception;
+    }
 }

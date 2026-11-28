@@ -576,7 +576,18 @@ public final class TaskEngineBuilder {
                 }
             });
             Map<String, Object> extensionValues = new LinkedHashMap<>();
-            keys.keySet().forEach(name -> extensionValues.put(name, values.get(name)));
+            keys.forEach((name, key) -> {
+                Object value = values.get(name);
+                if (value != null && !Source.OVERRIDE.equals(sources.get(name))) {
+                    // Set in code, maybe with another key of the same name: the declared key's check applies.
+                    try {
+                        key.checked(value);
+                    } catch (IllegalArgumentException e) {
+                        problems.add("topics." + topic.name + ": " + e.getMessage());
+                    }
+                }
+                extensionValues.put(name, value);
+            });
             extensionSettings.put(topic.name, extensionValues);
             try {
                 resolved.add(build(topic, values, allCodecs, fallbackCodecs));
@@ -815,6 +826,12 @@ public final class TaskEngineBuilder {
             if (engineValues.containsKey(name)) {
                 value = Objects.requireNonNull(engineValues.get(name));
                 source = Source.CODE;
+                // Set with a key equal to the declared one, whose check applies too.
+                try {
+                    key.checked(value);
+                } catch (IllegalArgumentException e) {
+                    problems.add(e.getMessage());
+                }
             }
             String text = overridden.get(name);
             if (text != null) {

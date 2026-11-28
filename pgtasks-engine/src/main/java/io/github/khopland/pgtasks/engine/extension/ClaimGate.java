@@ -6,6 +6,8 @@ import java.util.Objects;
 
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Asked before every claim on this node: how many tasks a topic may claim now, or how long it
  * waits first. A local rate limit, a pause or a circuit breaker is a gate. With several gates the
@@ -16,7 +18,10 @@ import io.github.khopland.pgtasks.TopicRef;
  * <p>A gate that throws is logged and skipped, and the claim goes ahead without it, so a gate
  * that must hold claims back when its own storage fails catches the error and returns a wait.
  * While a gate holds a topic back, the engine's health, the starter's endpoint and the metrics
- * show it, under the name of the extension that registered it.
+ * show it under the name of the extension that registered it: at once for a wait that gives a
+ * {@linkplain Permit#waitFor(Duration, String) reason}, such as a pause, and otherwise once the
+ * topic has been held for its poll interval without a claim, so a rate limit spacing claims out
+ * doesn't show.
  */
 @FunctionalInterface
 public interface ClaimGate {
@@ -38,37 +43,59 @@ public interface ClaimGate {
     }
 
     /**
-     * A claim of at most {@code maxTasks}, or, with a delay, none now: the topic asks again after
-     * the delay, or sooner when it is {@linkplain ExtensionContext#wake woken}.
-     *
-     * @param probing whether the claim is a probe: see {@link #probe(int)}
+     * A claim of at most some number of tasks, or none now and a wait: the topic asks again after
+     * the delay, or sooner when it is {@linkplain ExtensionContext#wake woken}. Made with
+     * {@link #ANY}, {@link #atMost}, {@link #waitFor} and {@link #probe}.
      */
-    record Permit(int maxTasks, Duration delay, boolean probing) {
+    final class Permit {
 
         /** Claim as the topic's batch size says. */
-        public static final Permit ANY = new Permit(Integer.MAX_VALUE, Duration.ZERO, false);
+        public static final Permit ANY = new Permit(Integer.MAX_VALUE, Duration.ZERO, false, null);
 
-        public Permit {
+        private final int maxTasks;
+        private final Duration delay;
+        private final boolean probing;
+        private final @Nullable String reason;
+
+        /** A claim of at most {@code maxTasks}, or, with zero tasks and a delay, a wait; see {@link #atMost} and {@link #waitFor}. */
+        public Permit(int maxTasks, Duration delay) {
+            this(maxTasks, delay, false, null);
+        }
+
+        private Permit(int maxTasks, Duration delay, boolean probing, @Nullable String reason) {
             Objects.requireNonNull(delay, "delay");
+            if (probing && maxTasks < 1) {
+                throw new IllegalArgumentException("A probe claims at least one task, not " + maxTasks);
+            }
             if (maxTasks < 0 || delay.isNegative() || (maxTasks == 0) == delay.isZero()) {
                 throw new IllegalArgumentException("A permit claims at least one task, or waits a positive time");
             }
-            if (probing && maxTasks == 0) {
-                throw new IllegalArgumentException("A probe claims at least one task");
+            if (reason != null && reason.isBlank()) {
+                throw new IllegalArgumentException("A reason to wait says something, such as \"paused\"");
             }
-        }
-
-        /** A permit that isn't a probe. */
-        public Permit(int maxTasks, Duration delay) {
-            this(maxTasks, delay, false);
+            this.maxTasks = maxTasks;
+            this.delay = delay;
+            this.probing = probing;
+            this.reason = reason == null ? null : reason.strip();
         }
 
         public static Permit atMost(int tasks) {
             return new Permit(tasks, Duration.ZERO);
         }
 
+        /** No claim now: the topic asks again after the delay, or when it is woken. */
         public static Permit waitFor(Duration delay) {
             return new Permit(0, delay);
+        }
+
+        /**
+         * Like {@link #waitFor(Duration)}, saying why in a few words, such as {@code "paused"} or
+         * {@code "breaker open"}: a hold rather than a throttle. The health, the endpoint and the
+         * dashboard show the topic held back at once, with the reason, where a wait without one
+         * shows only once the topic has been held for its poll interval.
+         */
+        public static Permit waitFor(Duration delay, String reason) {
+            return new Permit(0, delay, false, Objects.requireNonNull(reason, "reason"));
         }
 
         /**
@@ -79,11 +106,50 @@ public interface ClaimGate {
          * task with no attempts left is still dead-lettered.
          */
         public static Permit probe(int tasks) {
-            return new Permit(tasks, Duration.ZERO, true);
+            return new Permit(tasks, Duration.ZERO, true, null);
+        }
+
+        /** At most how many tasks the claim takes; zero when it waits. */
+        public int maxTasks() {
+            return maxTasks;
+        }
+
+        /** How long the topic waits before it asks again; zero when it claims. */
+        public Duration delay() {
+            return delay;
+        }
+
+        /** Whether the claim is a {@linkplain #probe probe}. */
+        public boolean probing() {
+            return probing;
+        }
+
+        /** Why it waits, if the gate said; see {@link #waitFor(Duration, String)}. */
+        public @Nullable String reason() {
+            return reason;
         }
 
         public boolean waits() {
             return maxTasks == 0;
+        }
+
+        @Override
+        public boolean equals(@Nullable Object other) {
+            return other instanceof Permit permit && permit.maxTasks == maxTasks && permit.delay.equals(delay) && permit.probing == probing
+                && Objects.equals(permit.reason, reason);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(maxTasks, delay, probing, reason);
+        }
+
+        @Override
+        public String toString() {
+            if (waits()) {
+                return "Permit[wait " + delay + (reason == null ? "" : ", " + reason) + "]";
+            }
+            return "Permit[" + (maxTasks == Integer.MAX_VALUE ? "any" : "at most " + maxTasks) + (probing ? ", probe" : "") + "]";
         }
     }
 }

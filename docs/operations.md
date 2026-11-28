@@ -167,16 +167,19 @@ POST   /actuator/tasks/topics/{topic}/cancel             unfinished tasks but ac
 POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
 DELETE /actuator/tasks/topics/{topic}                    a topic no longer used, with its history
 GET    /actuator/tasks/tasks/{id}                        a task
-GET    /actuator/tasks/extensions/{view}                 an extension's view: its rows and the actions it offers
+GET    /actuator/tasks/extensions/{view}                 an extension's view with its rows, and the actions it offers
 POST   /actuator/tasks/extensions/{view}/{action}        an extension's action: {"key": "..."} on a row, or {"topic": "orders"}
 ```
 
-Extensions show what they know through views ([Operator views](extensions.md#operator-views)):
-each topic says what each view says about it, such as
-`"extensions": {"pause": {"status": "paused", "actions": ["resume"]}}`, and an action runs only on
-a row or topic that offers it (404 otherwise, 409 with the message when it fails). The overview
-also lists the extensions' engine-wide settings and where each came from, and this node's topics
-that an extension's claim gate holds back.
+Extensions show what they know through views ([Operator views](extensions.md#operator-views)).
+The overview lists the views without their rows, which `extensions/{view}` serves, and each topic
+says what each view says about it, with the actions it offers there, such as
+`"extensions": {"pause": {"status": "paused", "actions": [{"name": "resume", "label": "Resume", "confirm": null}]}}`.
+An action runs only on a row or topic that offers it (404 otherwise, 409 with the message when it
+fails). A view that fails shows its `"error"` in its place (on a topic, under `extensionErrors`;
+its rows answer 500) and the rest of the response as usual, and is logged once until it works
+again. The overview also lists the extensions' engine-wide settings and where each came from,
+and this node's topics that an extension's claim gate holds back, with the reason the gate gave.
 
 Every `POST` needs `Content-Type: application/json` and a JSON object body, `{}` at least.
 Without one, Actuator answers 415; with Spring Security rules that deny everything else, the
@@ -191,8 +194,9 @@ can still tell failures apart and revive them by type. Everything here is also l
 The `tasks` health indicator is UP while the engine runs and its heartbeat is on time. It is
 DOWN if the heartbeat is late or the database can't be reached, and OUT_OF_SERVICE before start
 and after stop. Its details show leadership, notifications, claims stuck past their deadline,
-topics an extension's claim gate holds back (`held`: a pause, a rate limit, an open circuit
-breaker) and jobs whose last run failed (`failingJobs`), without changing the status.
+topics an extension's claim gate holds back (`held`: a pause or an open circuit breaker at once,
+with its `reason`; a rate limit once the topic has gone a poll interval without a claim) and jobs
+whose last run failed (`failingJobs`), without changing the status.
 
 A claim is stuck when its handler ignored cancellation after the batch deadline: Java can't stop
 the thread, so its tasks stay active, and their concurrency taken, until it ends, rather than
@@ -315,7 +319,7 @@ With Micrometer (Spring Boot Actuator sets it up), the engine records:
 | `pgtasks.queue.oldest.failing{topic}` | `pgtasks_queue_oldest_failing_seconds` | Since when the longest-failing task has failed |
 | `pgtasks.queue.snapshot.age{topic}` | `pgtasks_queue_snapshot_age_seconds` | Seconds since the counts were taken |
 | `pgtasks.queue.topics` | `pgtasks_queue_topics` | Topics in the last snapshot |
-| `pgtasks.claims.held{topic}` | `pgtasks_claims_held_seconds` | Seconds an extension's claim gate has held the topic back on this node without a break, 0 while it claims |
+| `pgtasks.claims.held{topic}` | `pgtasks_claims_held_seconds` | Seconds an extension's claim gate has held the topic back on this node without a break, 0 while it claims or a rate limit only spaces its claims out |
 
 Prometheus names add the base unit and, for counters, `_total`, as Micrometer's Prometheus
 registry writes them. Write alerts against those.

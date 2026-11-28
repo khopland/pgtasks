@@ -5,6 +5,7 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -12,6 +13,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import io.github.khopland.pgtasks.Outcome;
 import io.github.khopland.pgtasks.admin.DeadLetterQuery;
@@ -27,6 +30,8 @@ import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.extension.OperatorView;
 
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.endpoint.SecurityContext;
 import org.springframework.boot.actuate.endpoint.Show;
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation;
@@ -53,13 +58,15 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
  * POST   /actuator/tasks/topics/{topic}/purge              {"outcome": "succeeded", "before": "2026-01-01T00:00:00Z"}
  * GET    /actuator/tasks/tasks/{id}                        a task
  * DELETE /actuator/tasks/topics/{topic}                     a topic no longer used, with its history
- * GET    /actuator/tasks/extensions/{view}                 an extension's view: its rows, and the actions it offers
+ * GET    /actuator/tasks/extensions/{view}                 an extension's view with its rows, and the actions it offers
  * POST   /actuator/tasks/extensions/{view}/{action}        an extension's action: {"key": "..."} on a row, or {"topic": "orders"}
  * </pre>
  *
- * Extensions add what they show and do through {@code OperatorView}s: each topic says what each
- * view says about it ({@code "extensions": {"pause": {"status": "paused", "actions": ["resume"]}}}),
- * and an action runs only on a row or topic that offers it.
+ * Extensions add what they show and do through {@code OperatorView}s. The overview lists each
+ * view without its rows, and each topic says what each view says about it, with the actions it
+ * offers there ({@code "extensions": {"pause": {"status": "paused", "actions": [{"name": "resume",
+ * "label": "Resume", "confirm": null}]}}}). An action runs only on a row or topic that offers it. A
+ * view that fails shows its {@code "error"} in its place, and the rest of the response as usual.
  *
  * Request bodies are flat JSON objects of strings and numbers, as Actuator reads them,
  * so a list of ids is one comma-separated string.
@@ -74,12 +81,15 @@ import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpoint;
 public class TaskEndpoint {
 
     static final int CONFLICT = 409;
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskEndpoint.class);
     static final String HIDDEN = "******";
     private static final int DEAD_LETTER_PAGE = 50;
     private static final int TASK_PAGE = 50;
     private final TaskEngine engine;
     private final Show show;
     private final Set<String> roles;
+    /** The views whose last call failed: one that keeps failing is logged in full once, not on every request. */
+    private final Set<String> failingViews = ConcurrentHashMap.newKeySet();
 
     /** Shows no payloads, outputs or error messages. */
     public TaskEndpoint(TaskEngine engine) {
@@ -97,16 +107,27 @@ public class TaskEndpoint {
     public Map<String, Object> overview() throws Exception {
         Map<String, Object> body = new LinkedHashMap<>();
         Map<String, List<String>> modules = new TreeMap<>();
-        List<Map<String, Object>> topics = engine.admin().topics().stream().map(status -> {
+        List<TopicStatus> statuses = engine.admin().topics();
+        Map<String, String> viewErrors = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> states = extensionStates(
+            statuses.stream().map(TopicStatus::name).collect(Collectors.toCollection(LinkedHashSet::new)), viewErrors);
+        List<Map<String, Object>> topics = statuses.stream().map(status -> {
             modules.computeIfAbsent(status.module() == null ? "(other nodes)" : status.module(), ignored -> new ArrayList<>())
                 .add(status.name());
-            return topic(status);
+            return topic(status, states.getOrDefault(status.name(), Map.of()));
         }).toList();
         body.put("modules", modules);
         body.put("topics", topics);
         body.put("node", node());
         body.put("nodes", engine.admin().nodes().stream().map(TaskEndpoint::node).toList());
-        body.put("extensions", engine.operatorViews().stream().map(TaskEndpoint::view).toList());
+        body.put("extensions", engine.operatorViews().stream().map(view -> {
+            Map<String, Object> each = view(view, false);
+            String error = viewErrors.get(view.name());
+            if (error != null) {
+                each.putIfAbsent("error", error);
+            }
+            return each;
+        }).toList());
         if (!engine.engineSettings().isEmpty()) {
             Map<String, Object> settings = new TreeMap<>();
             engine.engineSettings().forEach((key, setting) -> settings.put(key, setting(setting)));
@@ -120,13 +141,21 @@ public class TaskEndpoint {
         boolean shown = show.isShown(security == null ? SecurityContext.NONE : security, roles);
         return switch (kind) {
             case "topics" -> found(status(name).map(status -> {
-                Map<String, Object> body = topic(status);
+                Map<String, String> viewErrors = new LinkedHashMap<>();
+                Map<String, Object> body = topic(status, extensionStates(Set.of(name), viewErrors).getOrDefault(name, Map.of()));
+                if (!viewErrors.isEmpty()) {
+                    body.put("extensionErrors", viewErrors);
+                }
                 engine.effectiveSettings().stream().filter(settings -> settings.topic().equals(name)).findFirst()
                     .ifPresent(settings -> body.put("settings", settings(settings)));
                 return body;
             }));
             case "tasks" -> found(number(name).flatMap(this::task).map(view -> task(view, shown)));
-            case "extensions" -> found(view(name).map(TaskEndpoint::view));
+            case "extensions" -> view(name).map(view -> {
+                Map<String, Object> body = view(view, true);
+                return new WebEndpointResponse<Object>(body, body.containsKey("error") ? WebEndpointResponse.STATUS_INTERNAL_SERVER_ERROR
+                    : WebEndpointResponse.STATUS_OK);
+            }).orElseGet(TaskEndpoint::notFound);
             default -> notFound();
         };
     }
@@ -255,16 +284,22 @@ public class TaskEndpoint {
         if ((key == null) == (topic == null)) {
             return badRequest("Name what to " + action + ": a row's \"key\", or a \"topic\"");
         }
-        Optional<OperatorView.Action> performed = view.actions().stream().filter(each -> each.name().equals(action)).findFirst();
-        if (performed.isEmpty()) {
-            return notFound();
-        }
+        Optional<OperatorView.Action> performed;
         boolean offered;
-        if (topic != null) {
-            OperatorView.TopicState state = status(topic).isPresent() ? view.topic(topic) : null;
-            offered = state != null && state.actions().contains(action);
-        } else {
-            offered = view.rows().stream().anyMatch(row -> row.key().equals(key) && row.actions().contains(action));
+        try {
+            performed = view.actions().stream().filter(each -> each.name().equals(action)).findFirst();
+            if (performed.isEmpty()) {
+                return notFound();
+            }
+            if (topic != null) {
+                OperatorView.TopicState state = status(topic).isPresent() ? view.topics(Set.of(topic)).get(topic) : null;
+                offered = state != null && state.actions().contains(action);
+            } else {
+                offered = view.rows().stream().anyMatch(row -> row.key().equals(key) && row.actions().contains(action));
+            }
+            worked(view);
+        } catch (RuntimeException e) {
+            return new WebEndpointResponse<>(error(failed(view, "what it offers", e)), WebEndpointResponse.STATUS_INTERNAL_SERVER_ERROR);
         }
         if (!offered) {
             return notFound();
@@ -286,51 +321,97 @@ public class TaskEndpoint {
         return engine.operatorViews().stream().filter(view -> view.name().equals(name)).findFirst();
     }
 
-    /** A view as the endpoint shows it: what it is, its columns, rows and actions. */
-    private static Map<String, Object> view(OperatorView view) {
+    /**
+     * A view as the endpoint shows it: what it is, its columns and actions, and its rows if asked
+     * for. One that fails shows its name and the error instead.
+     */
+    private Map<String, Object> view(OperatorView view, boolean withRows) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("name", view.name());
-        body.put("title", view.title());
-        body.put("note", view.note());
-        body.put("columns", view.columns().stream().map(column -> {
-            Map<String, Object> each = new LinkedHashMap<>();
-            each.put("key", column.key());
-            each.put("label", column.label());
-            each.put("kind", column.kind().name().toLowerCase(Locale.ROOT));
-            return each;
-        }).toList());
-        body.put("rows", view.rows().stream().map(row -> {
-            Map<String, Object> each = new LinkedHashMap<>();
-            each.put("key", row.key());
-            Map<String, @Nullable Object> values = new LinkedHashMap<>();
-            row.values().forEach((column, value) -> values.put(column, json(value)));
-            each.put("values", values);
-            each.put("actions", List.copyOf(row.actions()));
-            return each;
-        }).toList());
-        body.put("actions", view.actions().stream().map(action -> {
-            Map<String, Object> each = new LinkedHashMap<>();
-            each.put("name", action.name());
-            each.put("label", action.label());
-            each.put("confirm", action.confirm());
-            return each;
-        }).toList());
+        try {
+            body.put("title", view.title());
+            body.put("note", view.note());
+            body.put("columns", view.columns().stream().map(column -> {
+                Map<String, Object> each = new LinkedHashMap<>();
+                each.put("key", column.key());
+                each.put("label", column.label());
+                each.put("kind", column.kind().name().toLowerCase(Locale.ROOT));
+                return each;
+            }).toList());
+            body.put("actions", view.actions().stream().map(TaskEndpoint::action).toList());
+            if (withRows) {
+                body.put("rows", view.rows().stream().map(row -> {
+                    Map<String, Object> each = new LinkedHashMap<>();
+                    each.put("key", row.key());
+                    Map<String, @Nullable Object> values = new LinkedHashMap<>();
+                    row.values().forEach((column, value) -> values.put(column, json(value)));
+                    each.put("values", values);
+                    each.put("actions", List.copyOf(row.actions()));
+                    return each;
+                }).toList());
+            }
+            worked(view);
+        } catch (RuntimeException e) {
+            Map<String, Object> failed = new LinkedHashMap<>();
+            failed.put("name", view.name());
+            failed.put("title", body.getOrDefault("title", view.name()));
+            failed.put("error", failed(view, withRows ? "its rows" : "what it is", e));
+            return failed;
+        }
         return body;
     }
 
-    /** What each view says about a topic, by view name; views that say nothing are left out. */
-    private Map<String, Object> extensionStates(String topic) {
-        Map<String, Object> states = new LinkedHashMap<>();
+    private static Map<String, Object> action(OperatorView.Action action) {
+        Map<String, Object> each = new LinkedHashMap<>();
+        each.put("name", action.name());
+        each.put("label", action.label());
+        each.put("confirm", action.confirm());
+        return each;
+    }
+
+    /**
+     * What each view says about these topics, by topic name and then view name, each with the
+     * actions it offers there; views that say nothing about a topic are left out. Each view is
+     * asked once for them all. A view that fails is left out, with its error in {@code errors}.
+     */
+    private Map<String, Map<String, Object>> extensionStates(Set<String> topics, Map<String, String> errors) {
+        Map<String, Map<String, Object>> states = new LinkedHashMap<>();
         for (OperatorView view : engine.operatorViews()) {
-            OperatorView.TopicState state = view.topic(topic);
-            if (state != null) {
+            Map<String, OperatorView.Action> actions = new LinkedHashMap<>();
+            Map<String, OperatorView.TopicState> said;
+            try {
+                said = view.topics(topics);
+                view.actions().forEach(action -> actions.put(action.name(), action));
+                worked(view);
+            } catch (RuntimeException e) {
+                errors.put(view.name(), failed(view, "what it says about the topics", e));
+                continue;
+            }
+            said.forEach((topic, state) -> {
+                if (state == null || !topics.contains(topic)) {
+                    return;
+                }
                 Map<String, Object> each = new LinkedHashMap<>();
                 each.put("status", state.status());
-                each.put("actions", List.copyOf(state.actions()));
-                states.put(view.name(), each);
-            }
+                each.put("actions", state.actions().stream().map(actions::get).filter(Objects::nonNull).map(TaskEndpoint::action).toList());
+                states.computeIfAbsent(topic, ignored -> new LinkedHashMap<>()).put(view.name(), each);
+            });
         }
         return states;
+    }
+
+    /** What a view's failure shows: its type and message. Logged in full the first time, until the view works again. */
+    private String failed(OperatorView view, String what, RuntimeException e) {
+        if (failingViews.add(view.name())) {
+            LOGGER.warn("The {} view could not show {}; the rest of the response is shown without it", view.name(), what, e);
+        } else {
+            LOGGER.debug("The {} view could not show {}", view.name(), what, e);
+        }
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getClass().getSimpleName() + ": " + e.getMessage();
+    }
+
+    private void worked(OperatorView view) {
+        failingViews.remove(view.name());
     }
 
     /** Text, numbers and booleans as they are; instants, durations and the rest as text. */
@@ -406,6 +487,7 @@ public class TaskEndpoint {
             Map<String, Object> each = new LinkedHashMap<>();
             each.put("topic", held.topic());
             each.put("gate", held.gate());
+            each.put("reason", held.reason());
             each.put("since", held.since().toString());
             each.put("until", held.until().toString());
             return each;
@@ -440,12 +522,13 @@ public class TaskEndpoint {
         return engine.admin().find(id);
     }
 
-    private Map<String, Object> topic(TopicStatus status) {
+    /** @param extensions what each view says about the topic, by view name */
+    private static Map<String, Object> topic(TopicStatus status, Map<String, Object> extensions) {
         Map<String, Object> topic = new LinkedHashMap<>();
         topic.put("name", status.name());
         topic.put("module", status.module());
         topic.put("processing", status.processing());
-        topic.put("extensions", extensionStates(status.name()));
+        topic.put("extensions", extensions);
         QueueCounts counts = status.counts();
         if (counts != null) {
             Map<String, Object> queue = new LinkedHashMap<>();

@@ -10,6 +10,8 @@ import io.github.khopland.pgtasks.Pushed;
 import io.github.khopland.pgtasks.Task;
 import io.github.khopland.pgtasks.TopicRef;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Sees what the engine does, for metrics, tracing and logging context, without the engine
  * depending on any of them. {@code pgtasks-micrometer} implements it with Micrometer.
@@ -72,12 +74,13 @@ public interface TaskObserver {
     /**
      * An extension's claim gate held a topic's claim back on this node, for this long or until the
      * topic is woken: a rate limit, a pause or an open circuit breaker. Called on the topic's poll
-     * thread on every claim held back, so a topic held for a while is reported once per poll
-     * interval at most.
+     * thread on every claim held back, however short the wait, so a topic held for a while is
+     * reported once per poll interval at most.
      *
-     * @param gate the name of the extension whose gate held it back
+     * @param gate   the name of the extension whose gate held it back
+     * @param reason why, as the gate said with its wait, such as "paused"; null if it didn't say
      */
-    default void held(TopicRef<?> topic, String gate, Duration delay) {
+    default void held(TopicRef<?> topic, String gate, @Nullable String reason, Duration delay) {
     }
 
     /** What became of a task when its batch completed. */

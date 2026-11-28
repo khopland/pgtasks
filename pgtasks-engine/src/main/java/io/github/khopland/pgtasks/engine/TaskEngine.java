@@ -90,12 +90,14 @@ public final class TaskEngine implements AutoCloseable {
     /** Whether it was started and stopped before, so a start must switch the reloads back on. */
     private boolean stopped;
     /** What installed extensions registered; see {@link #install}. */
-    private final List<HousekeepingJob> extensionJobs = new ArrayList<>();
+    private final List<Housekeeper.ExtensionJob> extensionJobs = new ArrayList<>();
     private final List<ClaimGate> gates = new ArrayList<>();
     private final List<BatchListener> batchListeners = new ArrayList<>();
     private final List<HandlerDecorator> decorators = new ArrayList<>();
-    private final List<Runnable> onStart = new ArrayList<>();
-    private final List<Runnable> onStop = new ArrayList<>();
+    /** Each installed extension's start and stop actions, in the order they were installed. */
+    private final List<Lifecycle> lifecycles = new ArrayList<>();
+    /** The extensions whose start actions all ran in this start, in that order: their stop actions run on stop. */
+    private final List<Lifecycle> startedExtensions = new ArrayList<>();
     private final List<Extension> extensions = new ArrayList<>();
     private final Map<String, OperatorView> views = new LinkedHashMap<>();
     /** The builder's observers, and those installed extensions add. */
@@ -261,6 +263,9 @@ public final class TaskEngine implements AutoCloseable {
             if (wakeUps != null) {
                 Set<String> listened = new LinkedHashSet<>(channels.keySet());
                 listened.add(Notifier.TOPIC);
+                if (extensionJobs.stream().anyMatch(Housekeeper.ExtensionJob::leader)) {
+                    listened.add(JOB_CHANNEL);
+                }
                 wakeUps.start(new Notifier.Listener() {
                     @Override
                     public void ready(int topicId) {
@@ -274,6 +279,11 @@ public final class TaskEngine implements AutoCloseable {
                     public void notified(String channel, String payload) {
                         if (channel.equals(Notifier.TOPIC)) {
                             reconcileSoon.request();
+                        } else if (channel.equals(JOB_CHANNEL)) {
+                            Housekeeper keeper = housekeeper;
+                            if (keeper != null && started) {
+                                keeper.runSoonByLease(payload);
+                            }
                         } else {
                             channels.getOrDefault(channel, List.of()).forEach(reload -> reload.message(payload));
                         }
@@ -302,9 +312,11 @@ public final class TaskEngine implements AutoCloseable {
                 }
             });
             housekeeper = keeper;
-            // Before the jobs and the topics: an extension readies what its gates and jobs use, and
-            // one that can't fails the start before anything is claimed.
+            // Before the reloads, jobs and topics: an extension readies what its gates and jobs use,
+            // and one that can't fails the start before anything is claimed. The reloads kept what
+            // arrived while it did, since the notifier listens already, and run now.
             startExtensions();
+            channels.values().forEach(reloads -> reloads.forEach(ChannelReload::open));
             keeper.start();
             started = true;
             reconcileTopics();
@@ -312,15 +324,18 @@ public final class TaskEngine implements AutoCloseable {
             if (started) {
                 stop(Duration.ZERO);
             } else {
-                // Not started, so stop() would do nothing: end what this start got going.
-                stopExtensions();
+                // Not started, so stop() would do nothing: end what this start got going, the
+                // other way round, and let the next start switch the reloads back on.
                 if (wakeUps != null) {
                     wakeUps.close();
                 }
+                stopReloads();
+                stopped = true;
                 Housekeeper keeper = housekeeper;
                 if (keeper != null) {
                     keeper.stop();
                 }
+                stopExtensions();
                 deregister();
             }
             throw e;
@@ -433,12 +448,24 @@ public final class TaskEngine implements AutoCloseable {
     }
 
     /**
-     * The topics an extension's claim gate holds back on this node now, such as a rate limit or a
-     * pause, with since when; none once the engine has stopped. Read from memory, without the store.
+     * The topics an extension's claim gate holds back on this node now, such as a pause or an open
+     * circuit breaker, with why and since when; none once the engine has stopped. A hold shows if
+     * its gate gave a {@linkplain ClaimGate.Permit#waitFor(Duration, String) reason}, or if it lasts
+     * the topic's poll interval, from when it began to when the gate's wait ends: a rate limit that
+     * spaces claims out holds each one back briefly, and isn't a topic held back. Read from memory,
+     * without the store.
      */
     public List<EngineHealth.HeldTopic> heldTopics() {
-        return workers().stream().map(TopicWorker::heldBack).filter(Objects::nonNull).map(Objects::requireNonNull)
-            .sorted(Comparator.comparing(EngineHealth.HeldTopic::topic)).toList();
+        List<EngineHealth.HeldTopic> held = new ArrayList<>();
+        for (TopicWorker<?> worker : workers()) {
+            EngineHealth.HeldTopic each = worker.heldBack();
+            if (each != null && (each.reason() != null
+                || Duration.between(each.since(), each.until()).compareTo(worker.topic().settings().pollInterval()) >= 0)) {
+                held.add(each);
+            }
+        }
+        held.sort(Comparator.comparing(EngineHealth.HeldTopic::topic));
+        return List.copyOf(held);
     }
 
     /** What {@link #start} set up, while the engine runs. */
@@ -572,7 +599,6 @@ public final class TaskEngine implements AutoCloseable {
         started = false;
         stopped = true;
         long deadline = System.nanoTime() + timeout.toNanos();
-        stopExtensions();
         try {
             // Nothing new starts: no wake-ups, no reloads.
             Notifier wakeUps = notifier;
@@ -580,11 +606,7 @@ public final class TaskEngine implements AutoCloseable {
                 wakeUps.close();
             }
             reconcileSoon.stop(TopicWorker.PATIENCE);
-            for (List<ChannelReload> reloads : channels.values()) {
-                for (ChannelReload reload : reloads) {
-                    reload.stop(TopicWorker.PATIENCE);
-                }
-            }
+            stopReloads();
             List<TopicWorker<?>> all = new ArrayList<>();
             List<Thread> drains;
             synchronized (topicsLock) {
@@ -621,7 +643,22 @@ public final class TaskEngine implements AutoCloseable {
             if (keeper != null) {
                 keeper.stop();
             }
+            // Last, once the topics, reloads and jobs are done with: no hook of an extension runs after its stop actions.
+            stopExtensions();
             deregister();
+        }
+    }
+
+    /** Stops the extensions' channel reloads, waiting for those running; they take requests again on the next start. */
+    private void stopReloads() {
+        try {
+            for (List<ChannelReload> reloads : channels.values()) {
+                for (ChannelReload reload : reloads) {
+                    reload.stop(TopicWorker.PATIENCE);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -686,6 +723,7 @@ public final class TaskEngine implements AutoCloseable {
             context.installing = false;
         }
         extensions.add(extension);
+        lifecycles.add(context.lifecycle);
     }
 
     /** Extension settings by topic name, then setting name; see {@link SettingKey}. */
@@ -729,21 +767,127 @@ public final class TaskEngine implements AutoCloseable {
         channels.values().forEach(reloads -> reloads.forEach(ChannelReload::everything));
     }
 
-    /** Runs the extensions' start actions, in the order they were registered; the first that throws fails the start. */
-    private void startExtensions() {
-        for (Runnable action : onStart) {
-            action.run();
+    /** One extension's start and stop actions, in the order it registered them. */
+    private record Lifecycle(String extension, List<ExtensionContext.Callback> starts, List<ExtensionContext.Callback> stops) {
+    }
+
+    /**
+     * Runs the extensions' start actions, extension by extension in the order they were
+     * installed; the first that throws fails the start, and the extensions started before it are
+     * stopped by the caller.
+     */
+    private void startExtensions() throws Exception {
+        startedExtensions.clear();
+        for (Lifecycle extension : lifecycles) {
+            for (ExtensionContext.Callback action : extension.starts()) {
+                action.run();
+            }
+            startedExtensions.add(extension);
         }
     }
 
-    /** Runs the extensions' stop actions; one that throws is logged, and the others still run. */
+    /**
+     * Runs the stop actions of the extensions that started, the last one started first, and each
+     * one's actions the last registered first; one that throws is logged, and the others still run.
+     */
     private void stopExtensions() {
-        for (Runnable action : onStop) {
-            try {
-                action.run();
-            } catch (RuntimeException e) {
-                LOGGER.warn("An extension's stop action failed; the engine stops anyway", e);
+        List<Lifecycle> started = new ArrayList<>(startedExtensions);
+        startedExtensions.clear();
+        for (Lifecycle extension : started.reversed()) {
+            for (ExtensionContext.Callback action : extension.stops().reversed()) {
+                try {
+                    action.run();
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
+                    LOGGER.warn("A stop action of {} failed; the engine stops anyway", extension.extension(), e);
+                }
             }
+        }
+    }
+
+    /** The engine's channel for a leader job to run soon on the node that holds its lease; its payload is the lease. */
+    static final String JOB_CHANNEL = "job";
+
+    /**
+     * The capabilities extensions asked for on one store, one per type, kept with the store, so
+     * every engine on it gets the same; see {@link ExtensionContext#capability}.
+     */
+    static final class Capabilities {
+
+        /** Guarded by this. */
+        private final Map<Class<?>, Object> made = new HashMap<>();
+
+        synchronized <C> C get(Class<C> type, TaskStore store) {
+            Object known = made.get(type);
+            if (known == null) {
+                known = find(type, store);
+                made.put(type, known);
+            }
+            return type.cast(known);
+        }
+
+        private static <C> C find(Class<C> type, TaskStore store) {
+            for (StoreCapability provider : ServiceLoader.load(StoreCapability.class, type.getClassLoader())) {
+                Optional<C> found = provider.create(type, store);
+                if (found.isPresent()) {
+                    return type.cast(found.get());
+                }
+            }
+            throw new IllegalStateException("No " + type.getName() + " for " + store + ": add the module that provides it for this store");
+        }
+    }
+
+    /** An extension's job, as its context registered it. */
+    private final class RegisteredJob implements ExtensionContext.Job {
+
+        private final Housekeeper.ExtensionJob job;
+
+        RegisteredJob(Housekeeper.ExtensionJob job) {
+            this.job = job;
+        }
+
+        @Override
+        public String name() {
+            return job.name();
+        }
+
+        @Override
+        public boolean runsHere() {
+            Housekeeper keeper = housekeeper;
+            return started && keeper != null && keeper.runsHere(job.name());
+        }
+
+        @Override
+        public void runSoon() {
+            Housekeeper keeper = housekeeper;
+            if (!started || keeper == null || keeper.runSoon(job.name())) {
+                return;
+            }
+            // A leader job whose lease another node holds: that node runs it, told on the job channel.
+            try {
+                EngineCore.transact(store, transaction -> {
+                    store.notify(transaction, JOB_CHANNEL, job.lease());
+                    return null;
+                });
+            } catch (Exception e) {
+                LOGGER.warn("Could not ask the node that runs the {} job to run it now; it runs at its next interval", job.name(), e);
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "Job[" + job.lease() + "]";
+        }
+    }
+
+    /** An extension's channel, as its context registered it. */
+    private record RegisteredChannel(TaskStore store, String name) implements ExtensionContext.Channel {
+
+        @Override
+        public void send(StoreTransaction transaction, String payload) throws java.sql.SQLException {
+            store.notify(Objects.requireNonNull(transaction, "transaction"), name, Objects.requireNonNull(payload, "payload"));
         }
     }
 
@@ -769,11 +913,13 @@ public final class TaskEngine implements AutoCloseable {
     private final class Context implements ExtensionContext {
 
         private final String extension;
+        private final Lifecycle lifecycle;
         /** Hooks are taken only while the extension installs. */
         private volatile boolean installing = true;
 
         Context(String extension) {
             this.extension = extension;
+            this.lifecycle = new Lifecycle(extension, new ArrayList<>(), new ArrayList<>());
         }
 
         private void hook(String what) {
@@ -790,13 +936,8 @@ public final class TaskEngine implements AutoCloseable {
 
         @Override
         public <C> C capability(Class<C> type) {
-            for (StoreCapability provider : ServiceLoader.load(StoreCapability.class, type.getClassLoader())) {
-                Optional<C> found = provider.create(type, store);
-                if (found.isPresent()) {
-                    return type.cast(found.get());
-                }
-            }
-            throw new IllegalStateException("No " + type.getName() + " for " + store + ": add the module that provides it for this store");
+            Objects.requireNonNull(type, "type");
+            return store.shared(Capabilities.class, Capabilities::new).get(type, store);
         }
 
         @Override
@@ -850,23 +991,6 @@ public final class TaskEngine implements AutoCloseable {
         }
 
         @Override
-        public boolean leads(String job) {
-            Housekeeper keeper = housekeeper;
-            return started && keeper != null && keeper.leads(job);
-        }
-
-        @Override
-        public void runSoon(String job) {
-            if (extensionJobs.stream().noneMatch(each -> each.name().equals(job))) {
-                throw new IllegalArgumentException("This engine has no extension job named '" + job + "'");
-            }
-            Housekeeper keeper = housekeeper;
-            if (started && keeper != null) {
-                keeper.runSoon(job);
-            }
-        }
-
-        @Override
         public void wake(TopicRef<?> topic) {
             TaskEngine.this.wake(topic.name());
         }
@@ -895,32 +1019,35 @@ public final class TaskEngine implements AutoCloseable {
         }
 
         @Override
-        public void job(HousekeepingJob job) {
+        public Job job(HousekeepingJob job) {
             hook("a job");
             Objects.requireNonNull(job, "job");
             if (Housekeeper.RESERVED.contains(job.name())) {
-                throw new IllegalArgumentException("The engine has a job or lease named '" + job.name() + "' of its own: name the job after the extension");
+                throw new IllegalArgumentException("The engine has a job named '" + job.name() + "' of its own: name the job after the extension");
             }
             if (extensionJobs.stream().anyMatch(other -> other.name().equals(job.name()))) {
                 throw new IllegalArgumentException("Another job is named '" + job.name() + "': each job of an engine has a name of its own");
             }
-            extensionJobs.add(job);
+            Housekeeper.ExtensionJob added = Housekeeper.ExtensionJob.of(extension, job);
+            extensionJobs.add(added);
+            return new RegisteredJob(added);
         }
 
         @Override
-        public void channel(String name, Runnable reload) {
+        public Channel channel(String name, Runnable reload) {
             Objects.requireNonNull(reload, "reload");
-            channel(name, payloads -> reload.run());
+            return channel(name, payloads -> reload.run());
         }
 
         @Override
-        public void channel(String name, Reload reload) {
+        public Channel channel(String name, Reload reload) {
             hook("a channel");
             Objects.requireNonNull(reload, "reload");
-            if (!Notifier.CHANNEL.matcher(name).matches() || name.equals("ready") || name.equals(Notifier.TOPIC)) {
-                throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready and topic");
+            if (!Notifier.CHANNEL.matcher(name).matches() || name.equals("ready") || name.equals(Notifier.TOPIC) || name.equals(JOB_CHANNEL)) {
+                throw new IllegalArgumentException("Invalid channel '" + name + "': a lowercase word other than ready, topic and job");
             }
             channels.computeIfAbsent(name, ignored -> new ArrayList<>()).add(new ChannelReload(name, reload));
+            return new RegisteredChannel(store, name);
         }
 
         @Override
@@ -944,15 +1071,15 @@ public final class TaskEngine implements AutoCloseable {
         }
 
         @Override
-        public void onStart(Runnable action) {
+        public void onStart(Callback action) {
             hook("a start action");
-            onStart.add(Objects.requireNonNull(action, "action"));
+            lifecycle.starts().add(Objects.requireNonNull(action, "action"));
         }
 
         @Override
-        public void onStop(Runnable action) {
+        public void onStop(Callback action) {
             hook("a stop action");
-            onStop.add(Objects.requireNonNull(action, "action"));
+            lifecycle.stops().add(Objects.requireNonNull(action, "action"));
         }
 
         @Override

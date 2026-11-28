@@ -21,7 +21,13 @@ public final class TestCapabilities implements StoreCapability {
     @Override
     public <C> Optional<C> create(Class<C> type, TaskStore store) {
         if (type == StoreName.class && store instanceof InMemoryTaskStore) {
-            StoreName name = () -> "memory";
+            // A new one on each call, so a test can tell whether the engine made it once.
+            StoreName name = new StoreName() {
+                @Override
+                public String name() {
+                    return "memory";
+                }
+            };
             return Optional.of(type.cast(name));
         }
         return Optional.empty();

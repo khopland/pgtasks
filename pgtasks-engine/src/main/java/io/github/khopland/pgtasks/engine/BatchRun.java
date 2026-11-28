@@ -763,8 +763,8 @@ final class BatchRun<T> {
             .map(completion -> {
                 ClaimedTask claim = claimOf(claims, completion.taskId());
                 Duration took = claim.claimedAt().isBefore(now) ? Duration.between(claim.claimedAt(), now) : Duration.ZERO;
-                return new BatchListener.Completed(completion.taskId(), claim.identifier(), completion.attempt(), result(completion),
-                    failure(completion), errors.apply(completion.taskId()), took);
+                return new BatchListener.Completed(completion.taskId(), claim.identifier(), completion.attempt(), result(completion))
+                    .withFailure(failure(completion), errors.apply(completion.taskId())).withDuration(took);
             })
             .toList();
         if (results.isEmpty()) {

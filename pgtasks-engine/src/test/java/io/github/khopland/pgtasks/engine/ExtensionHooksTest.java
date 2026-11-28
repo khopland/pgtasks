@@ -5,9 +5,13 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import io.github.khopland.pgtasks.BatchHandler;
 import io.github.khopland.pgtasks.Decision;
@@ -81,21 +85,80 @@ class ExtensionHooksTest {
         }
 
         AtomicInteger handled = new AtomicInteger();
-        AtomicBoolean stopped = new AtomicBoolean();
+        List<String> stopped = new CopyOnWriteArrayList<>();
+        Extension first = Extension.of("first", context -> context.onStop(() -> stopped.add("first")));
         Extension failing = Extension.of("failing", context -> {
             context.onStart(() -> {
                 throw new IllegalStateException("its table is missing");
             });
-            context.onStop(() -> stopped.set(true));
+            context.onStop(() -> stopped.add("failing"));
         });
-        TaskEngine engine = TaskEngine.builder().store(store).extension(failing)
+        TaskEngine engine = TaskEngine.builder().store(store).extension(first, failing)
             .configure("work", tasks -> tasks.eachTask(WORK, task -> handled.incrementAndGet()))
             .build();
         assertThatThrownBy(engine::start).hasMessageContaining("its table is missing");
         assertThat(engine.running()).isFalse();
         assertThat(handled).as("nothing was claimed").hasValue(0);
-        assertThat(stopped).as("the stop actions ran").isTrue();
+        assertThat(stopped).as("the extension that started stops, the one that failed to doesn't").containsExactly("first");
         assertThat(engine.admin().nodes()).as("the node that failed to start is gone").isEmpty();
+
+        Extension checked = Extension.of("checked", context -> context.onStart(() -> {
+            throw new java.sql.SQLException("relation \"window\" does not exist");
+        }));
+        assertThatThrownBy(() -> builder(store).extension(checked).build().start())
+            .isInstanceOf(io.github.khopland.pgtasks.TaskStorageException.class).hasMessageContaining("relation \"window\" does not exist");
+    }
+
+    @Test
+    @DisplayName("Stop actions run once the topics and jobs are done with, the last extension installed first")
+    void stop_actions_run_last_and_in_reverse() throws Exception {
+        List<String> events = new CopyOnWriteArrayList<>();
+        CountDownLatch handling = new CountDownLatch(1);
+        Extension first = Extension.of("first", context -> {
+            context.batchListener((topic, tasks) -> events.add("batch done"));
+            context.onStop(() -> events.add("first stops"));
+        });
+        Extension second = Extension.of("second", context -> {
+            context.onStop(() -> events.add("second stops, its first action"));
+            context.onStop(() -> events.add("second stops"));
+        });
+        TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore()).extension(first, second)
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> {
+                handling.countDown();
+                LockSupport.parkNanos(Duration.ofMillis(300).toNanos());
+            }))
+            .build().start();
+        engine.tasks().independently().push(WORK, "a", "x");
+        assertThat(handling.await(5, TimeUnit.SECONDS)).isTrue();
+        engine.stop(Duration.ofSeconds(5));
+
+        assertThat(events).containsExactly("batch done", "second stops", "second stops, its first action", "first stops");
+    }
+
+    @Test
+    @DisplayName("A channel's reload waits for the start actions, and is told what arrived meanwhile")
+    void a_channel_reload_waits_for_the_start_actions() throws Exception {
+        List<String> events = new CopyOnWriteArrayList<>();
+        ExtensionContext.Channel[] channel = new ExtensionContext.Channel[1];
+        Extension listening = Extension.of("listening", context -> {
+            channel[0] = context.channel("pause", payloads -> events.add("reload " + payloads));
+            context.onStart(() -> {
+                // The engine listens already, so this node gets its own message while it starts.
+                context.transact("Telling", transaction -> {
+                    channel[0].send(transaction, "orders");
+                    return null;
+                });
+                LockSupport.parkNanos(Duration.ofMillis(300).toNanos());
+                events.add("started");
+            });
+        });
+        try (TaskEngine engine = builder(new InMemoryTaskStore()).extension(listening).build().start()) {
+            EngineFixture.await("a reload", Duration.ofSeconds(5), () -> events.size() > 1);
+            assertThat(events).first().as("no reload before the start action returned").isEqualTo("started");
+            assertThat(events.get(1)).as("the message kept, or a reload of everything").isIn("reload [orders]", "reload []");
+            assertThat(channel[0].name()).isEqualTo("pause");
+            assertThat(engine.running()).isTrue();
+        }
     }
 
     @Test
@@ -103,21 +166,20 @@ class ExtensionHooksTest {
     void a_leader_job_has_a_lease_of_its_own() throws Exception {
         InMemoryTaskStore store = new InMemoryTaskStore();
         AtomicInteger runs = new AtomicInteger();
-        Kept kept = new Kept("cleanup");
-        Extension cleanup = Extension.of("cleanup", context -> {
-            kept.install(context);
-            context.job(HousekeepingJob.leader("cleanup", Duration.ofMillis(10), runs::incrementAndGet));
-        });
+        ExtensionContext.Job[] cleanupJob = new ExtensionContext.Job[1];
+        Extension cleanup = Extension.of("cleanup", context ->
+            cleanupJob[0] = context.job(HousekeepingJob.leader("cleanup", Duration.ofMillis(10), runs::incrementAndGet)));
         try (TaskEngine plain = builder(store).node("plain").build().start()) {
             EngineFixture.await("the plain node to lead housekeeping", Duration.ofSeconds(5), plain::leadsHousekeeping);
             try (TaskEngine extended = builder(store).node("extended").extension(cleanup).build().start()) {
                 EngineFixture.await("the leader job to run", Duration.ofSeconds(5), () -> runs.get() > 0);
 
                 assertThat(plain.leadsHousekeeping()).as("the housekeeping lease stays where it was").isTrue();
-                assertThat(kept.context.leads("cleanup")).isTrue();
-                assertThat(kept.context.leads("other")).isFalse();
+                assertThat(cleanupJob[0].runsHere()).isTrue();
+                assertThat(cleanupJob[0].name()).isEqualTo("cleanup");
                 assertThat(plain.admin().nodes()).filteredOn(node -> node.name().equals("extended")).singleElement()
-                    .satisfies(node -> assertThat(node.leases()).as("its job's lease, not the housekeeping lease").containsExactly("cleanup"));
+                    .satisfies(node -> assertThat(node.leases()).as("its job's lease, named after its extension, not the housekeeping lease")
+                        .containsExactly("cleanup/cleanup"));
                 assertThat(extended.health().jobs()).filteredOn(job -> job.name().equals("cleanup")).singleElement()
                     .satisfies(job -> {
                         assertThat(job.runsHere()).isTrue();
@@ -129,7 +191,7 @@ class ExtensionHooksTest {
 
         assertThatThrownBy(() -> builder(new InMemoryTaskStore())
             .extension(Extension.of("x", context -> context.job(HousekeepingJob.leader("promotion", Duration.ofSeconds(1), () -> { }))))
-            .build()).hasMessageContaining("'promotion' of its own");
+            .build()).hasMessageContaining("job named 'promotion' of its own");
         assertThatThrownBy(() -> builder(new InMemoryTaskStore())
             .extension(Extension.of("x", context -> {
                 context.job(HousekeepingJob.everyNode("twice", Duration.ofSeconds(1), () -> { }));
@@ -141,20 +203,60 @@ class ExtensionHooksTest {
     @Test
     void a_job_asked_to_run_soon_runs_before_its_interval() throws Exception {
         AtomicInteger runs = new AtomicInteger();
-        Kept kept = new Kept("slow");
-        Extension slow = Extension.of("slow", context -> {
-            kept.install(context);
-            context.job(HousekeepingJob.everyNode("slow", Duration.ofHours(1), runs::incrementAndGet));
-        });
+        ExtensionContext.Job[] job = new ExtensionContext.Job[1];
+        Extension slow = Extension.of("slow", context -> job[0] = context.job(HousekeepingJob.everyNode("slow", Duration.ofHours(1), runs::incrementAndGet)));
         try (TaskEngine engine = builder(new InMemoryTaskStore()).extension(slow).build().start()) {
             EngineFixture.await("the first run", Duration.ofSeconds(5), () -> runs.get() == 1);
-            kept.context.runSoon("slow");
+            assertThat(job[0].runsHere()).isTrue();
+            job[0].runSoon();
             EngineFixture.await("the run asked for", Duration.ofSeconds(5), () -> runs.get() == 2);
-            assertThatThrownBy(() -> kept.context.runSoon("other")).hasMessageContaining("no extension job named 'other'");
             assertThat(engine.running()).isTrue();
         }
-        kept.context.runSoon("slow");
+        assertThat(job[0].runsHere()).as("not once stopped").isFalse();
+        job[0].runSoon();
         assertThat(runs).as("nothing once stopped").hasValue(2);
+    }
+
+    @Test
+    @DisplayName("A leader job asked to run soon on a node without its lease runs on the node that holds it")
+    void run_soon_reaches_the_node_that_holds_the_lease() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        Map<String, AtomicInteger> runs = new ConcurrentHashMap<>();
+        Map<String, ExtensionContext.Job> jobs = new ConcurrentHashMap<>();
+        java.util.function.Function<String, Extension> sweeper = node -> Extension.of("sweeper", context -> jobs.put(node,
+            context.job(HousekeepingJob.leader("sweep", Duration.ofHours(1), () -> runs.computeIfAbsent(node, ignored -> new AtomicInteger()).incrementAndGet()))));
+        try (TaskEngine a = builder(store).node("a").extension(sweeper.apply("a")).build().start()) {
+            EngineFixture.await("a to take the job's lease", Duration.ofSeconds(5), () -> jobs.get("a").runsHere());
+            try (TaskEngine b = builder(store).node("b").extension(sweeper.apply("b")).build().start()) {
+                assertThat(jobs.get("b").runsHere()).isFalse();
+                int before = runs.computeIfAbsent("a", ignored -> new AtomicInteger()).get();
+
+                jobs.get("b").runSoon();
+                EngineFixture.await("the run on the node holding the lease", Duration.ofSeconds(5), () -> runs.get("a").get() == before + 1);
+                jobs.get("a").runSoon();
+                EngineFixture.await("a run asked for where it runs", Duration.ofSeconds(5), () -> runs.get("a").get() == before + 2);
+                assertThat(runs.get("b")).as("never on the node without the lease").isNull();
+                assertThat(a.running() && b.running()).isTrue();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Leader jobs of one name in two extensions have a lease each, so both run")
+    void leader_jobs_of_one_name_in_two_extensions_both_run() throws Exception {
+        InMemoryTaskStore store = new InMemoryTaskStore();
+        AtomicInteger audits = new AtomicInteger();
+        AtomicInteger archives = new AtomicInteger();
+        try (TaskEngine auditing = builder(store).node("auditing")
+                 .extension(Extension.of("audit", context -> context.job(HousekeepingJob.leader("cleanup", Duration.ofMillis(10), audits::incrementAndGet))))
+                 .build().start();
+             TaskEngine archiving = builder(store).node("archiving")
+                 .extension(Extension.of("archive", context -> context.job(HousekeepingJob.leader("cleanup", Duration.ofMillis(10), archives::incrementAndGet))))
+                 .build().start()) {
+            EngineFixture.await("both jobs to run", Duration.ofSeconds(5), () -> audits.get() > 0 && archives.get() > 0);
+            assertThat(auditing.admin().nodes()).flatExtracting(node -> node.leases()).contains("audit/cleanup", "archive/cleanup");
+            assertThat(archiving.running()).isTrue();
+        }
     }
 
     @Test
@@ -210,6 +312,19 @@ class ExtensionHooksTest {
             }
         })).hasMessageContaining("The default of window.size is invalid");
         assertThat(SIZE.parse(" 7 ")).isEqualTo(7);
+
+        SettingKey<Integer> unchecked = SettingKey.of("window.size", Integer.class, 10, Integer::valueOf);
+        assertThat(unchecked).as("one setting, whatever its checks").isEqualTo(SIZE).hasSameHashCodeAs(SIZE);
+        assertThatThrownBy(() -> TaskEngine.builder().store(new InMemoryTaskStore()).extension(sized)
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { }, options -> options.set(unchecked, 0)))
+            .build()).as("the declared key's check, though set with another").hasMessageContaining("window.size: at least 1, not 0");
+        SettingKey<Integer> bounded = SIZE.checking(size -> {
+            if (size > 100) {
+                throw new IllegalArgumentException("at most 100, not " + size);
+            }
+        });
+        assertThatThrownBy(() -> bounded.parse("0")).hasMessageContaining("at least 1");
+        assertThatThrownBy(() -> bounded.parse("101")).hasMessageContaining("at most 100");
     }
 
     private static final SettingKey<Duration> EVERY = SettingKey.of("audit.every", Duration.class, Duration.ofMinutes(1), Duration::parse)
@@ -261,6 +376,9 @@ class ExtensionHooksTest {
         assertThatThrownBy(() -> builder(new InMemoryTaskStore()).set(EVERY, Duration.ofMinutes(2)).build())
             .hasMessageContaining("no installed extension declares");
         assertThatThrownBy(() -> TaskEngine.builder().set(EVERY, Duration.ZERO)).hasMessageContaining("audit.every: must be positive");
+        SettingKey<Duration> uncheckedEvery = SettingKey.of("audit.every", Duration.class, Duration.ofMinutes(1), Duration::parse);
+        assertThatThrownBy(() -> builder(new InMemoryTaskStore()).extension(new Audit()).set(uncheckedEvery, Duration.ZERO).build())
+            .as("the declared key's check, though set with another").hasMessageContaining("audit.every: must be positive");
     }
 
     @Test
@@ -335,16 +453,51 @@ class ExtensionHooksTest {
         List<String> held = new CopyOnWriteArrayList<>();
         TaskObserver watching = new TaskObserver() {
             @Override
-            public void held(TopicRef<?> topic, String gate, Duration delay) {
-                held.add(topic.name() + " by " + gate);
+            public void held(TopicRef<?> topic, String gate, @org.jspecify.annotations.Nullable String reason, Duration delay) {
+                held.add(topic.name() + " by " + gate + " (" + reason + ")");
             }
         };
         try (TaskEngine engine = builder(new InMemoryTaskStore()).observer(watching)
-            .extension(Extension.of("pause", context -> context.claimGate((topic, wanted) -> ClaimGate.Permit.waitFor(Duration.ofMinutes(1)))))
+            .extension(Extension.of("pause", context -> context.claimGate((topic, wanted) -> ClaimGate.Permit.waitFor(Duration.ofSeconds(1), "paused"))))
             .build().start()) {
             EngineFixture.await("the observer to hear of it", Duration.ofSeconds(5), () -> !held.isEmpty());
-            assertThat(held).first().isEqualTo("work by pause");
-            assertThat(engine.health().held()).extracting(EngineHealth.HeldTopic::gate).containsExactly("pause");
+            assertThat(held).first().isEqualTo("work by pause (paused)");
+            assertThat(engine.health().held()).as("a hold with a reason shows at once, however short its wait").singleElement()
+                .satisfies(topic -> {
+                    assertThat(topic.gate()).isEqualTo("pause");
+                    assertThat(topic.reason()).isEqualTo("paused");
+                });
+        }
+    }
+
+    @Test
+    @DisplayName("A throttle doesn't show as a held topic, and a wait without a reason shows once it lasts a poll interval")
+    void a_throttle_is_not_a_held_topic() throws Exception {
+        AtomicInteger asked = new AtomicInteger();
+        List<String> held = new CopyOnWriteArrayList<>();
+        TaskObserver watching = new TaskObserver() {
+            @Override
+            public void held(TopicRef<?> topic, String gate, @org.jspecify.annotations.Nullable String reason, Duration delay) {
+                held.add(gate);
+            }
+        };
+        // Like a rate limit: every other claim waits a moment.
+        ClaimGate throttle = (topic, wanted) -> asked.incrementAndGet() % 2 == 0 ? ClaimGate.Permit.waitFor(Duration.ofMillis(1)) : ClaimGate.Permit.ANY;
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore()).observer(watching)
+            .extension(Extension.of("throttle", context -> context.claimGate(throttle)))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { }, options -> options.pollInterval(Duration.ofMillis(50))))
+            .build().start()) {
+            EngineFixture.await("a few throttled claims", Duration.ofSeconds(5), () -> held.size() >= 3);
+            assertThat(engine.heldTopics()).isEmpty();
+        }
+
+        ClaimGate stuck = (topic, wanted) -> ClaimGate.Permit.waitFor(Duration.ofMillis(10));
+        try (TaskEngine engine = TaskEngine.builder().store(new InMemoryTaskStore())
+            .extension(Extension.of("stuck", context -> context.claimGate(stuck)))
+            .configure("work", tasks -> tasks.eachTask(WORK, task -> { }, options -> options.pollInterval(Duration.ofMillis(200))))
+            .build().start()) {
+            EngineFixture.await("the hold to last a poll interval", Duration.ofSeconds(5), () -> !engine.heldTopics().isEmpty());
+            assertThat(engine.heldTopics()).singleElement().satisfies(topic -> assertThat(topic.reason()).isNull());
         }
     }
 
@@ -442,7 +595,16 @@ class ExtensionHooksTest {
                 tuple("refused", TaskObserver.Result.UNAVAILABLE, BatchListener.Failure.FAILED));
         assertThat(seen).filteredOn(task -> task.taskId() == spent).singleElement()
             .satisfies(task -> assertThat(task.failure()).as("out of attempts before it ran").isEqualTo(BatchListener.Failure.TASK_FAULT));
-        assertThat(new BatchListener.Completed(1, "a", 1, TaskObserver.Result.RETRYING).failure()).isEqualTo(BatchListener.Failure.FAILED);
+        BatchListener.Completed made = new BatchListener.Completed(1, "a", 1, TaskObserver.Result.RETRYING);
+        assertThat(made.failure()).isEqualTo(BatchListener.Failure.FAILED);
+        IllegalArgumentException invalid = new IllegalArgumentException("invalid row");
+        assertThat(made.withFailure(BatchListener.Failure.TASK_FAULT, invalid).withDuration(Duration.ofSeconds(2)))
+            .satisfies(task -> {
+                assertThat(task.failure()).isEqualTo(BatchListener.Failure.TASK_FAULT);
+                assertThat(task.error()).isSameAs(invalid);
+                assertThat(task.duration()).isEqualTo(Duration.ofSeconds(2));
+                assertThat(task.taskId()).isEqualTo(1);
+            });
     }
 
     @Test
@@ -470,8 +632,11 @@ class ExtensionHooksTest {
             assertThat(tester.task(id).attempt()).as("five failures, none counted").isZero();
             assertThat(tester.task(id).failures()).isEqualTo(5);
         }
-        assertThatThrownBy(() -> new ClaimGate.Permit(0, Duration.ofSeconds(1), true)).hasMessageContaining("probe");
+        assertThatThrownBy(() -> ClaimGate.Permit.probe(0)).hasMessageContaining("A probe claims at least one task");
         assertThat(ClaimGate.Permit.atMost(3).probing()).isFalse();
+        assertThat(ClaimGate.Permit.waitFor(Duration.ofSeconds(1), " paused ").reason()).isEqualTo("paused");
+        assertThatThrownBy(() -> ClaimGate.Permit.waitFor(Duration.ofSeconds(1), " ")).hasMessageContaining("says something");
+        assertThat(ClaimGate.Permit.waitFor(Duration.ofSeconds(1))).isEqualTo(new ClaimGate.Permit(0, Duration.ofSeconds(1)));
     }
 
     @Test
@@ -517,6 +682,8 @@ class ExtensionHooksTest {
                 sender.context.store().notify(transaction, "pause", "payments");
                 return null;
             });
+            assertThatThrownBy(() -> builder(store).extension(Extension.of("x", context -> context.channel("job", () -> { }))).build())
+                .hasMessageContaining("other than ready, topic and job");
             EngineFixture.await("the messages", Duration.ofSeconds(5),
                 () -> reloads.stream().flatMap(Set::stream).toList().containsAll(List.of("orders", "payments")));
             assertThat(listening.running()).isTrue();
@@ -561,5 +728,24 @@ class ExtensionHooksTest {
             .hasMessageContaining("Another operator view is named 'schedules'");
         assertThatThrownBy(() -> OperatorView.Action.of("Run Now", "Run now", null, key -> { })).hasMessageContaining("Invalid action name");
         assertThat(OperatorView.TopicState.of("paused", "resume").actions()).containsExactly("resume");
+
+        OperatorView paused = new OperatorView() {
+            @Override
+            public String name() {
+                return "pause";
+            }
+
+            @Override
+            public String title() {
+                return "Paused topics";
+            }
+
+            @Override
+            public TopicState topic(String topic) {
+                return topic.equals("work") ? TopicState.of("paused", "resume") : null;
+            }
+        };
+        assertThat(paused.topics(Set.of("work", "other"))).as("each topic by default, leaving out those it says nothing about")
+            .containsOnlyKeys("work");
     }
 }

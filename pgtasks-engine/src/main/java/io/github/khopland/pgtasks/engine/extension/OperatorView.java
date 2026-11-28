@@ -15,9 +15,10 @@ import org.jspecify.annotations.Nullable;
  * What an extension shows operators and lets them do, in two parts, each optional: a table of
  * rows with actions on a row, such as recurring tasks with "Run now", and what it says about each
  * topic, a short status and actions on the topic, such as "paused" with "Resume". The starter's
- * endpoint serves it ({@code GET /actuator/tasks/extensions/{name}}, the overview, and each
- * topic), and its dashboard draws the table as a panel on the overview, the status next to each
- * topic, and the topic's actions on its page. Register one with {@link ExtensionContext#operatorView};
+ * endpoint serves it: the overview ({@code GET /actuator/tasks}) lists the views and what each
+ * says about each topic, and {@code GET /actuator/tasks/extensions/{name}} a view's rows. Its
+ * dashboard draws the table as a panel on the overview, the status next to each topic, and the
+ * topic's actions on its page. Register one with {@link ExtensionContext#operatorView};
  * {@code TaskEngine.operatorViews()} lists them.
  *
  * <pre>{@code
@@ -40,8 +41,10 @@ import org.jspecify.annotations.Nullable;
  * });
  * }</pre>
  *
- * Every method is called on each request, on the request's thread, and {@link #topic} once per
- * topic shown: keep them quick. One that throws fails that request, and only that one.
+ * Every method is called on each request, on the request's thread: keep them quick. The endpoint
+ * asks {@link #topics} once per request for all the topics it shows, and {@link #rows} only when
+ * a view's rows are asked for. One that throws fails only this view's part of the request: the
+ * endpoint shows the error in its place, and the rest of the page as usual.
  */
 public interface OperatorView {
 
@@ -83,6 +86,22 @@ public interface OperatorView {
      */
     default @Nullable TopicState topic(String topic) {
         return null;
+    }
+
+    /**
+     * What it says about each of these topics now, by topic name, leaving out those it says
+     * nothing about. The endpoint asks this once per request for every topic it shows, so a view
+     * that reads its state from the store reads it here in one go. By default, {@link #topic} for each.
+     */
+    default Map<String, TopicState> topics(Set<String> topics) {
+        Map<String, TopicState> states = new LinkedHashMap<>();
+        for (String topic : topics) {
+            TopicState state = topic(topic);
+            if (state != null) {
+                states.put(topic, state);
+            }
+        }
+        return states;
     }
 
     /**

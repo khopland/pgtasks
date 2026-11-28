@@ -56,10 +56,10 @@ final class TopicWorker<T> {
     private volatile long lastEmptyClaim = -1;
     /** The wake-ups there had been when the last empty claim began. */
     private volatile long signalsAtEmptyClaim;
-    /** The gate holding claims back now, since when, and until when it said, by the store's clock; null while claims go ahead. */
+    /** The gate holding claims back now, why, since when, and until when it said, by the store's clock; null while claims go ahead. */
     private volatile @Nullable Held held;
 
-    private record Held(String gate, Instant since, Instant until) {
+    private record Held(String gate, @Nullable String reason, Instant since, Instant until) {
     }
 
     TopicWorker(Topic<T> topic, int topicId, EngineCore core) {
@@ -129,6 +129,7 @@ final class TopicWorker<T> {
             // The gates that granted a permit; each is told once what came of it.
             List<ClaimGate> granted = new ArrayList<>(fenced ? 0 : core.gates().size());
             ClaimGate holding = null;
+            ClaimGate.Permit holdingPermit = null;
             for (ClaimGate gate : fenced ? List.<ClaimGate>of() : core.gates()) {
                 ClaimGate.Permit permit;
                 try {
@@ -142,6 +143,7 @@ final class TopicWorker<T> {
                     if (permit.delay().compareTo(gateWait) > 0) {
                         gateWait = permit.delay();
                         holding = gate;
+                        holdingPermit = permit;
                     }
                 } else {
                     granted.add(gate);
@@ -149,8 +151,8 @@ final class TopicWorker<T> {
                     probing |= permit.probing();
                 }
             }
-            if (holding != null) {
-                held(NamedGate.nameOf(holding), gateWait);
+            if (holding != null && holdingPermit != null) {
+                held(NamedGate.nameOf(holding), holdingPermit);
             } else if (!fenced) {
                 held = null;
             }
@@ -277,18 +279,22 @@ final class TopicWorker<T> {
         }
     }
 
-    /** A gate held this claim back: keeps since when and until when, for the health and tests, and tells the observers. */
-    private void held(String gate, Duration delay) {
+    /** A gate held this claim back: keeps why, since when and until when, for the health and tests, and tells the observers. */
+    private void held(String gate, ClaimGate.Permit permit) {
         Held before = held;
         Instant now = core.clock().instant();
-        held = new Held(gate, before != null ? before.since() : now, now.plus(delay));
-        core.observer().held(topic.ref(), gate, delay);
+        held = new Held(gate, permit.reason(), before != null ? before.since() : now, now.plus(permit.delay()));
+        core.observer().held(topic.ref(), gate, permit.reason(), permit.delay());
     }
 
-    /** Whether a claim gate held this topic back at its last poll, since when and until when; null if that poll claimed. */
+    /**
+     * Whether a claim gate held this topic back at its last poll, why, since when and until when;
+     * null if that poll claimed. However short the hold: {@link TaskEngine#heldTopics()} leaves
+     * the short ones out.
+     */
     EngineHealth.@Nullable HeldTopic heldBack() {
         Held now = held;
-        return now == null ? null : new EngineHealth.HeldTopic(topic.ref().name(), now.gate(), now.since(), now.until());
+        return now == null ? null : new EngineHealth.HeldTopic(topic.ref().name(), now.gate(), now.reason(), now.since(), now.until());
     }
 
     /** Cancels the handlers of the batches running now: the node's heartbeat is too late. See {@link HeartbeatFence}. */

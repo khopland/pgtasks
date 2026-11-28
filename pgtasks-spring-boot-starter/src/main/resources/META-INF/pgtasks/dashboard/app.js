@@ -20,6 +20,7 @@ const ROUTES = {
   purge: ["POST", "/topics/{topic}/purge"],
   deleteTopic: ["DELETE", "/topics/{topic}"],
   task: ["GET", "/tasks/{id}"],
+  extension: ["GET", "/extensions/{view}"],
   extensionAction: ["POST", "/extensions/{view}/{action}"],
 };
 // routes:end
@@ -444,14 +445,16 @@ async function overviewView() {
     meta: h("span", { class: "muted" }, names.length + (names.length === 1 ? " topic" : " topics")),
   }, topicTable(names.map(name => byName.get(name)).filter(Boolean)))) : [h("div", { class: "notice" }, "No topics yet.")];
 
-  const views = data.extensions || [];
+  // Each table's rows come with their own request, so a view that fails leaves the rest of the page as it is.
+  const tables = await Promise.all((data.extensions || []).filter(view => view.error || (view.columns && view.columns.length))
+    .map(view => view.error ? view : api("extension", { view: view.name }).catch(e => ({ name: view.name, title: view.title, error: e.message }))));
   return [
     stats,
     stale ? h("div", { class: "notice warn" }, "The counts are ", since(counted),
       " old: is any node running housekeeping? (", h("code", null, "pgtasks.queue.snapshot.age"), ")") : null,
     nodeNotices(data.node),
     topicPanels,
-    views.filter(view => view.columns && view.columns.length).map(view => extensionPanel(view)),
+    tables.map(view => extensionPanel(view)),
     data.settings ? extensionSettingsPanel(data.settings) : null,
     nodesPanel(data.node, data.nodes || []),
     counted ? h("p", { class: "muted" }, "Counts as of ", time(counted), ", from the housekeeping leader's snapshot.") : null,
@@ -467,7 +470,8 @@ function nodeNotices(node) {
   const failing = node.failingJobs || [];
   return [
     held.length ? h("div", { class: "notice" }, "Held back on this node: ",
-      held.map((each, index) => [index ? ", " : null, topicLink(each.topic), " by ", h("strong", null, each.gate), " for ", since(each.since)]),
+      held.map((each, index) => [index ? ", " : null, topicLink(each.topic), " by ", h("strong", null, each.gate),
+        each.reason ? " (" + each.reason + ")" : null, " for ", since(each.since)]),
       ". Its tasks wait; nothing is lost.") : null,
     failing.map(job => h("div", { class: "notice warn" }, "The ", h("strong", null, job.name), " job failed ",
       job.failuresInARow === 1 ? "its last run" : "its last " + job.failuresInARow + " runs", ", last ", time(job.lastFailure),
@@ -475,8 +479,11 @@ function nodeNotices(node) {
   ];
 }
 
-/** An extension's view: a table of its rows, with a button for each action a row offers. */
+/** An extension's view: a table of its rows, with a button for each action a row offers; or what failed. */
 function extensionPanel(view) {
+  if (view.error) {
+    return panel(view.title || view.name, {}, h("div", { class: "notice warn" }, "This view failed: ", h("code", null, view.error)));
+  }
   const actions = new Map((view.actions || []).map(action => [action.name, action]));
   const columns = view.columns.map(column => ({
     label: column.label,
@@ -485,12 +492,13 @@ function extensionPanel(view) {
   if (actions.size) {
     columns.push({ label: h("span", { class: "sr-only" }, "Actions"), value: row => h("td", { class: "nowrap" },
       (row.actions || []).filter(name => actions.has(name)).map(name => h("button", { type: "button", class: "small",
-        onclick: () => extensionAction(view, actions.get(name), { key: row.key }, row.key) }, actions.get(name).label))) });
+        onclick: () => extensionAction(view.name, actions.get(name), { key: row.key }, row.key) }, actions.get(name).label))) });
   }
+  const rows = view.rows || [];
   return panel(view.title, {
-    meta: h("span", { class: "muted" }, view.rows.length + (view.rows.length === 1 ? " row" : " rows")),
+    meta: h("span", { class: "muted" }, rows.length + (rows.length === 1 ? " row" : " rows")),
     note: view.note,
-  }, table(columns, view.rows, "Nothing here."));
+  }, table(columns, rows, "Nothing here."));
 }
 
 /** A value of an extension's row, drawn as its column says. */
@@ -507,14 +515,20 @@ function cell(kind, val) {
   }
 }
 
-/** Runs an extension's action on a row or a topic, after the operator confirms it. */
+/** Runs an extension's action on a row or a topic: at once, or after the operator confirms it if the action asks. */
 async function extensionAction(view, action, target, what) {
-  const result = await ask({
-    title: action.label + " " + what,
-    message: action.confirm ? action.confirm : [action.label, " ", h("strong", null, what), "?"],
-    action: action.label,
-    run: () => api("extensionAction", { view: view.name, action: action.name }, { body: target }),
-  });
+  const run = () => api("extensionAction", { view: view, action: action.name }, { body: target });
+  let result;
+  if (action.confirm) {
+    result = await ask({ title: action.label + " " + what, message: action.confirm, action: action.label, run });
+  } else {
+    try {
+      result = await run();
+    } catch (e) {
+      toast(action.label + " failed: " + e.message, "bad");
+      return;
+    }
+  }
   if (result) {
     toast(action.label + ": " + what + ".");
     setTimeout(refresh, 500);
@@ -545,18 +559,18 @@ function topicStatus(topic) {
     extensions.map(([view, said]) => chip(said.status, "warn", "From the " + view + " extension")));
 }
 
-/** Buttons for the actions the extensions offer on a topic, with each action's label from its view. */
-function topicExtensionActions(topic, views) {
-  const byName = new Map((views || []).map(view => [view.name, view]));
-  return Object.entries(topic.extensions || {}).flatMap(([name, said]) => {
-    const view = byName.get(name);
-    if (!view) {
-      return [];
-    }
-    const actions = new Map((view.actions || []).map(action => [action.name, action]));
-    return (said.actions || []).filter(action => actions.has(action)).map(action => h("button", { type: "button",
-      onclick: () => extensionAction(view, actions.get(action), { topic: topic.name }, topic.name) }, actions.get(action).label));
-  });
+/** Buttons for the actions the extensions offer on a topic, as each view says. */
+function topicExtensionActions(topic) {
+  return Object.entries(topic.extensions || {}).flatMap(([view, said]) => (said.actions || []).map(action => h("button", {
+    type: "button",
+    onclick: () => extensionAction(view, action, { topic: topic.name }, topic.name),
+  }, action.label)));
+}
+
+/** The views that failed to say anything about a topic. */
+function topicExtensionErrors(topic) {
+  return Object.entries(topic.extensionErrors || {}).map(([view, error]) => h("div", { class: "notice warn" },
+    "The ", h("strong", null, view), " view failed: ", h("code", null, error)));
 }
 
 function topicTable(topics) {
@@ -629,7 +643,7 @@ async function topicView(name) {
     h("div", { class: "crumbs" }, link("#/", "Overview"), topic.module ? " / " + topic.module : null),
     h("div", { class: "page-head" }, h("h1", null, topic.name), topicStatus(topic),
       h("div", { class: "actions" },
-        topicExtensionActions(topic, overview && overview.extensions),
+        topicExtensionActions(topic),
         h("button", { type: "button", class: "danger", onclick: () => purge(name) }, "Purge…"),
         h("button", { type: "button", class: "danger", onclick: () => deleteTopic(name) }, "Delete topic…"))));
 
@@ -648,6 +662,7 @@ async function topicView(name) {
 
   return [
     head,
+    topicExtensionErrors(topic),
     stats,
     queue && queue.countedAt ? h("p", { class: "muted" }, "Counts as of ", time(queue.countedAt), ".") : null,
     deadLettersPanel(name, dead, paging),

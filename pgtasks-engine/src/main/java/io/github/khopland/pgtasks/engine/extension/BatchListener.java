@@ -38,30 +38,36 @@ public interface BatchListener {
     }
 
     /**
-     * One task's result.
-     *
-     * @param taskId   the task, as {@link ClaimGate#claimed} named it
-     * @param failure  whether it failed, and whose fault that was
-     * @param error    what it failed with, if its decision had a cause: what the handler threw, or
-     *                 what failed the batch's completion
-     * @param duration from the claim to the completion, the same for every task of the batch
+     * One task's result. The engine makes these; an extension's tests make their own with the
+     * constructor and the {@code with} methods.
      */
-    record Completed(long taskId, String identifier, int attempt, TaskObserver.Result result, Failure failure, @Nullable Throwable error,
-                     Duration duration) {
+    final class Completed {
 
-        public Completed {
-            Objects.requireNonNull(identifier, "identifier");
-            Objects.requireNonNull(result, "result");
-            Objects.requireNonNull(failure, "failure");
-            Objects.requireNonNull(duration, "duration");
-        }
+        private final long taskId;
+        private final String identifier;
+        private final int attempt;
+        private final TaskObserver.Result result;
+        private final Failure failure;
+        private final @Nullable Throwable error;
+        private final Duration duration;
 
         /**
-         * A result whose failure follows from it ({@link Failure#FAILED} for a retry or a dead
-         * letter, else none), without an error or a duration: for an extension's own tests.
+         * A result whose failure follows from it ({@link Failure#FAILED} for a retry, an
+         * unavailable or a dead letter, else none), without an error, taking no time.
          */
         public Completed(long taskId, String identifier, int attempt, TaskObserver.Result result) {
             this(taskId, identifier, attempt, result, failureOf(result), null, Duration.ZERO);
+        }
+
+        private Completed(long taskId, String identifier, int attempt, TaskObserver.Result result, Failure failure,
+                          @Nullable Throwable error, Duration duration) {
+            this.taskId = taskId;
+            this.identifier = Objects.requireNonNull(identifier, "identifier");
+            this.attempt = attempt;
+            this.result = Objects.requireNonNull(result, "result");
+            this.failure = Objects.requireNonNull(failure, "failure");
+            this.error = error;
+            this.duration = Objects.requireNonNull(duration, "duration");
         }
 
         private static Failure failureOf(TaskObserver.Result result) {
@@ -71,9 +77,72 @@ public interface BatchListener {
             };
         }
 
+        /** This result, failed in this way and with this error, such as a dead letter that was the task's fault. */
+        public Completed withFailure(Failure failure, @Nullable Throwable error) {
+            return new Completed(taskId, identifier, attempt, result, failure, error, duration);
+        }
+
+        /** This result, having taken this long. */
+        public Completed withDuration(Duration duration) {
+            return new Completed(taskId, identifier, attempt, result, failure, error, duration);
+        }
+
+        /** The task, as {@link ClaimGate#claimed} named it. */
+        public long taskId() {
+            return taskId;
+        }
+
+        public String identifier() {
+            return identifier;
+        }
+
+        /** The attempt the task was on when it was claimed. */
+        public int attempt() {
+            return attempt;
+        }
+
+        public TaskObserver.Result result() {
+            return result;
+        }
+
+        /** Whether it failed, and whose fault that was. */
+        public Failure failure() {
+            return failure;
+        }
+
+        /**
+         * What it failed with, if its decision had a cause: what the handler threw, or what failed
+         * the batch's completion.
+         */
+        public @Nullable Throwable error() {
+            return error;
+        }
+
+        /** From the claim to the completion, the same for every task of the batch. */
+        public Duration duration() {
+            return duration;
+        }
+
         /** Whether it finished as it should: succeeded or filtered. */
         public boolean succeeded() {
             return result == TaskObserver.Result.SUCCEEDED || result == TaskObserver.Result.FILTERED;
+        }
+
+        @Override
+        public boolean equals(@Nullable Object other) {
+            return other instanceof Completed that && that.taskId == taskId && that.identifier.equals(identifier) && that.attempt == attempt
+                && that.result == result && that.failure == failure && Objects.equals(that.error, error) && that.duration.equals(duration);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(taskId, identifier, attempt, result, failure, error, duration);
+        }
+
+        @Override
+        public String toString() {
+            return "Completed[task " + taskId + " (" + identifier + "), attempt " + attempt + ", " + result + ", " + failure
+                + (error == null ? "" : ", " + error) + ", " + duration + "]";
         }
     }
 

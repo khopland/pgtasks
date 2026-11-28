@@ -32,9 +32,16 @@ lambda with a name: `Extension.of("audit", context -> context.batchListener(audi
   ones, and `TaskEngine.extension(Pause.class)` finds one.
 - **Hooks are registered in `install`.** A hook registered after it returns throws. The rest of
   the context (the store, `transact`, `wake`, the settings) works for as long as the engine lives.
-- **`onStart` runs before the topics and jobs**, each time the engine starts, restarts included.
-  Ready what the gates and jobs use there (apply a schema, load state); one that throws fails the
-  start before anything is claimed. `onStop` runs as the engine stops, before its topics do.
+- **`onStart` runs before the channel reloads, jobs and topics**, each time the engine starts,
+  restarts included. Ready what the gates and jobs use there (apply a schema, load state); one that
+  throws, checked exceptions included, fails the start before anything is claimed. The engine
+  already listens for notifications by then, so a message that arrives meanwhile isn't lost: the
+  extension's reloads get it once its start actions have returned, never alongside them.
+- **`onStop` runs last**, once the topics have finished their batches and the reloads and jobs have
+  ended, so no gate, listener, reload or job of the extension runs after it. Extensions stop in the
+  reverse order they were installed, each one's actions the last registered first, and only those
+  whose start actions all ran: after a failed start, the extensions started before the one that
+  failed are stopped, and that one isn't.
 
 ## The hooks
 
@@ -44,10 +51,10 @@ lambda with a name: `Extension.of("audit", context -> context.batchListener(audi
 | `batchListener(BatchListener)` | Told what became of each task of a batch once its completion committed: its result, whether it failed and whose fault that was, the error, and how long the batch took. |
 | `handlerDecorator(HandlerDecorator)` | Wraps the handler of every topic this node runs; the first registered is outermost. |
 | `observer(TaskObserver)` | Sees this node's pushes and batches, for tracing, metrics, or headers that follow the work, next to the observers given to the builder. For a header name both give, the builder's value is stored. One that throws is logged and ignored. |
-| `job(HousekeepingJob)` | Runs work on a fixed delay, on every node (`everyNode`) or on one node at a time (`leader`). |
-| `channel(name, reload)` | Reloads something that may have changed on another node, told what the messages said. |
+| `job(HousekeepingJob)` | Runs work on a fixed delay, on every node (`everyNode`) or on one node at a time (`leader`). Returns the `Job`, to ask `runsHere()` or to `runSoon()`. |
+| `channel(name, reload)` | Reloads something that may have changed on another node, told what the messages said. Returns the `Channel`, to `send` messages on. |
 | `operatorView(OperatorView)` | Shows operators what the extension knows, and lets them act on it, in the starter's endpoint and dashboard. |
-| `onStart` / `onStop` | Runs each time the engine starts (before its topics and jobs) and stops (before its topics stop). |
+| `onStart` / `onStop` | Runs each time the engine starts (before its reloads, jobs and topics) and stops (after them). |
 
 And what it can use:
 
@@ -59,20 +66,23 @@ And what it can use:
 - `admin()`: the operator's side, such as every topic in the store; `topics()`: those this node registers.
 - `clock()`: the store's clock, the database's on Postgres.
 - `topicSetting(topic, key)` and `setting(key)`: the extension's per-topic and engine-wide settings.
-- `leads(job)`: whether this node holds a leader job's lease now. A leader job that loops over
-  batches stops when it turns false.
 - `wake(topic)`: asks a topic's gates again now, for a gate whose answer changed.
-- `runSoon(job)`: runs one of its jobs now, besides its schedule, such as for an operator's "run now".
+
+The engine implements `ExtensionContext`, `Job` and `Channel`, and extensions only call them:
+minor releases add methods to them, so don't implement them.
 
 ## Claim gates
 
 A gate is asked on the topic's poll thread before every claim, so it must be quick. A gate that
 holds a topic back says how long; the topic asks again then, once a poll interval at the latest,
-or at once when it is woken. While a gate holds a topic, the engine's health
-(`EngineHealth.held()`), the endpoint, the dashboard and the `pgtasks.claims.held` metric show
-it, under the name of the extension that registered the gate, and observers are told
-(`TaskObserver.held`). A topic held back counts as having found nothing, so `TaskTester.awaitIdle`
-sees it as idle, and `TaskTester.drain` moves the clock past the wait.
+or at once when it is woken. A wait can say why: `Permit.waitFor(delay, "paused")`. That makes it
+a hold rather than a throttle: the engine's health (`EngineHealth.held()`), the endpoint, the
+dashboard and the `pgtasks.claims.held` metric show the topic at once, under the name of the
+extension that registered the gate and with the reason. A wait without a reason, as a rate limit
+spaces claims out, shows there only once the topic has gone a poll interval without a claim, so
+a busy rate-limited topic doesn't flicker in and out. Observers are told of every wait
+(`TaskObserver.held`), however short. A topic held back counts as having found nothing, so
+`TaskTester.awaitIdle` sees it as idle, and `TaskTester.drain` moves the clock past the wait.
 
 A gate that throws is skipped and the claim goes ahead, so a gate that must hold claims back when
 its storage fails catches the error and returns a wait itself.
@@ -99,10 +109,33 @@ and leaves the second out. Tasks handed back without running, as on a stop, aren
 
 `HousekeepingJob.everyNode(name, interval, action)` runs on every node that has it;
 `HousekeepingJob.leader(...)` on one node at a time, the one holding the job's own lease. That
-lease is named after the job and only nodes with the job ask for it, so a leader job runs even
-when another application, without the extension, shares the schema and runs the engine's
-housekeeping. Leases show with each node in the endpoint and the dashboard. Leader jobs must be
-safe to run twice at once for up to a heartbeat, while a hung leader finds out it lost the lease.
+lease is named after the extension and the job, `<extension>/<job>` such as `Pause/pause cleanup`,
+and only nodes with the job ask for it: a leader job runs even when another application, without
+the extension, shares the schema and runs the engine's housekeeping, and two extensions' jobs of
+one name don't share a lease. Leases show with each node in the endpoint and the dashboard.
+Leader jobs must be safe to run twice at once for up to a heartbeat, while a hung leader finds
+out it lost the lease.
+
+`context.job(...)` returns the `Job`. `runsHere()` says whether this node runs it now (always for
+an every-node job while the engine runs, for a leader job while this node holds the lease); a
+leader job that loops over batches stops when it turns false, so keep the `Job` in a field.
+`runSoon()` runs it once more now, besides its schedule, such as for an operator's "Run now": here
+if it runs here, and for a leader job whose lease another node holds, on that node, told through
+the store's notifications. With no node holding the lease, or a lost notification, it runs at its
+next interval.
+
+```java
+private ExtensionContext.Job sweep;
+
+public void install(ExtensionContext context) {
+    sweep = context.job(HousekeepingJob.leader("sweep", Duration.ofMinutes(5), this::sweepAll));
+}
+
+private void sweepAll() {
+    while (sweep.runsHere() && sweepBatch() > 0) {
+    }
+}
+```
 
 Job names are unique per engine and can't be the engine's own (`promotion`, `retention` and the
 rest). Each extension job has a thread of its own. One that throws is logged and runs again after
@@ -112,19 +145,22 @@ extension jobs, at the new time.
 
 ## Channels
 
-`channel(name, payloads -> ...)` reloads something when it may have changed on another node. Send
-a message with `store().notify(transaction, name, payload)` in the transaction that made the
-change, so it arrives once that commits. The reload runs on a thread of its own, told the payloads
-of the messages since its last run; an empty set means anything may have changed, and comes after
-a lost notification connection, on every heartbeat (in case a message got lost), and when more
-messages came in than are worth listing. Requests that arrive while a reload waits are served by
-that one run. `channel(name, () -> ...)` is the same without the payloads.
+`channel(name, payloads -> ...)` reloads something when it may have changed on another node, and
+returns the `Channel`. Send a message with `channel.send(transaction, payload)` in the transaction
+that made the change, so it arrives once that commits, on every node of every application on the
+schema. The reload runs on a thread of its own, told the payloads of the messages since its last
+run; an empty set means anything may have changed, and comes after a lost notification
+connection, on every heartbeat (in case a message got lost), and when more messages came in than
+are worth listing. Requests that arrive while a reload waits are served by that one run, and none
+runs before the extensions' start actions have. `channel(name, () -> ...)` is the same without the
+payloads. `ready`, `topic` and `job` are the engine's channels.
 
 ## Settings
 
 An extension declares settings with `SettingKey`: a dotted lowercase name, a type, a default, a
-parser for overrides, and optionally a check that applies to every value, the default, values set
-in code and overrides alike:
+parser for overrides, and optionally checks that apply to every value, the default, values set
+in code and overrides alike. The checks of the key the extension declares apply, whichever key a
+value is set with: keys with the same name, type and default are one setting.
 
 ```java
 static final SettingKey<Double> RATE = SettingKey.of("rate.per-second", Double.class, 0.0, Double::valueOf)
@@ -154,7 +190,9 @@ starter knowing the extension. It has two parts, each optional:
 - **a table**: `columns()` and `rows()`, each row with a key and the actions it offers, such as
   recurring tasks with "Run now";
 - **what it says about a topic**: `topic(name)` returns a short status and the actions it offers
-  on that topic, such as "paused" with "Resume", or "Pause" on a topic that isn't.
+  on that topic, such as "paused" with "Resume", or "Pause" on a topic that isn't. The endpoint
+  asks `topics(names)` once per request for every topic it shows; it calls `topic` for each by
+  default, so a view that reads its state from the store overrides it to read them all in one go.
 
 ```java
 context.operatorView(new OperatorView() {
@@ -176,12 +214,14 @@ context.operatorView(new OperatorView() {
 });
 ```
 
-The endpoint serves each view at `GET /actuator/tasks/extensions/{name}` and in the overview,
-adds what each view says to every topic, and runs an action with
-`POST /actuator/tasks/extensions/{view}/{action}` and `{"key": "..."}` for a row or
-`{"topic": "orders"}` for a topic, only where the row or topic offers it. The dashboard draws the
-table as a panel on the overview, the status next to the topic, and the topic's actions on its
-page, asking the operator to confirm with the action's `confirm` text.
+The overview, `GET /actuator/tasks`, lists the views without their rows and adds what each view
+says to every topic, with the label of each action it offers there. `GET
+/actuator/tasks/extensions/{name}` serves a view with its rows, and
+`POST /actuator/tasks/extensions/{view}/{action}` runs an action with `{"key": "..."}` for a row or
+`{"topic": "orders"}` for a topic, only where the row or topic offers it. A view that throws shows
+its `"error"` in its place, and the rest of the response as usual. The dashboard draws the table
+as a panel on the overview, the status next to the topic, and the topic's actions on its page;
+an action with `confirm` text asks the operator first, and one without runs at once.
 
 ## Store capabilities
 
@@ -199,13 +239,15 @@ public final class PostgresWindows implements StoreCapability {
 }
 ```
 
-The extension asks for it with `context.capability(WindowStore.class)`. Without a provider for the
-engine's store, that fails with a message naming the missing module.
+The extension asks for it with `context.capability(WindowStore.class)`. The engine makes it once
+per store and type, so every engine on the store, as the nodes of a `TaskTester`, gets the same
+one. Without a provider for the engine's store, that fails with a message naming the missing module.
 
 **In memory**, state must be shared by every engine on the store and roll back with its
-transaction, as the store's own does. `store.shared(InMemoryWindows.class, InMemoryWindows::new)`
-keeps one instance per store, and `transaction.onRollback(undo)` undoes a change if the
-transaction, or a savepoint taken before it, rolls back.
+transaction, as the store's own does. A capability made once per store can keep it in its fields,
+and other code can keep it with `store.shared(InMemoryWindows.class, InMemoryWindows::new)`, one
+instance per store; `transaction.onRollback(undo)` undoes a change if the transaction, or a
+savepoint taken before it, rolls back.
 
 **On Postgres**, an extension that needs a table ships its SQL in its own jar; it does not add files to the engine's
 schema. `ExtensionSchema` names that classpath directory and the tables it expects:
@@ -234,7 +276,8 @@ files and rows for the extension's upgrade test, like the engine's own: name the
   `advance` runs its jobs at the new time, `drain` moves the clock past its gates' waits, and
   several engines on one store share its capability, as nodes do.
 - `new BatchListener.Completed(taskId, identifier, attempt, result)` makes a result for a
-  listener's unit test.
+  listener's unit test; `withFailure(failure, error)` and `withDuration(duration)` make it fail
+  in a particular way or take a while.
 - `engine.health()` shows the topics its gates hold and how its jobs went; `engine.operatorViews()`
   its views.
 

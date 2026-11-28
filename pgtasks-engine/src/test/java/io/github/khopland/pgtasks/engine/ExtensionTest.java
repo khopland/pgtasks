@@ -38,6 +38,7 @@ class ExtensionTest {
         final AtomicInteger leaderRuns = new AtomicInteger();
         final AtomicInteger nodeRuns = new AtomicInteger();
         ExtensionContext context;
+        ExtensionContext.Job leaderJob;
 
         @Override
         public String name() {
@@ -48,7 +49,7 @@ class ExtensionTest {
         public void install(ExtensionContext context) {
             this.context = context;
             events.add("installed");
-            context.job(HousekeepingJob.leader("leader-count", Duration.ofHours(1), leaderRuns::incrementAndGet));
+            leaderJob = context.job(HousekeepingJob.leader("leader-count", Duration.ofHours(1), leaderRuns::incrementAndGet));
             context.job(HousekeepingJob.everyNode("node-count", Duration.ofMillis(20), nodeRuns::incrementAndGet));
             context.onStart(() -> events.add("started"));
             context.onStop(() -> events.add("stopped"));
@@ -88,7 +89,7 @@ class ExtensionTest {
             TaskTester.of(engine).advance(Duration.ofMinutes(1));
 
             assertThat(extension.leaderRuns.get()).as("advance runs the leader's jobs, the extension's too").isGreaterThan(before);
-            assertThat(extension.context.leads("leader-count")).as("the job's own lease").isTrue();
+            assertThat(extension.leaderJob.runsHere()).as("the job's own lease").isTrue();
             assertThat(extension.context.clock().instant()).isEqualTo(clock.instant());
         }
     }
@@ -300,13 +301,22 @@ class ExtensionTest {
     }
 
     @Test
-    void an_extension_gets_its_capability_from_the_provider_for_its_store() {
+    void an_extension_gets_its_capability_from_the_provider_for_its_store_once_per_store() {
+        InMemoryTaskStore store = new InMemoryTaskStore();
         Windowed extension = new Windowed();
-        builder(new InMemoryTaskStore()).extension(extension).build();
+        builder(store).extension(extension).build();
 
-        assertThat(extension.context.capability(TestCapabilities.StoreName.class).name()).isEqualTo("memory");
+        TestCapabilities.StoreName name = extension.context.capability(TestCapabilities.StoreName.class);
+        assertThat(name.name()).isEqualTo("memory");
         assertThatThrownBy(() -> extension.context.capability(Runnable.class))
             .hasMessageContaining("No java.lang.Runnable for InMemoryTaskStore");
+
+        Windowed other = new Windowed();
+        builder(store).extension(other).build();
+        assertThat(other.context.capability(TestCapabilities.StoreName.class)).as("another engine on the store gets the same one").isSameAs(name);
+        Windowed elsewhere = new Windowed();
+        builder(new InMemoryTaskStore()).extension(elsewhere).build();
+        assertThat(elsewhere.context.capability(TestCapabilities.StoreName.class)).as("another store gets its own").isNotSameAs(name);
     }
 
     @Test

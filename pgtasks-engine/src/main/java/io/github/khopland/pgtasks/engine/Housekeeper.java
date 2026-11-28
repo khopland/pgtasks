@@ -41,16 +41,37 @@ import org.slf4j.LoggerFactory;
  * <p>The lease lasts four heartbeats unless renewed, so a leader that dies or hangs is replaced
  * by the next node that asks. The jobs are safe to run on two nodes at once, which can happen
  * for at most one heartbeat while a hung leader wakes up and finds its lease gone. Each leader
- * job of an extension has a lease of its own, named after it and renewed with the heartbeat, so
- * it runs among the nodes that have it, whichever node runs the engine's housekeeping.
+ * job of an extension has a lease of its own, named after its extension and itself and renewed
+ * with the heartbeat, so it runs among the nodes that have it, whichever node runs the engine's
+ * housekeeping.
  */
 final class Housekeeper {
 
     static final String LEASE = "housekeeping";
 
-    /** The engine's own jobs and its lease: an extension's job can't take these names. */
-    static final Set<String> RESERVED = Set.of(LEASE, "heartbeat", "fence", "orphan sweep", "reconcile", "expiry", "promotion",
-        "retention", "count snapshot");
+    /** The engine's own jobs: an extension's job can't take these names, which the health shows them by. */
+    static final Set<String> RESERVED = Set.of("heartbeat", "fence", "orphan sweep", "reconcile", "expiry", "promotion", "retention",
+        "count snapshot");
+
+    /**
+     * An extension's job, and the name of its lease if it is a leader job: its extension's name
+     * and its own ({@code <extension>/<job>}), so two extensions' jobs of one name, in one
+     * application or two that share the schema, don't share a lease.
+     */
+    record ExtensionJob(HousekeepingJob job, String lease) {
+
+        static ExtensionJob of(String extension, HousekeepingJob job) {
+            return new ExtensionJob(job, extension + "/" + job.name());
+        }
+
+        String name() {
+            return job.name();
+        }
+
+        boolean leader() {
+            return job.scope() == HousekeepingJob.Scope.LEADER;
+        }
+    }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Housekeeper.class);
     private static final int BATCH = 1_000;
@@ -85,7 +106,7 @@ final class Housekeeper {
     /** What the watchdog last saw; only its thread touches it. */
     private boolean fenced;
     /** Jobs extensions added; each runs on a thread of its own. */
-    private final List<HousekeepingJob> extensionJobs;
+    private final List<ExtensionJob> extensionJobs;
     private final Object leadership = new Object();
     private final Object beating = new Object();
     private @Nullable Instant leaseEnds;
@@ -134,7 +155,7 @@ final class Housekeeper {
      * @param fencing      stops this node's work while it is fenced, and resumes it after
      */
     Housekeeper(TaskStore store, EngineSettings settings, IntSupplier nodeId, Job rejoin, IntConsumer wake, Job sweepOrphans, Job reconcile,
-                Duration purgeBudget, List<HousekeepingJob> extensionJobs, HeartbeatFence fence, Fencing fencing) {
+                Duration purgeBudget, List<ExtensionJob> extensionJobs, HeartbeatFence fence, Fencing fencing) {
         this.fence = fence;
         this.fencing = fencing;
         this.extensionJobs = List.copyOf(extensionJobs);
@@ -160,21 +181,28 @@ final class Housekeeper {
         for (HousekeepingJob job : coreJobs()) {
             schedule(job.name().equals(RETENTION) ? slow : jobs, job, () -> job.scope() == HousekeepingJob.Scope.EVERY_NODE || leading(), true);
         }
-        for (HousekeepingJob job : extensionJobs) {
+        for (ExtensionJob each : extensionJobs) {
+            HousekeepingJob job = each.job();
             ScheduledExecutorService executor = executor("pgtasks-job-" + job.name() + "-");
-            soon.put(job.name(), new Soon(executor, schedule(executor, job, () -> runsHere(job), true)));
+            soon.put(job.name(), new Soon(executor, schedule(executor, job, () -> runsHere(job.name()), true)));
         }
     }
 
     /**
      * Runs an extension's job once more, soon, on its own thread after a run in progress, as if
-     * its interval had passed: a leader job only if this node holds its lease. Nothing once stopped.
+     * its interval had passed, if it runs on this node: a leader job only while this node holds
+     * its lease. Nothing once stopped.
      *
-     * @return false if there is no extension job by that name
+     * @return false for a leader job whose lease this node doesn't hold, so the caller can ask
+     *         the node that does
      */
     boolean runSoon(String job) {
         Soon each = soon.get(job);
         if (each == null) {
+            // Stopped, or not started yet: nothing runs.
+            return true;
+        }
+        if (!runsHere(job)) {
             return false;
         }
         try {
@@ -185,9 +213,26 @@ final class Housekeeper {
         return true;
     }
 
+    /**
+     * Runs the leader job of this lease soon, if this node holds the lease: another node was asked
+     * to run it, and told this one on the job channel.
+     */
+    void runSoonByLease(String lease) {
+        for (ExtensionJob each : extensionJobs) {
+            if (each.leader() && each.lease().equals(lease) && leads(each.name())) {
+                runSoon(each.name());
+            }
+        }
+    }
+
     /** Whether an extension's job runs on this node now: every-node jobs always, leader jobs while this node holds their lease. */
-    private boolean runsHere(HousekeepingJob job) {
-        return job.scope() == HousekeepingJob.Scope.EVERY_NODE || leads(job.name());
+    boolean runsHere(String job) {
+        for (ExtensionJob each : extensionJobs) {
+            if (each.name().equals(job)) {
+                return !each.leader() || leads(job);
+            }
+        }
+        return false;
     }
 
     private static final String RETENTION = "retention";
@@ -300,7 +345,7 @@ final class Housekeeper {
                 held.add(LEASE);
             }
             leaseEnds = null;
-            held.addAll(jobLeases.keySet());
+            extensionJobs.stream().filter(each -> jobLeases.containsKey(each.name())).map(ExtensionJob::lease).forEach(held::add);
             jobLeases.clear();
         }
         if (!held.isEmpty()) {
@@ -329,7 +374,7 @@ final class Housekeeper {
         }
     }
 
-    /** Whether this node holds the lease of an extension's leader job now, by the store's clock. */
+    /** Whether this node holds the lease of an extension's leader job now, by the job's name and the store's clock. */
     boolean leads(String job) {
         synchronized (leadership) {
             Instant ends = jobLeases.get(job);
@@ -384,8 +429,8 @@ final class Housekeeper {
      * be renewed runs out with its term, and the job stops running here when it does.
      */
     private void renewJobLeases(int leader, Duration term) {
-        List<String> names = extensionJobs.stream().filter(job -> job.scope() == HousekeepingJob.Scope.LEADER).map(HousekeepingJob::name).toList();
-        if (names.isEmpty()) {
+        List<ExtensionJob> leaders = extensionJobs.stream().filter(ExtensionJob::leader).toList();
+        if (leaders.isEmpty()) {
             return;
         }
         Instant asked = store.clock().instant();
@@ -393,13 +438,14 @@ final class Housekeeper {
         try {
             held = EngineCore.transact(store, transaction -> {
                 Map<String, Boolean> leases = new LinkedHashMap<>();
-                for (String name : names) {
-                    leases.put(name, store.lead(transaction, name, leader, term));
+                for (ExtensionJob each : leaders) {
+                    leases.put(each.name(), store.lead(transaction, each.lease(), leader, term));
                 }
                 return leases;
             });
         } catch (Exception e) {
-            LOGGER.warn("Could not renew the leases of the jobs {}; each stops running here once its term runs out", names, e);
+            LOGGER.warn("Could not renew the leases of the jobs {}; each stops running here once its term runs out",
+                leaders.stream().map(ExtensionJob::name).toList(), e);
             return;
         }
         held.forEach((name, now) -> {
@@ -451,14 +497,14 @@ final class Housekeeper {
                 }
             }
         }
-        for (HousekeepingJob job : extensionJobs) {
-            if (job.scope() == HousekeepingJob.Scope.LEADER && leads(job.name())) {
-                job.run();
+        for (ExtensionJob each : extensionJobs) {
+            if (each.leader() && leads(each.name())) {
+                each.job().run();
             }
         }
-        for (HousekeepingJob job : extensionJobs) {
-            if (job.scope() == HousekeepingJob.Scope.EVERY_NODE) {
-                job.run();
+        for (ExtensionJob each : extensionJobs) {
+            if (!each.leader()) {
+                each.job().run();
             }
         }
     }

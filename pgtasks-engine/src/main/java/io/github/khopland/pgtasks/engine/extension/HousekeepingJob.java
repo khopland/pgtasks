@@ -8,16 +8,18 @@ import java.util.Objects;
  * The engine's own housekeeping (expiry, promotion, retention, count snapshots, the orphan sweep)
  * is made of these too. An extension adds its own with {@link ExtensionContext#job}.
  *
- * <p>A leader job runs on the node that holds its lease, a lease of its own named after the job,
- * which only the nodes that have the job ask for: one application's extension runs its leader
- * jobs even when another application, without that extension, shares the schema and runs the
- * engine's housekeeping. The nodes' leases show in {@code pgtasks.node} and the dashboard. The
- * engine's own leader jobs share the {@code housekeeping} lease.
+ * <p>A leader job runs on the node that holds its lease, a lease of its own named after its
+ * extension and itself ({@code <extension>/<job>}, such as {@code Pause/pause cleanup}), which
+ * only the nodes that have the job ask for: one application's extension runs its leader jobs even
+ * when another application, without that extension, shares the schema and runs the engine's
+ * housekeeping, and two extensions' jobs of one name don't share a lease. The nodes' leases show
+ * in {@code pgtasks.node} and the dashboard. The engine's own leader jobs share the
+ * {@code housekeeping} lease.
  *
  * <p>A job that throws is logged and runs again after its interval; the engine's health shows
  * when each job last ran and last failed. Leader jobs must be safe to run on two nodes at once:
  * for at most one heartbeat a hung leader may not know yet that it lost the lease. A job that
- * loops over batches should stop when {@link ExtensionContext#leads} turns false.
+ * loops over batches should stop when {@link ExtensionContext.Job#runsHere} turns false.
  */
 public interface HousekeepingJob {
 
@@ -34,7 +36,7 @@ public interface HousekeepingJob {
         void run() throws Exception;
     }
 
-    /** For the logs and health, such as "promotion"; also the name of a leader job's lease. Unique per engine. */
+    /** For the logs and health, such as "promotion"; with its extension's name, a leader job's lease. Unique per engine. */
     String name();
 
     Scope scope();

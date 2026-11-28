@@ -33,7 +33,7 @@ public final class ParkedTopics implements Extension {
 
     @Override
     public void install(ExtensionContext context) {
-        context.claimGate((topic, wanted) -> parked.containsKey(topic.name()) ? ClaimGate.Permit.waitFor(Duration.ofMinutes(1)) : ClaimGate.Permit.ANY);
+        context.claimGate((topic, wanted) -> parked.containsKey(topic.name()) ? ClaimGate.Permit.waitFor(Duration.ofMinutes(1), "parked") : ClaimGate.Permit.ANY);
         context.operatorView(new OperatorView() {
             @Override
             public String name() {

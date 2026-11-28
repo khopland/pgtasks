@@ -6,6 +6,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,6 +22,8 @@ import io.github.khopland.pgtasks.engine.Retry;
 import io.github.khopland.pgtasks.engine.TaskConfigurer;
 import io.github.khopland.pgtasks.engine.TaskEngine;
 import io.github.khopland.pgtasks.engine.TaskGlobals;
+import io.github.khopland.pgtasks.engine.extension.Extension;
+import io.github.khopland.pgtasks.engine.extension.OperatorView;
 import io.github.khopland.pgtasks.spring.dashboard.ParkedTopics;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +82,37 @@ class TaskEndpointTest {
         @Bean
         ParkedTopics parking() {
             return new ParkedTopics();
+        }
+
+        /** An extension whose view fails, as one whose table is missing would. */
+        @Bean
+        Extension broken() {
+            return Extension.of("broken", context -> context.operatorView(new OperatorView() {
+                @Override
+                public String name() {
+                    return "broken";
+                }
+
+                @Override
+                public String title() {
+                    return "Broken";
+                }
+
+                @Override
+                public List<Column> columns() {
+                    return List.of(Column.text("name", "Name"));
+                }
+
+                @Override
+                public List<Row> rows() {
+                    throw new IllegalStateException("relation \"broken\" does not exist");
+                }
+
+                @Override
+                public Map<String, TopicState> topics(Set<String> topics) {
+                    throw new IllegalStateException("relation \"broken\" does not exist");
+                }
+            }));
         }
 
     }
@@ -144,13 +179,20 @@ class TaskEndpointTest {
     @DisplayName("An extension's view shows in the overview and on each topic, and its actions run only where it offers them")
     void an_extensions_view_and_actions() throws Exception {
         Response overview = get("/tasks");
-        JsonNode view = overview.body().path("extensions").get(0);
-        assertThat(view.path("name").asString()).isEqualTo("parking");
+        JsonNode view = overview.body().path("extensions").valueStream().filter(each -> each.path("name").asString().equals("parking"))
+            .findFirst().orElseThrow();
+        assertThat(view.has("rows")).as("rows come with the view's own request").isFalse();
+        assertThat(view.has("error")).isFalse();
         assertThat(view.path("title").asString()).isEqualTo("Parked topics");
         assertThat(view.path("columns").valueStream().map(column -> column.path("kind").asString()).toList()).containsExactly("topic", "time", "flag");
         assertThat(view.path("actions").valueStream().map(action -> action.path("name").asString()).toList()).containsExactly("park", "unpark", "break");
         assertThat(overview.body().path("topics").valueStream().filter(topic -> topic.path("name").asString().equals("parked")).findFirst())
-            .hasValueSatisfying(topic -> assertThat(topic.path("extensions").path("parking").path("actions").get(0).asString()).isEqualTo("park"));
+            .hasValueSatisfying(topic -> {
+                JsonNode park = topic.path("extensions").path("parking").path("actions").get(0);
+                assertThat(park.path("name").asString()).isEqualTo("park");
+                assertThat(park.path("label").asString()).isEqualTo("Park");
+                assertThat(park.path("confirm").asString()).isEqualTo("No node claims from it until it is unparked.");
+            });
 
         assertThat(send("POST", "/tasks/extensions/parking/unpark", "{\"topic\": \"parked\"}").status())
             .as("not parked, so unpark isn't offered").isEqualTo(404);
@@ -171,13 +213,35 @@ class TaskEndpointTest {
         tasks.independently().push(PARKED, "waiting", "x");
         EngineFixture.await("the health to show the held topic", Duration.ofSeconds(10), () -> unchecked(() ->
             get("/health").body().path("components").path("tasks").path("details").path("held").valueStream()
-                .anyMatch(held -> held.path("topic").asString().equals("parked") && held.path("gate").asString().equals("parking"))));
+                .anyMatch(held -> held.path("topic").asString().equals("parked") && held.path("gate").asString().equals("parking")
+                    && held.path("reason").asString().equals("parked"))));
 
         Response broken = send("POST", "/tasks/extensions/parking/break", "{\"topic\": \"parked\"}");
         assertThat(broken.status()).isEqualTo(409);
         assertThat(broken.body().path("error").asString()).isEqualTo("could not break parked");
         assertThat(send("POST", "/tasks/extensions/parking/unpark", "{\"key\": \"parked\"}").status()).as("on the row").isEqualTo(200);
         assertThat(get("/tasks/extensions/parking").body().path("rows").isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("A view that fails shows its error in its place, and the rest of each response as usual")
+    void a_failing_view_leaves_the_rest_alone() throws Exception {
+        Response overview = get("/tasks");
+        assertThat(overview.status()).isEqualTo(200);
+        assertThat(overview.body().path("extensions").valueStream().filter(view -> view.path("name").asString().equals("broken")).findFirst())
+            .hasValueSatisfying(view -> assertThat(view.path("error").asString()).isEqualTo("IllegalStateException: relation \"broken\" does not exist"));
+        assertThat(overview.body().path("topics").valueStream().filter(topic -> topic.path("name").asString().equals("parked")).findFirst())
+            .hasValueSatisfying(topic -> assertThat(topic.path("extensions").has("parking")).as("the other view as usual").isTrue());
+
+        Response rows = get("/tasks/extensions/broken");
+        assertThat(rows.status()).isEqualTo(500);
+        assertThat(rows.body().path("error").asString()).contains("relation \"broken\" does not exist");
+        assertThat(rows.body().path("title").asString()).isEqualTo("Broken");
+
+        Response topic = get("/tasks/topics/work");
+        assertThat(topic.status()).isEqualTo(200);
+        assertThat(topic.body().path("extensionErrors").path("broken").asString()).contains("does not exist");
+        assertThat(topic.body().path("settings").isMissingNode()).isFalse();
     }
 
     @Test

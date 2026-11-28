@@ -86,6 +86,10 @@ public class TaskHealthIndicator extends AbstractHealthIndicator {
                 Map<String, Object> topic = new LinkedHashMap<>();
                 topic.put("topic", held.topic());
                 topic.put("gate", held.gate());
+                String reason = held.reason();
+                if (reason != null) {
+                    topic.put("reason", reason);
+                }
                 topic.put("since", held.since().toString());
                 return topic;
             }).toList());

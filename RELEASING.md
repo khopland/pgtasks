@@ -100,7 +100,9 @@ Once a release is the baseline, `mvn verify` runs japicmp on every published jar
 binary or source incompatible change to a public or protected class or member, with a report in
 each module's `target/japicmp/`. Before 1.0 a minor release may still break the API, but only on
 purpose: add the changed class or member to the plugin's `<excludes>` in `pgtasks-parent/pom.xml`
-(the build failure names it) and say what changed under `[Unreleased]` in `CHANGELOG.md`. To try
+(the build failure names it) and say what changed under `[Unreleased]` in `CHANGELOG.md`. A method
+added to an interface only the engine implements, such as `ExtensionContext`, isn't a break and
+needs no exclude: `pgtasks-parent/japicmp-engine-implemented.groovy` lists those interfaces. To try
 it against a version in your local repository:
 
 ```sh
