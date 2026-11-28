@@ -343,6 +343,11 @@ counts the queue. Alert on:
 - `pgtasks.queue.snapshot.age` growing past a few minutes: no node runs housekeeping.
 - The health indicator going DOWN.
 
+With [`pgtasks-circuit-breaker`](extensions.md#the-circuit-breaker), an open breaker shows as
+`pgtasks.claims.held` above zero for its topic on that node, in the `tasks` health indicator's
+`held` details (held by `CircuitBreaker`, reason "breaker open"), in the endpoint's `breaker` view and on the dashboard,
+which can close it, and as the warning each node logs when one opens.
+
 ## Tracing and correlation
 
 Traces follow a task from the code that pushed it through every topic downstream. Every header the
